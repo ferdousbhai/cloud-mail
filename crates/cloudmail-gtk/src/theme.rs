@@ -100,6 +100,7 @@ window.cloudmail, window.compose {{
 .sidebar row {{ padding: 7px 12px; margin: 1px 8px; border-radius: 6px; color: {fg}; }}
 .sidebar row:hover {{ background: {lbg}; }}
 .sidebar row:selected {{ background: {sel}; color: {bfg}; }}
+.sidebar button.compose {{ margin: 0 12px 12px 12px; padding: 6px 10px; }}
 .sidebar .hint {{ color: {dfg}; font-size: 9pt; padding: 10px 18px; }}
 .badge {{ background: {accent}; color: {dbg}; border-radius: 9px; padding: 0 7px; font-weight: bold; font-size: 9pt; }}
 .badge.dim {{ background: {muted}; color: {bfg}; }}

@@ -137,6 +137,14 @@ impl Ui {
         let brand = gtk::Label::builder().label("\u{f0e0}  cloudmail").xalign(0.0).build();
         brand.add_css_class("brand");
         sidebar.append(&brand);
+        let compose_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        compose_box.append(&gtk::Label::new(Some("\u{f040}")));
+        let compose_label = gtk::Label::builder().label("Compose").xalign(0.0).build();
+        compose_box.append(&compose_label);
+        let compose_btn = gtk::Button::builder().child(&compose_box).tooltip_text("New message (c)").build();
+        compose_btn.add_css_class("suggested");
+        compose_btn.add_css_class("compose");
+        sidebar.append(&compose_btn);
         let nav = gtk::ListBox::new();
         nav.set_selection_mode(gtk::SelectionMode::Single);
         let mut badges = Vec::new();
@@ -167,6 +175,7 @@ impl Ui {
         hint.add_css_class("hint");
         sidebar.append(&hint);
         wide_only.push(hint.clone().upcast());
+        wide_only.push(compose_label.upcast());
         wide_only.push(brand.clone().upcast());
 
         // Thread list column
@@ -357,6 +366,7 @@ impl Ui {
             }
         }));
 
+        compose_btn.connect_clicked(clone!(#[weak] ui, move |_| compose::open(&ui, Draft::default())));
         reply_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(false)));
         reply_all_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(true)));
         archive_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("archive")));
@@ -617,7 +627,7 @@ impl Ui {
                 }
             }
             self.empty.set_label(match self.view.get() {
-                View::Inbox => "Inbox zero.\n\nNothing needs you right now.",
+                View::Inbox => "Inbox zero.\n\nNothing needs you right now.\nPress c or Compose to write.",
                 View::Search => "No matches.",
                 _ => "Nothing here.",
             });
