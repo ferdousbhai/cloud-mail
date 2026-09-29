@@ -38,13 +38,12 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 
 ## Install
 
-On Arch / Omarchy (AUR — also in Omarchy's *Install › AUR* menu):
+On Omarchy, once the package lands in the Omarchy repository
+([omacom/omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724)), pick **Cloudmail** in
+*Install › Package*, or `sudo pacman -S cloudmail`. The package ships `cloudmail` (alias `cmail`),
+`cloudmail-gtk`, and the worker used by `cloudmail setup`.
 
-```sh
-yay -S cloudmail                # cloudmail (alias: cmail), cloudmail-gtk, and the worker for `cloudmail setup`
-```
-
-From source:
+Until then, from source:
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
