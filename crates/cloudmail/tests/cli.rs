@@ -1,0 +1,357 @@
+//! End-to-end tests: the real `cloudmail` binary against an in-process mock worker.
+
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone)]
+struct Req {
+    method: String,
+    path: String,
+    body: Value,
+    auth: String,
+}
+
+type Handler = dyn Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync;
+
+struct Mock {
+    url: String,
+    log: Arc<Mutex<Vec<Req>>>,
+}
+
+fn mock(handler: Box<Handler>) -> Mock {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let handler: Arc<Handler> = Arc::from(handler);
+    let log2 = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let (handler, log) = (handler.clone(), log2.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+                    let (mut len, mut auth) = (0usize, String::new());
+                    loop {
+                        let mut h = String::new();
+                        reader.read_line(&mut h).unwrap();
+                        let h = h.trim_end();
+                        if h.is_empty() {
+                            break;
+                        }
+                        let (k, v) = h.split_once(':').unwrap_or((h, ""));
+                        match k.to_ascii_lowercase().as_str() {
+                            "content-length" => len = v.trim().parse().unwrap_or(0),
+                            "authorization" => auth = v.trim().to_string(),
+                            _ => {}
+                        }
+                    }
+                    let mut body = vec![0; len];
+                    reader.read_exact(&mut body).unwrap();
+                    let req = Req { method, path, body: serde_json::from_slice(&body).unwrap_or(Value::Null), auth };
+                    log.lock().unwrap().push(req.clone());
+                    let (status, bytes, ctype) = if req.path != "/health" && req.auth != "Bearer test-token" {
+                        (401, br#"{"error":"unauthorized"}"#.to_vec(), "application/json")
+                    } else {
+                        handler(&req)
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\ncontent-disposition: attachment; filename*=UTF-8''menu%20card.pdf\r\n\r\n",
+                        bytes.len()
+                    );
+                    if stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(&bytes)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    Mock { url, log }
+}
+
+fn ok(v: Value) -> (u16, Vec<u8>, &'static str) {
+    (200, v.to_string().into_bytes(), "application/json")
+}
+
+fn thread_summary(id: &str, folder: &str, last_at: i64) -> Value {
+    json!({
+        "id": id, "subject": format!("Subject {id}"), "folder": folder, "snippet": "hi",
+        "from": { "name": "Joe", "email": "joe@x.com" }, "to_address": "support@example.org",
+        "message_count": 1, "unread": true, "has_attachments": true, "last_at": last_at
+    })
+}
+
+fn detail() -> Value {
+    json!({
+        "thread": thread_summary("t_1", "inbox", 1000),
+        "messages": [{
+            "id": "m_1", "thread_id": "t_1", "outgoing": false,
+            "from": { "name": "Joe", "email": "joe@x.com" },
+            "to": [{ "name": "", "email": "support@example.org" }, { "name": "Ops", "email": "ops@x.com" }],
+            "cc": [{ "name": "", "email": "hi@example.com" }], "reply_to": [],
+            "subject": "Order", "date": 1000, "text": null,
+            "html": "<p>Where is <b>it</b>?</p>", "message_id": "<a@x>",
+            "attachments": [{ "id": "a_1", "filename": "menu card.pdf", "mime_type": "application/pdf", "size": 4, "inline": false }],
+            "auth": { "dmarc": "fail", "spf": "pass", "dkim": null, "spam_score": null }
+        }]
+    })
+}
+
+fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
+    let p = req.path.as_str();
+    match (req.method.as_str(), p) {
+        ("GET", "/health") => ok(json!({ "ok": true })),
+        ("GET", "/api/counts") => ok(json!({ "screener": 1, "inbox": 2, "inbox_unread": 1 })),
+        ("GET", _) if p.starts_with("/api/threads?") => {
+            if p.contains("since=2000") {
+                ok(json!({ "threads": [thread_summary("t_new", "screener", 3000)] }))
+            } else if p.contains("since=3000") {
+                ok(json!({ "threads": [] }))
+            } else if p.contains("limit=1&") || p.ends_with("limit=1") {
+                ok(json!({ "threads": [thread_summary("t_top", "inbox", 2000)] }))
+            } else {
+                ok(json!({ "threads": [thread_summary("t_1", "inbox", 1000), thread_summary("t_2", "inbox", 900)] }))
+            }
+        }
+        ("GET", "/api/threads/t_1") => ok(detail()),
+        ("GET", "/api/identities") => ok(json!({
+            "identities": [{ "name": "Me", "email": "hi@example.com" }, { "name": "Support", "email": "support@example.org" }],
+            "default": { "name": "Me", "email": "hi@example.com" }
+        })),
+        ("GET", "/api/screener") => ok(json!({ "senders": [{ "email": "new@y.com", "name": "New", "thread_count": 2, "last_subject": "Hello", "last_at": 5 }] })),
+        ("GET", "/api/mailboxes") => ok(json!({ "mailboxes": [{ "email": "hi@example.com", "name": "Me", "screen": true, "position": 0 }] })),
+        ("GET", "/api/settings") => ok(json!({ "settings": { "forward_to": "" } })),
+        ("GET", "/api/attachments/a_1") => (200, b"%PDF".to_vec(), "application/pdf"),
+        ("POST", "/api/threads/t_1/move") | ("POST", "/api/threads/t_1/read") => ok(json!({ "ok": true })),
+        ("POST", "/api/senders/new%40y.com") => ok(json!({ "ok": true, "moved": 2 })),
+        ("POST", "/api/send") => ok(json!({ "ok": true, "thread_id": "t_1", "message": null })),
+        ("PUT", "/api/mailboxes/support%40x.com") => ok(json!({ "ok": true, "mailbox": { "email": "support@x.com", "name": "X", "screen": false, "position": 1 } })),
+        ("PATCH", "/api/settings") => ok(json!({ "ok": true, "settings": { "forward_to": req.body["forward_to"] } })),
+        _ => (404, br#"{"error":"not found"}"#.to_vec(), "application/json"),
+    }
+}
+
+fn temp_home(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("cloudmail-it-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn cloudmail(m: &Mock, args: &[&str], stdin: Option<&str>) -> Output {
+    let home = temp_home("home");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+    cmd.args(args)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("HOME", &home)
+        .env("CLOUDMAIL_API_URL", &m.url)
+        .env("CLOUDMAIL_API_TOKEN", "test-token")
+        .env_remove("CLOUD_MAIL_API_URL")
+        .env_remove("CLOUD_MAIL_API_TOKEN")
+        .current_dir(&home)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    if let Some(s) = stdin {
+        child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+    }
+    child.wait_with_output().unwrap()
+}
+
+fn json_out(o: &Output) -> Value {
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+}
+
+fn requests(m: &Mock) -> Vec<Req> {
+    m.log.lock().unwrap().clone()
+}
+
+#[test]
+fn inbox_envelope_and_selectors() {
+    let m = mock(Box::new(default_handler));
+    let o = cloudmail(&m, &["inbox"], None);
+    assert!(o.status.success());
+    let v = json_out(&o);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["summary"], "2 threads in inbox");
+    assert_eq!(v["data"][0]["id"], "t_1");
+    assert!(v["breadcrumbs"].as_array().unwrap().iter().any(|b| b["command"] == "cloudmail thread read <thread-id>"));
+
+    let o = cloudmail(&m, &["inbox", "--ids-only"], None);
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "t_1\nt_2\n");
+    let o = cloudmail(&m, &["inbox", "--count"], None);
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "2");
+    assert!(requests(&m).iter().any(|r| r.path == "/api/threads?folder=inbox&limit=25"));
+}
+
+#[test]
+fn thread_read_strips_html_and_flags_dmarc() {
+    let m = mock(Box::new(default_handler));
+    let v = json_out(&cloudmail(&m, &["thread", "read", "t_1"], None));
+    let msg = &v["data"]["messages"][0];
+    assert_eq!(msg["text"], "Where is it?");
+    assert!(msg.get("html").is_none());
+    assert_eq!(msg["auth"]["dmarc"], "fail");
+    assert!(!requests(&m).iter().any(|r| r.path.ends_with("/read")), "read must not mark read by default");
+
+    let o = cloudmail(&m, &["thread", "read", "t_1", "--styled"], None);
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(text.contains("sender not verified (DMARC fail)"), "{text}");
+    assert!(text.contains("menu card.pdf"));
+
+    cloudmail(&m, &["thread", "read", "t_1", "--mark-read"], None);
+    assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/read" && r.body["unread"] == false));
+}
+
+#[test]
+fn screener_and_bulk_actions() {
+    let m = mock(Box::new(default_handler));
+    let v = json_out(&cloudmail(&m, &["screener"], None));
+    assert_eq!(v["data"][0]["email"], "new@y.com");
+
+    let v = json_out(&cloudmail(&m, &["screener", "approve", "New <New@Y.com>"], None));
+    assert_eq!(v["data"][0]["moved"], 2);
+    let r = requests(&m).into_iter().find(|r| r.path == "/api/senders/new%40y.com").unwrap();
+    assert_eq!(r.body["status"], "approved");
+
+    let o = cloudmail(&m, &["thread", "archive", "t_1", "t_missing"], None);
+    assert!(o.status.success());
+    let v = json_out(&o);
+    assert_eq!(v["data"]["done"], json!(["t_1"]));
+    assert_eq!(v["data"]["failed"][0]["code"], "not_found");
+    assert_eq!(v["summary"], "1 thread archived, 1 failed");
+
+    let o = cloudmail(&m, &["thread", "delete", "t_1"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json_out(&o)["error"]["code"], "confirmation_required");
+    assert!(!requests(&m).iter().any(|r| r.method == "DELETE"));
+}
+
+#[test]
+fn reply_uses_receiving_mailbox_and_threads() {
+    let m = mock(Box::new(default_handler));
+    let v = json_out(&cloudmail(&m, &["reply", "t_1", "--all", "-m", "On its way", "--dry-run"], None));
+    let req = &v["data"]["request"];
+    assert_eq!(req["from"], "support@example.org");
+    assert_eq!(req["to"], json!(["Joe <joe@x.com>"]));
+    assert_eq!(req["cc"], json!(["Ops <ops@x.com>"]));
+    assert_eq!(req["subject"], "Re: Order");
+    assert_eq!(req["reply_to_message_id"], "m_1");
+    assert!(req["text"].as_str().unwrap().starts_with("On its way\n\nOn "));
+    assert!(req["text"].as_str().unwrap().contains("> Where is it?"));
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "dry run must not send");
+
+    let o = cloudmail(&m, &["reply", "t_1", "--no-quote"], Some("Thanks!\n"));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
+    assert_eq!(sent.body["text"], "Thanks!\n");
+    assert_eq!(sent.body["reply_to_message_id"], "m_1");
+}
+
+#[test]
+fn compose_from_stdin_and_mailbox_settings() {
+    let m = mock(Box::new(default_handler));
+    let o = cloudmail(&m, &["compose", "--to", "a@b.com, \"Last, First\" <c@d.com>", "--subject", "Hi"], Some("Body\n"));
+    assert!(o.status.success());
+    let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
+    assert_eq!(sent.body["to"], json!(["a@b.com", "\"Last, First\" <c@d.com>"]));
+    assert_eq!(sent.body["text"], "Body\n");
+
+    let o = cloudmail(&m, &["mailbox", "add", "support@x.com", "--name", "X", "--direct"], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let put = requests(&m).into_iter().find(|r| r.method == "PUT").unwrap();
+    assert_eq!(put.body, json!({ "name": "X", "screen": false }));
+
+    let v = json_out(&cloudmail(&m, &["settings", "set", "forward-to", ""], None));
+    assert_eq!(v["data"]["forward_to"], "");
+    assert!(requests(&m).iter().any(|r| r.method == "PATCH" && r.body == json!({ "forward_to": "" })));
+}
+
+#[test]
+fn watch_streams_jsonl_from_newest_activity() {
+    let m = mock(Box::new(default_handler));
+    let o = cloudmail(&m, &["watch", "--interval", "0", "--max-polls", "2"], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lines: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["event"], "thread");
+    assert_eq!(lines[0]["thread"]["id"], "t_new");
+    let paths: Vec<String> = requests(&m).into_iter().map(|r| r.path).collect();
+    assert!(paths.iter().any(|p| p.contains("since=2000")));
+    assert!(paths.iter().any(|p| p.contains("since=3000")));
+}
+
+#[test]
+fn attachment_save_uses_server_filename() {
+    let m = mock(Box::new(default_handler));
+    let dir = temp_home("att");
+    let out = format!("{}/", dir.display());
+    let v = json_out(&cloudmail(&m, &["attachment", "save", "a_1", "-o", &out], None));
+    let path = PathBuf::from(v["data"]["path"].as_str().unwrap());
+    assert_eq!(path.file_name().unwrap(), "menu card.pdf");
+    assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
+}
+
+#[test]
+fn errors_have_codes_and_exit_statuses() {
+    let m = mock(Box::new(default_handler));
+    let o = cloudmail(&m, &["thread", "read", "t_nope"], None);
+    assert_eq!(o.status.code(), Some(4));
+    assert_eq!(json_out(&o)["error"]["message"], "no thread t_nope");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+    let home = temp_home("bad");
+    let o = cmd
+        .args(["inbox"])
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("CLOUDMAIL_API_URL", &m.url)
+        .env("CLOUDMAIL_API_TOKEN", "wrong")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(3));
+    assert_eq!(json_out(&o)["error"]["code"], "unauthorized");
+
+    let empty = temp_home("empty");
+    let o = Command::new(env!("CARGO_BIN_EXE_cloudmail"))
+        .args(["status"])
+        .env("XDG_CONFIG_HOME", empty.join("config"))
+        .env("HOME", &empty)
+        .env_remove("CLOUDMAIL_API_URL")
+        .env_remove("CLOUDMAIL_API_TOKEN")
+        .env_remove("CLOUD_MAIL_API_URL")
+        .env_remove("CLOUD_MAIL_API_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(3));
+    assert_eq!(json_out(&o)["error"]["code"], "not_configured");
+
+    let o = cloudmail(&m, &["inbox", "--nope"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json_out(&o)["error"]["code"], "usage");
+}
+
+#[test]
+fn self_documentation() {
+    let m = mock(Box::new(default_handler));
+    let v = json_out(&cloudmail(&m, &["commands"], None));
+    let cmds: Vec<&str> = v["data"]["commands"].as_array().unwrap().iter().map(|c| c["command"].as_str().unwrap()).collect();
+    for c in ["cloudmail inbox", "cloudmail thread read", "cloudmail screener approve", "cloudmail reply", "cloudmail watch", "cloudmail setup", "cloudmail mailbox add"] {
+        assert!(cmds.contains(&c), "missing {c}");
+    }
+    let o = cloudmail(&m, &["reply", "--help"], None);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Examples:"));
+    let v = json_out(&cloudmail(&m, &["agent-guide"], None));
+    assert!(v["data"].as_str().unwrap().contains("# cloudmail for agents"));
+    let v = json_out(&cloudmail(&m, &[], None));
+    assert_eq!(v["data"]["configured"], true);
+}

@@ -1,0 +1,360 @@
+//! Self-documentation: examples attached to every command, the `commands` tree and `agent-guide`.
+
+use clap::{ArgAction, Command};
+use serde_json::{Value, json};
+
+use crate::output::exit;
+
+/// Examples per command path. A test checks that every command has one and every key is real.
+pub const EXAMPLES: &[(&str, &[&str])] = &[
+    ("status", &["cloudmail status", "cloudmail status --json"]),
+    ("inbox", &["cloudmail inbox", "cloudmail inbox --unread --limit 10", "cloudmail inbox --ids-only"]),
+    ("archive", &["cloudmail archive --limit 50"]),
+    ("sent", &["cloudmail sent"]),
+    ("blocked", &["cloudmail blocked"]),
+    ("threads", &["cloudmail threads list --folder all --since 1790000000000"]),
+    ("threads list", &["cloudmail threads list --folder screener", "cloudmail threads list --folder all --limit 100"]),
+    ("search", &["cloudmail search invoice", "cloudmail search \"coffee next week\" --json"]),
+    ("thread", &["cloudmail thread read t_ad7e6e0b172e481aaa3c"]),
+    ("thread read", &["cloudmail thread read t_ad7e6e0b172e481aaa3c", "cloudmail thread read t_ad7e6e0b172e481aaa3c --mark-read --json"]),
+    ("thread archive", &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"]),
+    ("thread unarchive", &["cloudmail thread unarchive t_ad7e6e0b172e481aaa3c"]),
+    ("thread unread", &["cloudmail thread unread t_ad7e6e0b172e481aaa3c"]),
+    ("thread markread", &["cloudmail thread markread t_1 t_2"]),
+    ("thread delete", &["cloudmail thread delete t_ad7e6e0b172e481aaa3c --yes"]),
+    ("screener", &["cloudmail screener", "cloudmail screener --json"]),
+    ("screener list", &["cloudmail screener list --ids-only"]),
+    ("screener approve", &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"]),
+    ("screener block", &["cloudmail screener block spam@bad.biz"]),
+    ("senders", &["cloudmail senders", "cloudmail senders --status blocked"]),
+    (
+        "compose",
+        &[
+            "cloudmail compose --to alice@example.com --subject \"Lunch?\" -m \"Tuesday at noon?\"",
+            "echo \"Report attached below\" | cloudmail compose --to bob@x.com --subject Report --from support@example.com",
+            "cloudmail compose --to a@x.com --subject Test -m hi --dry-run",
+        ],
+    ),
+    (
+        "reply",
+        &[
+            "cloudmail reply t_ad7e6e0b172e481aaa3c -m \"Sounds good!\"",
+            "cloudmail reply t_ad7e6e0b172e481aaa3c --all --message-file reply.txt",
+            "cloudmail reply t_ad7e6e0b172e481aaa3c -m \"Thanks\" --dry-run --json",
+        ],
+    ),
+    ("attachment", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c"]),
+    ("attachment list", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c", "cloudmail attachment list t_ad7e6e0b172e481aaa3c --ids-only"]),
+    ("attachment save", &["cloudmail attachment save a_31d5cc4ab87b497b8b79", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o ~/Downloads/", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o - > menu.pdf"]),
+    ("raw", &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"]),
+    ("watch", &["cloudmail watch", "cloudmail watch --folder screener --interval 60", "cloudmail watch --json | while read -r line; do echo \"$line\" | jq .thread.subject; done"]),
+    ("mailbox", &["cloudmail mailbox list"]),
+    ("mailbox list", &["cloudmail mailbox list", "cloudmail mailbox list --json"]),
+    (
+        "mailbox add",
+        &[
+            "cloudmail mailbox add hi@example.com --name \"Jane Doe\"",
+            "cloudmail mailbox add support@example.com --name \"Example Support\" --direct --route",
+        ],
+    ),
+    ("mailbox set", &["cloudmail mailbox set support@example.com --screen false", "cloudmail mailbox set hi@example.com --position 0"]),
+    ("mailbox remove", &["cloudmail mailbox remove old@example.com --yes"]),
+    ("settings", &["cloudmail settings get"]),
+    ("settings get", &["cloudmail settings get --json"]),
+    ("settings set", &["cloudmail settings set forward-to me@elsewhere.com", "cloudmail settings set forward-to \"\""]),
+    ("config", &["cloudmail config show"]),
+    ("config show", &["cloudmail config show", "cloudmail config show --show-token --json"]),
+    ("config set", &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"]),
+    ("config path", &["cloudmail config path"]),
+    (
+        "setup",
+        &[
+            "cloudmail setup --dry-run --mailbox hi@example.com --mailbox support@example.com:direct",
+            "cloudmail setup --mailbox hi@example.com",
+            "cloudmail setup --name mymail --worker-dir ~/src/cloudmail/worker --mailbox hi@example.com --forward-to me@gmail.com",
+        ],
+    ),
+    ("commands", &["cloudmail commands", "cloudmail commands --json"]),
+    ("agent-guide", &["cloudmail agent-guide"]),
+];
+
+pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
+    EXAMPLES.iter().find(|(p, _)| *p == path).map(|(_, e)| *e)
+}
+
+/// Adds an "Examples:" section to every command's long help.
+pub fn with_examples(cmd: Command) -> Command {
+    fn walk(cmd: Command, prefix: &str) -> Command {
+        let names: Vec<String> = cmd.get_subcommands().map(|c| c.get_name().to_string()).collect();
+        let mut cmd = cmd;
+        for name in names {
+            let path = if prefix.is_empty() { name.clone() } else { format!("{prefix} {name}") };
+            cmd = cmd.mut_subcommand(&name, |sub| {
+                let sub = match examples_for(&path) {
+                    Some(ex) => {
+                        let text = ex.iter().map(|e| format!("  {e}")).collect::<Vec<_>>().join("\n");
+                        sub.after_long_help(format!("Examples:\n{text}"))
+                    }
+                    None => sub,
+                };
+                walk(sub, &path)
+            });
+        }
+        cmd
+    }
+    walk(cmd, "").after_long_help(
+        "Output: human-readable on a terminal, a JSON envelope when piped (--json forces it).\n\
+         Run `cloudmail commands` for every command with examples, `cloudmail agent-guide` for scripting.",
+    )
+}
+
+fn arg_json(arg: &clap::Arg) -> Value {
+    let takes_value = matches!(arg.get_action(), ArgAction::Set | ArgAction::Append);
+    let possible: Vec<String> = arg.get_possible_values().iter().map(|v| v.get_name().to_string()).collect();
+    let default: Vec<String> = arg.get_default_values().iter().map(|v| v.to_string_lossy().into_owned()).collect();
+    json!({
+        "name": arg.get_id().as_str(),
+        "long": arg.get_long().map(|l| format!("--{l}")),
+        "short": arg.get_short().map(|s| format!("-{s}")),
+        "positional": arg.is_positional(),
+        "required": arg.is_required_set(),
+        "takes_value": takes_value,
+        "multiple": matches!(arg.get_action(), ArgAction::Append) || arg.get_num_args().is_some_and(|n| n.max_values() > 1),
+        "possible_values": if possible.is_empty() { Value::Null } else { json!(possible) },
+        "default": if default.is_empty() { Value::Null } else { json!(default.join(",")) },
+        "help": arg.get_help().map(|h| h.to_string()),
+    })
+}
+
+fn visible_args(cmd: &Command) -> impl Iterator<Item = &clap::Arg> {
+    cmd.get_arguments()
+        .filter(|a| !a.is_hide_set() && !a.is_global_set() && !matches!(a.get_id().as_str(), "help" | "version"))
+}
+
+/// The command tree as JSON, leaves first-class, built from clap metadata.
+pub fn commands_json(root: &Command) -> Value {
+    fn walk(cmd: &Command, path: &str, out: &mut Vec<Value>) {
+        for sub in cmd.get_subcommands() {
+            let p = if path.is_empty() { sub.get_name().to_string() } else { format!("{path} {}", sub.get_name()) };
+            let usage = format!(
+                "cloudmail {p}{}",
+                visible_args(sub)
+                    .map(|a| {
+                        let name = if a.is_positional() {
+                            format!("<{}>", a.get_id().as_str().to_uppercase())
+                        } else {
+                            format!("--{}", a.get_long().unwrap_or(a.get_id().as_str()))
+                        };
+                        if a.is_required_set() { format!(" {name}") } else { format!(" [{name}]") }
+                    })
+                    .collect::<String>()
+            );
+            out.push(json!({
+                "command": format!("cloudmail {p}"),
+                "usage": usage,
+                "description": sub.get_about().map(|a| a.to_string()).unwrap_or_default(),
+                "has_subcommands": sub.has_subcommands(),
+                "args": visible_args(sub).map(arg_json).collect::<Vec<_>>(),
+                "examples": examples_for(&p).unwrap_or_default(),
+            }));
+            walk(sub, &p, out);
+        }
+    }
+    let mut commands = Vec::new();
+    walk(root, "", &mut commands);
+    let globals: Vec<Value> = root
+        .get_arguments()
+        .filter(|a| a.is_global_set())
+        .map(arg_json)
+        .collect();
+    json!({
+        "global_flags": globals,
+        "commands": commands,
+        "exit_codes": exit::TABLE.iter().map(|(c, d)| json!({ "code": c, "meaning": d })).collect::<Vec<_>>(),
+    })
+}
+
+pub fn commands_text(tree: &Value) -> String {
+    let mut out = String::from("cloudmail commands (run `cloudmail <command> --help` for details)\n");
+    for c in tree["commands"].as_array().into_iter().flatten() {
+        out.push_str(&format!("\n{}\n    {}\n", c["usage"].as_str().unwrap_or_default(), c["description"].as_str().unwrap_or_default()));
+        for e in c["examples"].as_array().into_iter().flatten() {
+            out.push_str(&format!("    $ {}\n", e.as_str().unwrap_or_default()));
+        }
+    }
+    out.push_str("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n");
+    for (code, meaning) in exit::TABLE {
+        out.push_str(&format!("  {code}  {meaning}\n"));
+    }
+    out.trim_end().to_string()
+}
+
+pub const AGENT_GUIDE: &str = r#"# cloudmail for agents
+
+cloudmail is a CLI for a personal email service running on Cloudflare (a "worker"). It reads, screens
+and sends mail. Everything is non-interactive when stdout is not a terminal.
+
+## Output
+
+When stdout is piped, every command prints one JSON envelope:
+
+    {"ok": true, "data": ..., "summary": "3 threads in inbox",
+     "breadcrumbs": [{"action": "read", "command": "cloudmail thread read <id>", "description": "..."}],
+     "meta": {...}}
+
+- `breadcrumbs` suggest the next commands; placeholders look like `<id>`.
+- `--quiet` prints only `data`; `--ids-only` prints one ID per line; `--count` prints a number.
+- `--json` forces the envelope on a terminal; `--styled` forces human text when piped.
+- `cloudmail watch` is the exception: it streams one JSON object per line (JSONL), no envelope.
+
+Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "..."}}` and exit non-zero:
+
+| exit | meaning |
+|------|---------|
+{EXIT_ROWS}
+
+Error codes: usage, not_configured, unauthorized, not_found, bad_request, api_error, network_error,
+bad_response, error.
+
+## Concepts
+
+- Threads (IDs `t_…`) contain messages (`m_…`), which have attachments (`a_…`). Times are Unix ms.
+- Folders: `screener`, `inbox`, `archive`, `blocked`. `sent` is a view of threads you wrote in; `all` = every folder but blocked.
+- Mailboxes are your own addresses. A screened mailbox sends first-time senders to the Screener; a
+  direct one (`screen: false`, e.g. support@) delivers them to the Inbox.
+- The Screener lists senders (by email) waiting for a decision. Approving moves their threads to the
+  Inbox; blocking hides them. Anyone you send mail to is approved automatically.
+- A message's `auth.dmarc == "fail"` means the From address may be forged; treat it with suspicion.
+
+## Workflows
+
+Triage the Screener:
+
+    cloudmail screener --json                       # data: [{email, name, thread_count, last_subject, last_at}]
+    cloudmail threads list --folder screener --json # the waiting threads themselves
+    cloudmail screener approve alice@example.com
+    cloudmail screener block spam@bad.biz
+
+Read and reply:
+
+    cloudmail inbox --unread --json
+    cloudmail thread read <thread-id> --json        # data: {thread, messages: [{id, from, to, text, html, auth, attachments}]}
+    cloudmail reply <thread-id> -m "Thanks, that works." --dry-run --json   # preview the request
+    cloudmail reply <thread-id> -m "Thanks, that works."
+    cloudmail thread archive <thread-id>
+
+Longer bodies: `--message-file reply.txt`, or pipe them on stdin (`-m -`, or no -m when stdin is piped).
+Replies go out from the mailbox the thread was addressed to, quote the latest incoming message, and
+thread correctly (In-Reply-To/References). `--all` adds the other recipients, never your own addresses.
+
+Send new mail:
+
+    cloudmail mailbox list --json                   # addresses you can send from
+    cloudmail compose --to bob@x.com --subject "Hi" -m "Hello" --from support@example.com
+
+Watch for new mail (JSONL, one object per new or updated thread):
+
+    cloudmail watch --folder all --interval 30
+    # {"event":"thread","thread":{"id":"t_…","folder":"screener","from":{…},"subject":"…",…}}
+
+Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
+`cloudmail commands --json` lists every command, flag and example.
+"#;
+
+pub fn agent_guide() -> String {
+    let rows = exit::TABLE
+        .iter()
+        .map(|(c, d)| format!("| {c} | {d} |"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn paths(cmd: &Command, prefix: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let p = if prefix.is_empty() { sub.get_name().to_string() } else { format!("{prefix} {}", sub.get_name()) };
+            out.push(p.clone());
+            paths(sub, &p, out);
+        }
+    }
+
+    #[test]
+    fn every_command_has_examples_and_no_stale_examples() {
+        let mut all = Vec::new();
+        paths(&crate::cli::Cli::command(), "", &mut all);
+        for p in &all {
+            assert!(examples_for(p).is_some(), "missing examples for `{p}`");
+        }
+        for (p, ex) in EXAMPLES {
+            assert!(all.iter().any(|a| a == p), "examples for unknown command `{p}`");
+            assert!(!ex.is_empty());
+            for e in *ex {
+                assert!(e.starts_with("cloudmail ") || e.contains("| cloudmail") || e.contains("| xargs cloudmail") || e.starts_with("echo "), "{e}");
+            }
+        }
+    }
+
+    #[test]
+    fn examples_parse() {
+        // Every example that is a plain `cloudmail …` invocation must parse with the real CLI.
+        for (_, ex) in EXAMPLES {
+            for e in *ex {
+                if !e.starts_with("cloudmail ") || e.contains('|') || e.contains('>') {
+                    continue;
+                }
+                let args = shell_split(e);
+                let res = crate::cli::Cli::command().try_get_matches_from(&args);
+                assert!(res.is_ok(), "example does not parse: {e}\n{}", res.unwrap_err());
+            }
+        }
+    }
+
+    fn shell_split(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quoted = false;
+        let mut has = false;
+        for ch in s.chars() {
+            match ch {
+                '"' => {
+                    quoted = !quoted;
+                    has = true;
+                }
+                ' ' if !quoted => {
+                    if has || !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                    has = false;
+                }
+                _ => cur.push(ch),
+            }
+        }
+        if has || !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+
+    #[test]
+    fn commands_tree_has_args_and_exit_codes() {
+        let tree = commands_json(&crate::cli::Cli::command());
+        let cmds = tree["commands"].as_array().unwrap();
+        let compose = cmds.iter().find(|c| c["command"] == "cloudmail compose").unwrap();
+        assert!(compose["args"].as_array().unwrap().iter().any(|a| a["long"] == "--to" && a["required"] == true));
+        assert!(!compose["examples"].as_array().unwrap().is_empty());
+        assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
+        assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
+    }
+
+    #[test]
+    fn guide_lists_exit_codes() {
+        let g = agent_guide();
+        assert!(g.contains("| 3 | not configured"));
+        assert!(!g.contains("{EXIT_ROWS}"));
+    }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "__WORKER_NAME__",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "__DATABASE_NAME__",
+      "database_id": "__DATABASE_ID__",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "__BUCKET_NAME__" }],
+  "send_email": [{ "name": "EMAIL" }]
+  // Secret: API_TOKEN (wrangler secret put API_TOKEN)
+}

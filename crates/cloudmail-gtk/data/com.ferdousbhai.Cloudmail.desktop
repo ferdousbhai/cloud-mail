@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Cloudmail
+Comment=Your own email on Cloudflare, with a screener
+Exec=cloudmail-gtk %u
+Icon=com.ferdousbhai.Cloudmail
+Terminal=false
+Categories=Network;Email;
+Keywords=email;mail;screener;
+MimeType=x-scheme-handler/mailto;
+StartupNotify=true
+StartupWMClass=com.ferdousbhai.Cloudmail

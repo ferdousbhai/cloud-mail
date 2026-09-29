@@ -1,0 +1,12 @@
+CREATE TABLE mailboxes (
+  email TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  screen INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

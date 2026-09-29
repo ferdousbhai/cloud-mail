@@ -1,0 +1,238 @@
+//! Status, orientation, mailboxes, settings, local config and the command reference.
+
+use clap::CommandFactory;
+use serde_json::json;
+
+use cloudmail_api::{MailboxUpdate, config};
+
+use crate::Ctx;
+use crate::cli::*;
+use crate::docs;
+use crate::mail::confirm;
+use crate::output::{CliError, CliResult, Response, bold, crumb, dim};
+use crate::render;
+use crate::setup;
+
+const TOP_COMMANDS: &[(&str, &str)] = &[
+    ("cloudmail inbox", "List the Inbox"),
+    ("cloudmail screener", "Senders waiting for a yes or no"),
+    ("cloudmail thread read <id>", "Read a thread"),
+    ("cloudmail reply <id> -m <text>", "Reply"),
+    ("cloudmail compose --to <email> --subject <s> -m <text>", "Write a new message"),
+    ("cloudmail search <words>", "Search all mail"),
+    ("cloudmail watch", "Stream new mail"),
+    ("cloudmail commands", "Every command, with examples"),
+    ("cloudmail agent-guide", "How to script cloudmail / use it from an AI agent"),
+];
+
+pub fn orientation(_ctx: &Ctx) -> Response {
+    let cfg = config::load();
+    let configured = cfg.is_ok();
+    let path = config::path();
+    let status_line = match &cfg {
+        Ok(c) => format!("Configured: {} (config {})", c.api_url, path.display()),
+        Err(_) => format!("Not configured yet: run `cloudmail setup`, or create {}", path.display()),
+    };
+    let mut human = format!(
+        "{} {}\nYour own email on Cloudflare: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
+        bold("cloudmail"),
+        env!("CARGO_PKG_VERSION"),
+        bold("Common commands:")
+    );
+    for (c, d) in TOP_COMMANDS {
+        human.push_str(&format!("  {c:<52} {}\n", dim(d)));
+    }
+    human.push_str("\nOutput is JSON when piped (or with --json). Run `cloudmail <command> --help` for details.");
+    let crumbs = TOP_COMMANDS.iter().map(|(c, d)| crumb(c.split_whitespace().nth(1).unwrap_or(""), c, d)).collect();
+    Response::new(
+        json!({
+            "name": "cloudmail",
+            "version": env!("CARGO_PKG_VERSION"),
+            "configured": configured,
+            "config_path": path,
+            "api_url": cfg.as_ref().ok().map(|c| c.api_url.clone()),
+        }),
+        if configured { "cloudmail is configured" } else { "cloudmail is not configured; run `cloudmail setup`" },
+    )
+    .human(human.trim_end())
+    .crumbs(crumbs)
+}
+
+pub fn status(ctx: &Ctx) -> CliResult {
+    let client = ctx.client()?;
+    client.health()?;
+    let counts = client.counts()?;
+    let mailboxes = client.mailboxes()?;
+    let settings = client.settings()?;
+    let summary = format!(
+        "{} unread of {} in the Inbox, {} in the Screener",
+        counts.inbox_unread,
+        counts.inbox,
+        counts.screener
+    );
+    let human = format!(
+        "Worker:     {} (ok)\nConfig:     {}\nInbox:      {} threads, {} unread\nScreener:   {} senders waiting\nMailboxes:  {}\nForwarding: {}",
+        client.base_url(),
+        config::path().display(),
+        counts.inbox,
+        counts.inbox_unread,
+        counts.screener,
+        mailboxes.len(),
+        if settings.forward_to.is_empty() { "off".to_string() } else { format!("a copy of every message goes to {}", settings.forward_to) },
+    );
+    let mut crumbs = vec![crumb("inbox", "cloudmail inbox", "List the Inbox")];
+    if counts.screener > 0 {
+        crumbs.insert(0, crumb("screener", "cloudmail screener", "Decide on waiting senders"));
+    }
+    Ok(Response::new(
+        json!({
+            "api_url": client.base_url(),
+            "config_path": config::path(),
+            "healthy": true,
+            "counts": counts,
+            "mailboxes": mailboxes.len(),
+            "forward_to": settings.forward_to,
+        }),
+        summary,
+    )
+    .human(human)
+    .crumbs(crumbs))
+}
+
+pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
+    let client = ctx.client()?;
+    match cmd {
+        MailboxCommand::List => {
+            let list = client.mailboxes()?;
+            let summary = format!("{} mailboxes", list.len());
+            let human = if list.is_empty() { "No mailboxes yet; add one with `cloudmail mailbox add <address>`".into() } else { render::mailboxes(&list) };
+            let ids = list.iter().map(|m| m.email.clone()).collect();
+            Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![
+                crumb("add", "cloudmail mailbox add <address> --route", "Add an address"),
+                crumb("set", "cloudmail mailbox set <address> --screen false", "Deliver an address straight to the Inbox"),
+            ]))
+        }
+        MailboxCommand::Add { email, name, direct, route } => {
+            let (addr, _) = setup::parse_mailbox_spec(&email)?;
+            let mailbox = client.put_mailbox(&addr, &MailboxUpdate { name, screen: Some(!direct), position: None })?;
+            let mut data = json!({ "mailbox": mailbox });
+            let mut summary = format!("Added {addr} ({})", if direct { "direct" } else { "screened" });
+            if route.route {
+                let r = setup::route_for_mailbox(&addr, &route)?;
+                summary.push_str(&format!("; routing: {}", r["status"].as_str().unwrap_or("")));
+                data["route"] = r;
+            }
+            let mut crumbs = vec![crumb("list", "cloudmail mailbox list", "List mailboxes")];
+            if !route.route {
+                crumbs.push(crumb("route", &format!("cloudmail mailbox add {addr} --route"), "Point the address's Email Routing rule at the worker"));
+            }
+            Ok(Response::new(data, summary).crumbs(crumbs))
+        }
+        MailboxCommand::Set { email, name, screen, position } => {
+            if name.is_none() && screen.is_none() && position.is_none() {
+                return Err(CliError::usage("nothing to change").hint("pass --name, --screen or --position"));
+            }
+            let email = email.to_ascii_lowercase();
+            if !client.mailboxes()?.iter().any(|m| m.email == email) {
+                return Err(CliError::not_found(format!("no mailbox {email}")).hint("add it with `cloudmail mailbox add`"));
+            }
+            let mailbox = client.put_mailbox(&email, &MailboxUpdate { name, screen, position })?;
+            Ok(Response::new(&mailbox, format!("Updated {email}")))
+        }
+        MailboxCommand::Remove { email, yes } => {
+            confirm(yes, &format!("Remove mailbox {email}? Mail to it will be screened as an unknown address."))?;
+            client.delete_mailbox(&email)?;
+            Ok(Response::new(json!({ "email": email }), format!("Removed {email}; its Email Routing rule was left in place")))
+        }
+    }
+}
+
+pub fn settings(ctx: &Ctx, cmd: SettingsCommand) -> CliResult {
+    let client = ctx.client()?;
+    let settings = match cmd {
+        SettingsCommand::Get => client.settings()?,
+        SettingsCommand::Set { key: SettingKey::ForwardTo, value } => client.update_settings(&json!({ "forward_to": value }))?,
+    };
+    let human = format!("forward_to: {}", if settings.forward_to.is_empty() { "(off)" } else { &settings.forward_to });
+    Ok(Response::new(&settings, "Worker settings").human(human))
+}
+
+pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
+    let path = config::path();
+    match cmd {
+        ConfigCommand::Path => Ok(Response::new(json!({ "path": path }), path.display().to_string())),
+        ConfigCommand::Show { show_token } => {
+            let file = config::read_file(&path)?.unwrap_or_default();
+            let effective = config::load().ok();
+            let token = effective.as_ref().map(|c| c.api_token.clone()).or(file.api_token.clone());
+            let shown_token = token.as_ref().map(|t| if show_token { t.clone() } else { redact(t) });
+            let env_override = ["CLOUDMAIL_API_URL", "CLOUDMAIL_API_TOKEN", "CLOUD_MAIL_API_URL", "CLOUD_MAIL_API_TOKEN"]
+                .iter()
+                .filter(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
+                .collect::<Vec<_>>();
+            let data = json!({
+                "path": path,
+                "exists": path.exists(),
+                "api_url": effective.as_ref().map(|c| c.api_url.clone()).or(file.api_url.clone()),
+                "api_token": shown_token,
+                "poll_seconds": effective.as_ref().map(|c| c.poll_seconds).or(file.poll_seconds),
+                "env_overrides": env_override,
+            });
+            let human = format!(
+                "path:         {}\napi_url:      {}\napi_token:    {}\npoll_seconds: {}{}",
+                path.display(),
+                data["api_url"].as_str().unwrap_or("(not set)"),
+                data["api_token"].as_str().unwrap_or("(not set)"),
+                data["poll_seconds"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| "(default 60)".into()),
+                if env_override.is_empty() { String::new() } else { format!("\nenv overrides: {}", env_override.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")) }
+            );
+            Ok(Response::new(data, format!("Config at {}", path.display())).human(human))
+        }
+        ConfigCommand::Set { key, value } => {
+            let mut file = config::read_file(&path)?.unwrap_or_default();
+            match key {
+                ConfigKey::ApiUrl => {
+                    if !value.starts_with("http://") && !value.starts_with("https://") {
+                        return Err(CliError::usage("api_url must start with https://"));
+                    }
+                    file.api_url = Some(value.trim_end_matches('/').to_string());
+                }
+                ConfigKey::ApiToken => file.api_token = Some(value),
+                ConfigKey::PollSeconds => {
+                    file.poll_seconds = Some(value.parse().map_err(|_| CliError::usage("poll_seconds must be a number"))?);
+                }
+            }
+            let written = config::save(&file)?;
+            Ok(Response::new(json!({ "path": written }), format!("Updated {}", written.display()))
+                .crumbs(vec![crumb("status", "cloudmail status", "Check the connection")]))
+        }
+    }
+}
+
+fn redact(t: &str) -> String {
+    if t.len() <= 8 { "********".into() } else { format!("{}…{}", &t[..4], &t[t.len() - 4..]) }
+}
+
+pub fn commands() -> Response {
+    let tree = docs::commands_json(&Cli::command());
+    let n = tree["commands"].as_array().map(|a| a.len()).unwrap_or(0);
+    let text = docs::commands_text(&tree);
+    let ids = tree["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["command"].as_str().map(str::to_string))
+        .collect();
+    Response::new(tree, format!("{n} commands")).human(text).ids(ids).crumbs(vec![crumb("guide", "cloudmail agent-guide", "Scripting and agent guide")])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_tokens() {
+        assert_eq!(redact("0123456789abcdef"), "0123…cdef");
+        assert_eq!(redact("short"), "********");
+    }
+}
