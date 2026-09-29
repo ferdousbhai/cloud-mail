@@ -171,7 +171,7 @@ impl Ui {
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
-        let hint = gtk::Label::builder().label("c compose · ? keys").xalign(0.0).build();
+        let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
         sidebar.append(&hint);
         wide_only.push(hint.clone().upcast());
@@ -250,7 +250,7 @@ impl Ui {
         reader.append(&webview);
 
         let placeholder = gtk::Label::builder()
-            .label("Nothing selected\n\nj / k to move · 1–4 to switch boxes · ? for all keys")
+            .label("Nothing selected\n\nj / k to move · 1–4 to switch boxes\n? for all keys")
             .justify(gtk::Justification::Center)
             .wrap(true)
             .margin_start(20)
@@ -665,9 +665,9 @@ impl Ui {
                 if threads.is_empty() {
                     String::new()
                 } else if unread > 0 {
-                    format!("{}{more} conversations · {unread} unread", threads.len())
+                    format!("{}{more} conversation{} · {unread} unread", threads.len(), plural(threads.len()))
                 } else {
-                    format!("{}{more} conversations", threads.len())
+                    format!("{}{more} conversation{}", threads.len(), plural(threads.len()))
                 }
             }
         };
@@ -734,7 +734,8 @@ impl Ui {
         let current = self.current.borrow();
         let Some(detail) = current.as_ref() else { return };
         let subject = if detail.thread.subject.trim().is_empty() { "(no subject)" } else { detail.thread.subject.as_str() };
-        self.reader_subject.set_label(subject);
+        // The full subject heads the message pane; the toolbar keeps only its buttons.
+        self.reader_subject.set_label("");
         self.reader_subject.set_tooltip_text(Some(subject));
         let folder = detail.thread.folder.as_str();
         self.archive_btn.set_visible(folder == "inbox");
@@ -1133,7 +1134,7 @@ impl Ui {
                         }
                     }
                     if new_senders.len() > 3 {
-                        util::notify("The Screener", &format!("{} new senders waiting", new_senders.len()));
+                        util::notify("The Screener", &format!("{} new sender{} waiting", new_senders.len(), plural(new_senders.len())));
                     } else {
                         for s in new_senders {
                             util::notify(
@@ -1251,4 +1252,8 @@ fn setup_page(msg: &str) -> gtk::Widget {
     let l = gtk::Label::builder().label(msg).selectable(true).wrap(true).xalign(0.0).build();
     b.append(&l);
     b.upcast()
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }

@@ -13,6 +13,8 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         let open = i == last || (i + 1 == last && detail.messages.len() <= 3);
         body.push_str(&message(m, open, &mut blocked_remote));
     }
+    let subject = if detail.thread.subject.trim().is_empty() { "(no subject)" } else { detail.thread.subject.as_str() };
+    let heading = format!(r#"<h1 class="subject">{}</h1>"#, escape_html(subject));
     let note = if blocked_remote && !remote_images {
         r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
     } else {
@@ -25,6 +27,7 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
 html, body {{ background: {bg}; color: {fg}; }}
 body {{ margin: 0; padding: 18px 22px 60px; font: 10.5pt "JetBrainsMono Nerd Font", "JetBrains Mono", monospace; }}
 a {{ color: {accent}; }}
+.subject {{ color: {bfg}; font-size: 13pt; font-weight: bold; margin: 0 0 16px; overflow-wrap: anywhere; }}
 .note {{ color: {dfg}; font-size: 9pt; margin: 0 0 14px; }}
 .msg {{ margin: 0 0 18px; border-bottom: 1px solid {lbg}; padding-bottom: 14px; }}
 .msg:last-child {{ border-bottom: none; }}
@@ -49,7 +52,7 @@ details[open] .preview {{ display: none; }}
   color: {fg}; text-decoration: none; background: {lbg}; }}
 .att:hover {{ border-color: {accent}; color: {bfg}; }}
 .att small {{ color: {dfg}; }}
-</style></head><body>{note}{body}</body></html>"#,
+</style></head><body>{heading}{note}{body}</body></html>"#,
         bg = p.background,
         fg = p.foreground,
         bfg = p.bright_foreground,
@@ -62,16 +65,23 @@ details[open] .preview {{ display: none; }}
 }
 
 fn addr_list(list: &[Address]) -> String {
-    list.iter().map(|a| escape_html(&a.formatted())).collect::<Vec<_>>().join(", ")
+    list.iter().map(|a| escape_html(&a.display())).collect::<Vec<_>>().join(", ")
+}
+
+fn addr_list_full(list: &[Address]) -> String {
+    list.iter().map(|a| a.formatted()).collect::<Vec<_>>().join(", ")
 }
 
 fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     let mut rcpt = String::new();
+    let mut rcpt_full = String::new();
     if !m.to.is_empty() {
         rcpt.push_str(&format!("to {}", addr_list(&m.to)));
+        rcpt_full.push_str(&format!("To: {}", addr_list_full(&m.to)));
     }
     if !m.cc.is_empty() {
         rcpt.push_str(&format!(" · cc {}", addr_list(&m.cc)));
+        rcpt_full.push_str(&format!("\nCc: {}", addr_list_full(&m.cc)));
     }
     let preview = m
         .text
@@ -80,7 +90,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         .unwrap_or_default();
     let preview: String = preview.chars().take(160).collect();
     let header = format!(
-        r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
+        r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
         name = escape_html(&m.from.display()),
         email = escape_html(&m.from.email),
         warn = if m.dmarc_failed() {
@@ -90,10 +100,20 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         },
         date = escape_html(&long_time(m.date)),
         preview = escape_html(&preview),
+        rcpt_full = escape_html(&rcpt_full),
     );
 
+    // The white card is for designed mail (newsletters, receipts). A personal note that
+    // also carries a trivial HTML part, including everything sent from here, reads
+    // better as text in the theme's colours.
+    let text = m.text.as_deref().filter(|t| !t.trim().is_empty());
+    let use_html = match (&m.html, text) {
+        (Some(html), Some(_)) => !html.trim().is_empty() && !m.outgoing && is_designed(html),
+        (Some(html), None) => !html.trim().is_empty(),
+        _ => false,
+    };
     let content = match (&m.html, &m.text) {
-        (Some(html), _) if !html.trim().is_empty() => {
+        (Some(html), _) if use_html => {
             if has_remote_images(html) {
                 *blocked_remote = true;
             }
@@ -125,6 +145,14 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         r#"<details class="msg"{open}><summary>{header}</summary>{content}{atts}</details>"#,
         open = if open { " open" } else { "" },
     )
+}
+
+/// Whether an HTML part has real layout or imagery, as opposed to text in a few divs.
+fn is_designed(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    ["<table", "<img", "<style", "background", "bgcolor", "<h1", "<h2", "<h3", "<hr", "<font", "<button", "<svg"]
+        .iter()
+        .any(|tag| lower.contains(tag))
 }
 
 fn has_remote_images(html: &str) -> bool {
@@ -254,6 +282,26 @@ mod tests {
     fn strips_scripts_and_template_breakouts() {
         let s = sanitize("<p>a</p><SCRIPT>x()</script><b>b</b></TEMPLATE>");
         assert_eq!(s, "<p>a</p><b>b</b>&lt;/template>");
+    }
+
+    #[test]
+    fn designed_mail_gets_the_card_and_notes_do_not() {
+        assert!(is_designed(r#"<table><tr><td><img src="x"></td></tr></table>"#));
+        assert!(is_designed("<style>.btn{}</style><p>hi</p>"));
+        assert!(!is_designed(r#"<div style="font-family: sans-serif; white-space: pre-wrap;">Shipped!</div>"#));
+        assert!(!is_designed(r#"<div dir="ltr">7 works!</div><blockquote class="gmail_quote">x</blockquote>"#));
+    }
+
+    #[test]
+    fn sent_mail_reads_as_text_even_with_an_html_part() {
+        let m = Message {
+            outgoing: true,
+            text: Some("Shipped!".into()),
+            html: Some("<table><tr><td>Shipped!</td></tr></table>".into()),
+            ..Default::default()
+        };
+        let out = message(&m, true, &mut false);
+        assert!(!out.contains("paper") && out.contains("Shipped!"));
     }
 
     #[test]

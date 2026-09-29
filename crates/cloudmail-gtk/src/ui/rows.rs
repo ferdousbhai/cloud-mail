@@ -20,7 +20,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     let dot = label(if t.unread { "●" } else { " " }, "unread-dot");
     top.append(&dot);
     let who = t.from.as_ref().map(|a| a.display()).unwrap_or_else(|| "(unknown)".into());
-    let who = if sent_view && t.message_count > 1 { format!("{who} ({})", t.message_count) } else { who };
+    let who = if t.message_count > 1 { format!("{who} ({})", t.message_count) } else { who };
     let sender = label(&who, "sender");
     sender.set_hexpand(true);
     top.append(&sender);
@@ -86,7 +86,9 @@ pub fn sender_row(s: &PendingSender) -> SenderRow {
     top.append(&name);
     top.append(&label(&short_time(s.last_at), "time"));
     text.append(&top);
-    text.append(&label(&s.email, "snippet"));
+    if s.display() != s.email {
+        text.append(&label(&s.email, "snippet"));
+    }
     let count = if s.thread_count > 1 { format!("{} emails · ", s.thread_count) } else { String::new() };
     text.append(&label(
         &format!("{count}{}", s.last_subject.as_deref().unwrap_or("(no subject)")),
