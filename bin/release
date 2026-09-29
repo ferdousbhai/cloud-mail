@@ -1,7 +1,7 @@
 #!/bin/bash
 # Publish the signed [cloudmail] pacman repository for a release:
 #
-#   bin/release 0.1.0          # the tag v0.1.0 must already exist on GitHub
+#   bin/release 0.1.2          # tag v0.1.2 pushed, its GitHub release created as a draft
 #
 # Builds the package from the tag's GitHub source archive with makepkg, signs
 # it and the repository database with the package-signing key (the one Ghost
@@ -51,6 +51,12 @@ gh release upload "$tag" --repo "$gh_repo" --clobber \
   "$repo.db" "$repo.db.sig" "$repo.db.tar.gz" "$repo.db.tar.gz.sig" \
   "$repo.files" "$repo.files.sig" "$repo.files.tar.gz" "$repo.files.tar.gz.sig" \
   "$repo-signing-key.asc" install.sh
+
+# A release is drafted first so `releases/latest` (and the one-liner) keeps
+# serving the previous one until this one carries its signed repository.
+if [[ "$(gh release view "$tag" --repo "$gh_repo" --json isDraft --jq .isDraft)" == true ]]; then
+  gh release edit "$tag" --repo "$gh_repo" --draft=false --latest
+fi
 
 cd - >/dev/null
 bin/verify-release "$version"
