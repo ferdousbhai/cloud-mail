@@ -254,13 +254,63 @@ impl Wrangler {
     }
 }
 
+/// Where packages install the worker source (read-only).
+const PACKAGED_WORKER_DIRS: &[&str] = &["/usr/share/cloudmail/worker", "/usr/local/share/cloudmail/worker"];
+
+fn is_worker_dir(dir: &Path) -> bool {
+    dir.join("wrangler.template.jsonc").exists() || dir.join("wrangler.jsonc").exists()
+}
+
+/// `--worker-dir`, else `./worker` in a clone, else a writable copy of the packaged worker in
+/// `~/.local/share/cloudmail/worker` (refreshed on each run, keeping the generated wrangler.jsonc and node_modules).
 pub fn resolve_worker_dir(flag: Option<&Path>) -> CliResult<PathBuf> {
-    let dir = flag.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("worker"));
-    if dir.join("wrangler.template.jsonc").exists() || dir.join("wrangler.jsonc").exists() {
-        return Ok(dir);
+    if let Some(dir) = flag {
+        if is_worker_dir(dir) {
+            return Ok(dir.to_path_buf());
+        }
+        return Err(CliError::usage(format!("{} is not a cloudmail worker directory", dir.display()))
+            .hint("pass the worker/ directory of a cloudmail checkout"));
     }
-    Err(CliError::usage(format!("{} is not a cloudmail worker directory", dir.display()))
-        .hint("run from a clone of the cloudmail repository (git clone https://github.com/ferdousbhai/cloud-mail), or pass --worker-dir"))
+    let local = PathBuf::from("worker");
+    if is_worker_dir(&local) {
+        return Ok(local);
+    }
+    if let Some(packaged) = PACKAGED_WORKER_DIRS.iter().map(Path::new).find(|d| is_worker_dir(d)) {
+        let data = dirs::data_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"));
+        let dest = data.join("cloudmail").join("worker");
+        copy_tree(packaged, &dest)?;
+        return Ok(dest);
+    }
+    Err(CliError::usage("couldn't find the cloudmail worker source")
+        .hint("install the cloudmail package, run from a clone (git clone https://github.com/ferdousbhai/cloud-mail), or pass --worker-dir"))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> CliResult<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn wait_until_live(client: &Client) -> CliResult<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        match client.counts() {
+            Ok(_) => return Ok(()),
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_secs(3)),
+            Err(e) => {
+                return Err(CliError::generic(format!("the worker was deployed but isn't answering yet: {e}"))
+                    .hint("wait a minute, then run `cloudmail status`; re-running setup is safe"));
+            }
+        }
+    }
 }
 
 // ---------- routing one address ----------
@@ -482,8 +532,16 @@ pub fn run(args: &SetupArgs) -> CliResult {
         token
     };
 
-    // 7. mailboxes and routes
+    // 7. a new workers.dev hostname and secret take a few seconds to go live
     let client = Client::new(&Config { api_url: url.clone(), api_token: token, poll_seconds: 60 });
+    if args.dry_run {
+        w.record("wait for the worker", "planned", None, Some(url.clone()));
+    } else {
+        wait_until_live(&client)?;
+        w.record("wait for the worker", "done", None, Some(url.clone()));
+    }
+
+    // 8. mailboxes and routes
     let mut routes = Vec::new();
     let (mut sending, mut routing) = (None, None);
     for (addr, screen) in &mailboxes {
