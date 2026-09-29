@@ -8,31 +8,30 @@ url="https://github.com/ferdousbhai/cloud-mail"
 license=('MIT')
 depends=('gtk4' 'webkitgtk-6.0' 'glib2' 'gcc-libs' 'glibc')
 makedepends=('cargo')
-options=('!lto')  # makepkg's C LTO breaks ring's assembly objects
+options=('!debug' '!lto')  # makepkg's C LTO breaks ring's assembly objects
 optdepends=(
   'npm: needed by `cloudmail setup` to deploy the worker with wrangler'
   'libnotify: new-mail notifications in cloudmail-gtk'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('186bbbf554677f0e41d3080c10e0e6654a25ec380a3a69854fe21f1f650afbce')
 
 _srcdir() { echo "$srcdir/cloud-mail-$pkgver"; }
 
 prepare() {
   cd "$(_srcdir)"
-  export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
 }
 
 build() {
   cd "$(_srcdir)"
-  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  export CARGO_TARGET_DIR=target
   cargo build --frozen --release -p cloudmail -p cloudmail-gtk
 }
 
 check() {
   cd "$(_srcdir)"
-  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  export CARGO_TARGET_DIR=target
   cargo test --frozen -p cloudmail -p cloudmail-api
 }
 
