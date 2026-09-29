@@ -14,7 +14,7 @@ optdepends=(
   'libnotify: new-mail notifications in cloudmail-gtk'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('186bbbf554677f0e41d3080c10e0e6654a25ec380a3a69854fe21f1f650afbce')
+sha256sums=('SKIP')  # bin/release pins the tag archive's checksum when it builds
 
 _srcdir() { echo "$srcdir/cloud-mail-$pkgver"; }
 

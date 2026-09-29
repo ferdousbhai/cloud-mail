@@ -1,0 +1,56 @@
+#!/bin/bash
+# Publish the signed [cloudmail] pacman repository for a release:
+#
+#   bin/release 0.1.0          # the tag v0.1.0 must already exist on GitHub
+#
+# Builds the package from the tag's GitHub source archive with makepkg, signs
+# it and the repository database with the package-signing key (the one Ghost
+# and iCloud for Omarchy use; it must be in this machine's keyring, and gpg
+# asks for its passphrase), and attaches the repository, the public key and
+# install.sh to the GitHub release, which `releases/latest/download` serves.
+# Then bin/verify-release installs it in a clean Arch container.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+version="${1:?usage: bin/release <version>}"
+tag="v$version"
+gh_repo=ferdousbhai/cloud-mail
+repo=cloudmail
+fingerprint=35C47A06567940B6796B4D0F9B3C7BDF85268B31
+
+gpg --batch --list-secret-keys "$fingerprint" >/dev/null 2>&1 \
+  || { echo "The package-signing key $fingerprint is not in this keyring." >&2; exit 1; }
+gh release view "$tag" --repo "$gh_repo" >/dev/null \
+  || { echo "No GitHub release $tag; tag and publish it first." >&2; exit 1; }
+bash packaging/repo/test.sh
+
+out="target/release-repo/$version"
+rm -rf "$out" && mkdir -p "$out/build"
+
+# Render the PKGBUILD for this version, pinned to the tag archive's checksum.
+archive_url="https://github.com/$gh_repo/archive/refs/tags/$tag.tar.gz"
+sum="$(curl -fsSL "$archive_url" | sha256sum | cut -d' ' -f1)"
+sed -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" \
+  -e "s/^sha256sums=.*/sha256sums=('$sum')/" \
+  packaging/aur/cloudmail/PKGBUILD > "$out/build/PKGBUILD"
+
+(cd "$out/build" && GPGKEY="$fingerprint" PKGDEST="$PWD/.." makepkg --force --cleanbuild --sign --noconfirm)
+
+cd "$out"
+pkg="$(ls ./cloudmail-"$version"-*.pkg.tar.zst)"
+repo-add --sign --key "$fingerprint" --verify "$repo.db.tar.gz" "$pkg"
+# repo-add leaves $repo.db and $repo.files as symlinks; releases need files.
+for f in "$repo.db" "$repo.db.sig" "$repo.files" "$repo.files.sig"; do
+  cp --remove-destination "$(readlink -f "$f")" "$f"
+done
+gpg --armor --export "$fingerprint" > "$repo-signing-key.asc"
+cp ../../../packaging/repo/install.sh install.sh
+
+gh release upload "$tag" --repo "$gh_repo" --clobber \
+  "$pkg" "$pkg.sig" \
+  "$repo.db" "$repo.db.sig" "$repo.db.tar.gz" "$repo.db.tar.gz.sig" \
+  "$repo.files" "$repo.files.sig" "$repo.files.tar.gz" "$repo.files.tar.gz.sig" \
+  "$repo-signing-key.asc" install.sh
+
+cd - >/dev/null
+bin/verify-release "$version"

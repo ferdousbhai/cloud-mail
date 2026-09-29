@@ -17,6 +17,6 @@ pkgbase = cloudmail
 	options = !debug
 	options = !lto
 	source = cloudmail-0.1.0.tar.gz::https://github.com/ferdousbhai/cloud-mail/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = 186bbbf554677f0e41d3080c10e0e6654a25ec380a3a69854fe21f1f650afbce
+	sha256sums = SKIP
 
 pkgname = cloudmail
