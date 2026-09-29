@@ -38,6 +38,14 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 
 ## Install
 
+On Arch / Omarchy (AUR — also in Omarchy's *Install › AUR* menu):
+
+```sh
+yay -S cloudmail                # cloudmail (alias: cmail), cloudmail-gtk, and the worker for `cloudmail setup`
+```
+
+From source:
+
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
 ./install.sh                    # installs cloudmail (alias: cmail) + cloudmail-gtk to ~/.local/bin

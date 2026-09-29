@@ -8,6 +8,7 @@ url="https://github.com/ferdousbhai/cloud-mail"
 license=('MIT')
 depends=('gtk4' 'webkitgtk-6.0' 'glib2' 'gcc-libs' 'glibc')
 makedepends=('cargo')
+options=('!lto')  # makepkg's C LTO breaks ring's assembly objects
 optdepends=(
   'npm: needed by `cloudmail setup` to deploy the worker with wrangler'
   'libnotify: new-mail notifications in cloudmail-gtk'

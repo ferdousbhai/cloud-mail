@@ -1,0 +1,21 @@
+pkgbase = cloudmail
+	pkgdesc = Screened email on your own domains, running in your Cloudflare account (CLI + GTK app)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/ferdousbhai/cloud-mail
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = gtk4
+	depends = webkitgtk-6.0
+	depends = glib2
+	depends = gcc-libs
+	depends = glibc
+	optdepends = npm: needed by `cloudmail setup` to deploy the worker with wrangler
+	optdepends = libnotify: new-mail notifications in cloudmail-gtk
+	options = !lto
+	source = cloudmail-0.1.0.tar.gz::https://github.com/ferdousbhai/cloud-mail/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = cloudmail
