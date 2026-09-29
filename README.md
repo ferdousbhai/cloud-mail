@@ -38,12 +38,19 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 
 ## Install
 
-On Omarchy, once the package lands in the Omarchy repository
-([omacom/omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724)), pick **Cloudmail** in
-*Install › Package*, or `sudo pacman -S cloudmail`. The package ships `cloudmail` (alias `cmail`),
-`cloudmail-gtk`, and the worker used by `cloudmail setup`.
+On Omarchy or any Arch Linux, from the signed package repository (updates then arrive with
+`omarchy update`):
 
-Until then, from source:
+```sh
+curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
+```
+
+It installs `cloudmail` (alias `cmail`), `cloudmail-gtk`, and the worker used by `cloudmail setup`.
+Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu
+([omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724),
+[omarchy#13763](https://github.com/omacom/omarchy/pull/13763)).
+
+From source:
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
@@ -102,6 +109,13 @@ nothing ever prompts.
 cloudmail agent-guide         # concepts, output format, exit codes, workflows
 cloudmail commands --json     # every command, flag and example
 ```
+
+## Releasing
+
+`bin/release <version>` builds the tagged release with makepkg, signs the package and the
+`[cloudmail]` repository database with the package-signing key (gpg asks for its passphrase),
+attaches them to the GitHub release with `install.sh`, and then `bin/verify-release` installs it
+with the public one-liner in a clean Arch container.
 
 ## Development
 
