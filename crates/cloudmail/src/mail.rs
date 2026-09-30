@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use cloudmail_api::text::{bare_email, html_to_text, human_size, quote, reply_subject, short_time, split_addresses, unused_path};
-use cloudmail_api::{ErrorKind, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
+use cloudmail_api::{ErrorKind, Mail, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
 
 use crate::Ctx;
 use crate::cli::*;
@@ -37,9 +37,18 @@ fn thread_crumbs() -> Vec<output::Breadcrumb> {
     ]
 }
 
+/// A folder only a linked account has, asked for without one.
+fn needs_account(mail: &Mail, folder: Folder) -> CliResult<()> {
+    if mail.knows_folder(folder.as_str()) {
+        return Ok(());
+    }
+    Err(CliError::usage(format!("{} is a HEY box, and no HEY account is linked", folder.arg())).hint("link one with `cloudmail account add hey`"))
+}
+
 pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
-    let client = ctx.client()?;
-    let mut threads = client.list_threads(&ThreadQuery {
+    let mail = ctx.mail()?;
+    needs_account(mail, folder)?;
+    let listing = mail.list(&ThreadQuery {
         folder: folder.as_str().into(),
         q: None,
         before: a.before,
@@ -47,9 +56,10 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
         limit: a.limit,
         unread: a.unread,
     })?;
+    let mut threads = listing.threads;
     // The page as the worker returned it decides whether there is more; an older worker that
     // ignores `unread=1` is filtered here too.
-    let full_page = threads.len() as u32 >= a.limit;
+    let full_page = listing.more || threads.len() as u32 >= a.limit;
     let oldest = threads.last().map(|t| t.last_at);
     if a.unread {
         threads.retain(|t| t.unread);
@@ -57,12 +67,16 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
     let where_ = match folder {
         Folder::All => "all folders",
         Folder::Sent => "Sent",
+        Folder::Feed => "The Feed",
+        Folder::PaperTrail => "Paper Trail",
+        Folder::SetAside => "Set Aside",
+        Folder::ReplyLater => "Reply Later",
         f => f.as_str(),
     };
     let summary = format!("{} in {where_}", plural(threads.len(), "thread"));
     let mut crumbs = thread_crumbs();
     if full_page && let Some(before) = oldest {
-        let mut next = format!("cloudmail threads list --folder {} --before {before} --limit {}", folder.as_str(), a.limit);
+        let mut next = format!("cloudmail threads list --folder {} --before {before} --limit {}", folder.arg(), a.limit);
         if a.unread {
             next.push_str(" --unread");
         }
@@ -76,25 +90,31 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
     }
     let human = render::threads(&threads, folder == Folder::All);
     let ids = threads.iter().map(|t| t.id.clone()).collect();
-    Ok(Response::new(&threads, summary).human(human).ids(ids).crumbs(crumbs).meta("folder", folder.as_str()))
+    let mut r = Response::new(&threads, summary).human(human).ids(ids).crumbs(crumbs).meta("folder", folder.as_str());
+    if listing.duplicates_hidden > 0 {
+        r = r.meta("duplicates_hidden", listing.duplicates_hidden);
+    }
+    Ok(r.warnings(&listing.warnings, ctx.mode))
 }
 
 pub fn search(ctx: &Ctx, a: &SearchArgs) -> CliResult {
     let query = a.query.join(" ");
-    let threads = ctx.client()?.list_threads(&ThreadQuery { folder: "all".into(), q: Some(query.clone()), limit: a.limit, ..Default::default() })?;
+    let listing = ctx.mail()?.search(&query, a.limit)?;
+    let threads = listing.threads;
     let summary = format!("{} matching \"{query}\"", plural(threads.len(), "thread"));
     let human = render::threads(&threads, true);
     let ids = threads.iter().map(|t| t.id.clone()).collect();
-    Ok(Response::new(&threads, summary).human(human).ids(ids).crumbs(thread_crumbs()).meta("query", query))
+    Ok(Response::new(&threads, summary).human(human).ids(ids).crumbs(thread_crumbs()).meta("query", query).warnings(&listing.warnings, ctx.mode))
 }
 
 pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
-    let client = ctx.client()?;
+    let mail = ctx.mail()?;
+    let on = |id: &str| mail.provider(id);
     match cmd {
         ThreadCommand::Read { id, html, mark_read } => {
-            let mut detail = client.thread(&id).map_err(missing("thread", &id, "list threads with `cloudmail inbox` or `cloudmail search <words>`"))?;
+            let mut detail = on(&id).thread(&id, html).map_err(missing("thread", &id, "list threads with `cloudmail inbox` or `cloudmail search <words>`"))?;
             if mark_read && detail.thread.unread {
-                client.set_unread(&id, false)?;
+                on(&id).set_unread(&id, false)?;
                 detail.thread.unread = false;
             }
             let t = &detail.thread;
@@ -127,13 +147,17 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             }
             Ok(Response { data, ..Response::new((), summary) }.human(render::thread(&detail, html)).ids(ids).crumbs(crumbs))
         }
-        ThreadCommand::Archive { ids } => each(&ids, "archived", |id| client.move_thread(id, "archive")),
-        ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| client.move_thread(id, "inbox")),
-        ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| client.set_unread(id, true)),
-        ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| client.set_unread(id, false)),
+        // A HEY thread's "archive" is a move to Paper Trail (HEY has no Archive).
+        ThreadCommand::Archive { ids } => each(&ids, "archived", |id| on(id).move_thread(id, "archive")),
+        ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| on(id).move_thread(id, "inbox")),
+        ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| on(id).set_unread(id, true)),
+        ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| on(id).set_unread(id, false)),
         ThreadCommand::Delete { ids, yes } => {
+            if let Some(id) = ids.iter().find(|id| mail.account_for(id).is_some()) {
+                return Err(CliError::usage(format!("{id} is in a linked account, and cloudmail doesn't delete mail there")).hint("archive it instead, or delete it in the account's own app"));
+            }
             confirm(yes, &format!("Permanently delete {}?", plural(ids.len(), "thread")))?;
-            each(&ids, "deleted", |id| client.delete_thread(id))
+            each(&ids, "deleted", |id| mail.client.delete_thread(id))
         }
     }
 }
@@ -174,38 +198,42 @@ pub fn confirm(yes: bool, question: &str) -> CliResult<()> {
 }
 
 pub fn screener(ctx: &Ctx, cmd: Option<ScreenerCommand>) -> CliResult {
-    let client = ctx.client()?;
+    let mail = ctx.mail()?;
     match cmd.unwrap_or(ScreenerCommand::List) {
         ScreenerCommand::List => {
-            let senders = client.screener()?;
+            let (senders, warnings) = mail.screener()?;
             let summary = if senders.is_empty() {
                 "The Screener is empty".to_string()
             } else {
                 format!("{} waiting in the Screener", plural(senders.len(), "sender"))
             };
-            let ids = senders.iter().map(|s| s.email.clone()).collect();
+            let ids = senders.iter().map(|s| s.id.clone().unwrap_or_else(|| s.email.clone())).collect();
             Ok(Response::new(&senders, summary).human(render::screener(&senders)).ids(ids).crumbs(vec![
                 crumb("approve", "cloudmail screener approve <email>", "Screen a sender in; their mail moves to the Inbox"),
                 crumb("block", "cloudmail screener block <email>", "Screen a sender out"),
                 crumb("threads", "cloudmail threads list --folder screener", "See the waiting threads"),
-            ]))
+            ])
+            .warnings(&warnings, ctx.mode))
         }
-        ScreenerCommand::Approve { emails } => decide(client, &emails, "approved"),
-        ScreenerCommand::Block { emails } => decide(client, &emails, "blocked"),
+        ScreenerCommand::Approve { emails } => decide(ctx, mail, &emails, "approved"),
+        ScreenerCommand::Block { emails } => decide(ctx, mail, &emails, "blocked"),
     }
 }
 
-fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> CliResult {
+fn decide(ctx: &Ctx, mail: &Mail, emails: &[String], status: &str) -> CliResult {
     // Check every address before deciding any, so a typo late in the list changes nothing.
-    if let Some(bad) = emails.iter().find(|e| !bare_email(e).contains('@')) {
+    let key = |e: &str| if mail.account_for(e).is_some() { e.to_string() } else { bare_email(e) };
+    if let Some(bad) = emails.iter().find(|e| mail.account_for(e).is_none() && !bare_email(e).contains('@')) {
         return Err(CliError::usage(format!("not an email address: {bad}")));
     }
     let mut results = Vec::new();
     let mut done = Vec::new();
+    let mut warnings = Vec::new();
     let mut moved_total = 0;
     for e in emails {
-        let email = bare_email(e);
-        let moved = client.decide_sender(&email, status)?;
+        let email = key(e);
+        let (moved, w) = mail.decide_sender(&email, status)?;
+        warnings.extend(w);
         moved_total += moved;
         results.push(json!({ "email": email, "status": status, "moved": moved }));
         done.push(email);
@@ -217,7 +245,7 @@ fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> Cl
     } else {
         vec![crumb("undo", &format!("cloudmail screener approve {}", output::shell_arg(&done[0])), "Undo by approving")]
     };
-    Ok(Response::new(results, summary).crumbs(crumbs).ids(done))
+    Ok(Response::new(results, summary).crumbs(crumbs).ids(done).warnings(&warnings, ctx.mode))
 }
 
 pub fn senders(ctx: &Ctx, status: SenderStatus) -> CliResult {
@@ -292,7 +320,7 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
         );
         return Ok(Response::new(json!({ "dry_run": true, "request": req }), summary).human(human));
     }
-    let resp = ctx.client()?.send(&req)?;
+    let resp = ctx.mail()?.send(&req)?;
     let mut summary = format!("Sent \"{}\" to {to_text}", req.subject);
     if let Some(w) = &resp.warning {
         // The mail went out: retrying would send it twice.
@@ -368,15 +396,27 @@ pub fn build_reply(detail: &ThreadDetail, own: &[String], default_from: Option<&
 }
 
 pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
-    let client = ctx.client()?;
-    let detail = client.thread(&a.thread_id).map_err(missing("thread", &a.thread_id, "list threads with `cloudmail inbox`"))?;
-    let ids = client.identities()?;
-    let own: Vec<String> = ids.identities.iter().map(|i| i.email.to_ascii_lowercase()).collect();
+    let mail = ctx.mail()?;
+    let on = mail.provider(&a.thread_id);
+    let detail = on.thread(&a.thread_id, false).map_err(missing("thread", &a.thread_id, "list threads with `cloudmail inbox`"))?;
+    // A linked account's thread is answered from that account's addresses.
+    let (identities, default) = match mail.account_for(&a.thread_id) {
+        Some(p) => {
+            let ids = p.identities()?;
+            let first = ids.first().cloned();
+            (ids, first)
+        }
+        None => {
+            let ids = mail.client.identities()?;
+            (ids.identities, ids.default)
+        }
+    };
+    let own: Vec<String> = identities.iter().map(|i| i.email.to_ascii_lowercase()).collect();
     if let Some(f) = &a.from
         && !own.contains(&bare_email(f)) {
             return Err(CliError::usage(format!("{f} is not one of your mailboxes")).hint("see `cloudmail mailbox list`"));
         }
-    let default_from = ids.default.as_ref().map(|d| d.email.as_str());
+    let default_from = default.as_ref().map(|d| d.email.as_str());
     let (mut req, quoted) = build_reply(&detail, &own, default_from, a.all, a.from.as_deref())?;
     let template = if a.no_quote { String::new() } else { format!("\n{quoted}") };
     let (text, edited) = body(&a.body, &template)?;
@@ -390,10 +430,10 @@ pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
 // ---------- files ----------
 
 pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
-    let client = ctx.client()?;
+    let mail = ctx.mail()?;
     match cmd {
         AttachmentCommand::List { thread_id } => {
-            let detail = client.thread(&thread_id).map_err(missing("thread", &thread_id, "list threads with `cloudmail inbox`"))?;
+            let detail = mail.provider(&thread_id).thread(&thread_id, false).map_err(missing("thread", &thread_id, "list threads with `cloudmail inbox`"))?;
             let atts: Vec<_> = detail.messages.iter().flat_map(|m| m.attachments.iter().filter(|a| !a.inline).map(move |a| (m, a))).collect();
             let human = atts
                 .iter()
@@ -409,7 +449,7 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
                 .crumbs(vec![crumb("save", "cloudmail attachment save <attachment-id> -o <path>", "Download an attachment")]))
         }
         AttachmentCommand::Save { id, output } => {
-            let dl = client.download_attachment(&id).map_err(missing("attachment", &id, "list them with `cloudmail attachment list <thread-id>`"))?;
+            let dl = mail.provider(&id).download_attachment(&id).map_err(missing("attachment", &id, "list them with `cloudmail attachment list <thread-id>`"))?;
             let name = safe_attachment_name(dl.filename.as_deref(), &id);
             let size = dl.bytes.len();
             if output.as_deref().is_some_and(|p| p.as_os_str() == "-") {
@@ -452,6 +492,9 @@ fn target_path(output: Option<PathBuf>, name: &str) -> PathBuf {
 }
 
 pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
+    if ctx.mail()?.account_for(&a.id).is_some() {
+        return Err(CliError::usage(format!("{} is a linked account's message; the hey CLI doesn't give out original .eml files", a.id)));
+    }
     let bytes = ctx.client()?.raw_message(&a.id).map_err(missing("raw message", &a.id, "message IDs (m_…) are in `cloudmail thread read <id> --json`; sent messages have no raw copy"))?;
     match &a.output {
         Some(p) if p.as_os_str() != "-" => {

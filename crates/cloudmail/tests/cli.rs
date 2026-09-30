@@ -395,3 +395,281 @@ fn self_documentation() {
     let v = json_out(&cloudmail(&m, &[], None));
     assert_eq!(v["data"]["configured"], true);
 }
+
+// ---------- linked HEY account, through tests/fake-hey ----------
+
+/// A home whose config links HEY, served by the fake `hey` (which logs every call).
+struct HeyHome {
+    home: PathBuf,
+    log: PathBuf,
+}
+
+fn hey_home(tag: &str) -> HeyHome {
+    let home = temp_home(&format!("hey-{tag}"));
+    let cfg = home.join("config").join("cloudmail");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), "poll_seconds = 60\n\n[accounts.hey]\n").unwrap();
+    let log = home.join("hey.log");
+    let _ = std::fs::remove_file(&log);
+    HeyHome { home, log }
+}
+
+fn fake_hey() -> String {
+    format!("{}/tests/fake-hey", env!("CARGO_MANIFEST_DIR"))
+}
+
+impl HeyHome {
+    fn run(&self, m: &Mock, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+        cmd.args(args)
+            .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("HOME", &self.home)
+            .env("CLOUDMAIL_API_URL", &m.url)
+            .env("CLOUDMAIL_API_TOKEN", "test-token")
+            .env("CLOUDMAIL_HEY_COMMAND", fake_hey())
+            .env("FAKE_HEY_LOG", &self.log)
+            .env_remove("FAKE_HEY_MODE")
+            .current_dir(&self.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    }
+
+    /// Each `hey` invocation, arguments joined by spaces.
+    fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.log).unwrap_or_default().lines().map(|l| l.replace('\t', " ")).collect()
+    }
+}
+
+fn ids(v: &Value) -> Vec<String> {
+    v["data"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn hey_inbox_merges_by_time_and_hides_forwarded_copies() {
+    let m = mock(default_handler);
+    let h = hey_home("inbox");
+    let o = h.run(&m, &["inbox"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v = json_out(&o);
+    // HEY's copy of t_1 (same sender and subject, same time) is hidden; the bundle row is skipped.
+    assert_eq!(ids(&v), ["hey:9001:7001", "t_1", "t_2"]);
+    assert_eq!(v["meta"]["duplicates_hidden"], 1);
+    let hey = &v["data"][0];
+    assert_eq!(hey["account"], "hey");
+    assert_eq!(hey["folder"], "inbox");
+    assert_eq!(hey["unread"], true);
+    assert_eq!(hey["from"]["name"], "Carol Chen");
+    assert!(v["data"][1].get("account").is_none(), "worker threads keep their JSON shape");
+    assert!(h.calls().iter().any(|c| c.starts_with("box view imbox --limit 25")), "{:?}", h.calls());
+
+    let o = h.run(&m, &["inbox", "--styled"], &[]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("HEY"));
+}
+
+#[test]
+fn inbox_without_accounts_is_unchanged() {
+    let m = mock(default_handler);
+    let o = cloudmail(&m, &["inbox"], None);
+    let v = json_out(&o);
+    assert_eq!(ids(&v), ["t_1", "t_2"]);
+    assert!(v["meta"].get("warnings").is_none() && v["meta"].get("duplicates_hidden").is_none());
+    let o = cloudmail(&m, &["threads", "list", "--folder", "feed"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json_out(&o)["error"]["hint"], "link one with `cloudmail account add hey`");
+}
+
+#[test]
+fn hey_boxes_are_extra_folders() {
+    let m = mock(default_handler);
+    let h = hey_home("boxes");
+    let v = json_out(&h.run(&m, &["threads", "list", "--folder", "feed"], &[]));
+    assert_eq!(ids(&v), ["hey:9004:7004"]);
+    assert!(!requests(&m).iter().any(|r| r.path.contains("folder=feed")), "the worker has no Feed");
+    // Archive is the worker's archive plus HEY's Paper Trail.
+    let v = json_out(&h.run(&m, &["archive"], &[]));
+    assert!(ids(&v).contains(&"hey:9003:7003".to_string()), "{v}");
+    assert_eq!(v["data"][0]["folder"], "paper_trail");
+}
+
+#[test]
+fn hey_thread_read_attachments_and_reply() {
+    let m = mock(default_handler);
+    let h = hey_home("read");
+    let v = json_out(&h.run(&m, &["thread", "read", "hey:9001:7001"], &[]));
+    let t = &v["data"]["thread"];
+    assert_eq!(t["subject"], "Quarterly numbers", "from hey reply --dry-run, since thread read has none");
+    assert_eq!(t["account"], "hey");
+    let msgs = v["data"]["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0]["id"], "hey:9001/8001");
+    assert_eq!(msgs[0]["from"]["name"], "Carol Chen");
+    assert_eq!(msgs[0]["text"], "Here are the **numbers**.");
+    assert_eq!(msgs[1]["outgoing"], true);
+    assert_eq!(msgs[0]["attachments"][0]["id"], "hey:8001:1");
+    assert_eq!(msgs[0]["attachments"][1]["inline"], true);
+    // Reading changes nothing in HEY, and never sends.
+    let calls = h.calls();
+    assert!(calls.iter().any(|c| c == "thread read 9001"), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("seen") || (c.starts_with("reply") && !c.contains("--dry-run"))), "{calls:?}");
+
+    let v = json_out(&h.run(&m, &["attachment", "list", "hey:9001:7001"], &[]));
+    assert_eq!(v["data"].as_array().unwrap().len(), 1, "inline images aren't listed");
+    let dir = h.home.join("dl");
+    std::fs::create_dir_all(&dir).unwrap();
+    let v = json_out(&h.run(&m, &["attachment", "save", "hey:8001:1", "-o", &format!("{}/", dir.display())], &[]));
+    assert_eq!(std::fs::read(dir.join("numbers.pdf")).unwrap(), b"%PDF-", "{v}");
+
+    let v = json_out(&h.run(&m, &["reply", "hey:9001:7001", "--all", "-m", "On it", "--dry-run"], &[]));
+    let req = &v["data"]["request"];
+    assert_eq!(req["to"], json!(["Carol Chen <carol@example.net>"]));
+    assert_eq!(req["cc"], json!(["Ops <ops@example.net>"]), "your own HEY address is left out");
+    assert_eq!(req["from"], "me@hey.example");
+    assert_eq!(req["reply_to_message_id"], "hey:9001/8001");
+
+    let o = h.run(&m, &["reply", "hey:9001:7001", "-m", "On it"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let sent = h.calls().into_iter().find(|c| c.starts_with("reply 9001 --replace-recipients")).expect("sent through hey reply");
+    assert!(sent.contains("--to carol@example.net") && sent.contains("--message-html <div>On it<br><br>On "), "{sent}");
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a HEY reply never goes through the worker");
+}
+
+#[test]
+fn hey_moves_marks_and_composes() {
+    let m = mock(default_handler);
+    let h = hey_home("actions");
+    for args in [&["thread", "archive", "hey:9001:7001"][..], &["thread", "unarchive", "hey:9003:7003"], &["thread", "markread", "hey:9001:7001"], &["thread", "unread", "hey:9001:7001"]] {
+        let o = h.run(&m, args, &[]);
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stdout));
+    }
+    let calls = h.calls();
+    for want in ["move 7001 --to trailbox", "move 7003 --to imbox", "seen 7001", "unseen 7001"] {
+        assert!(calls.iter().any(|c| c == want), "missing `{want}` in {calls:?}");
+    }
+    // Mixed IDs go to their own providers.
+    let o = h.run(&m, &["thread", "archive", "t_1", "hey:9004:7004"], &[]);
+    assert!(o.status.success());
+    assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
+    // A search hit outside any box has no box item to move.
+    let o = h.run(&m, &["thread", "archive", "hey:9010"], &[]);
+    assert_eq!(o.status.code(), Some(2));
+    // Deleting stays a worker-only action.
+    let o = h.run(&m, &["thread", "delete", "hey:9001:7001", "--yes"], &[]);
+    assert_eq!(o.status.code(), Some(2));
+
+    let o = h.run(&m, &["compose", "--from", "me@hey.example", "--to", "Al <a@b.com>, c@d.com", "--subject", "Hi", "-m", "Hello"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(h.calls().iter().any(|c| c == "compose --to a@b.com,c@d.com --subject Hi --from me@hey.example --message-html <div>Hello</div>"), "{:?}", h.calls());
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
+    let o = h.run(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello"], &[]);
+    assert!(o.status.success());
+    assert!(requests(&m).iter().any(|r| r.path == "/api/send"), "no --from: your worker sends, as before");
+}
+
+#[test]
+fn hey_screener_merges_and_decides_by_address_or_id() {
+    let m = mock(default_handler);
+    let h = hey_home("screener");
+    let v = json_out(&h.run(&m, &["screener"], &[]));
+    let emails: Vec<&str> = v["data"].as_array().unwrap().iter().map(|s| s["email"].as_str().unwrap()).collect();
+    assert_eq!(emails, ["new@y.com", "dana@example.org"], "HEY's copy of a sender waiting in both shows once");
+    assert_eq!(v["data"][1]["id"], "hey:5001");
+    assert!(v["data"][0].get("id").is_none());
+
+    let o = h.run(&m, &["screener", "approve", "hey:5001"], &[]);
+    assert!(o.status.success());
+    assert!(h.calls().iter().any(|c| c == "screener approve 5001"));
+    assert!(!requests(&m).iter().any(|r| r.path.starts_with("/api/senders/")), "a HEY-only decision leaves the worker alone");
+
+    // An address is decided everywhere it waits.
+    let o = h.run(&m, &["screener", "block", "new@y.com"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(requests(&m).iter().any(|r| r.path == "/api/senders/new%40y.com" && r.body["status"] == "blocked"));
+    assert!(h.calls().iter().any(|c| c == "screener deny 5002"), "{:?}", h.calls());
+
+    let v = json_out(&h.run(&m, &["threads", "list", "--folder", "screener"], &[]));
+    assert!(ids(&v).contains(&"hey:9005".to_string()), "{v}");
+}
+
+#[test]
+fn hey_search_spans_accounts() {
+    let m = mock(default_handler);
+    let h = hey_home("search");
+    let v = json_out(&h.run(&m, &["search", "numbers"], &[]));
+    assert_eq!(ids(&v), ["hey:9001:7001", "hey:9010", "t_1", "t_2"]);
+    assert!(h.calls().iter().any(|c| c == "search numbers"));
+}
+
+#[test]
+fn a_failing_hey_never_breaks_your_own_mail() {
+    let m = mock(default_handler);
+    let h = hey_home("isolation");
+    for (mode, code) in [("logged_out", "account_unauthorized"), ("crash", "account_unavailable"), ("garbage", "account_unavailable")] {
+        let o = h.run(&m, &["inbox"], &[("FAKE_HEY_MODE", mode)]);
+        assert!(o.status.success(), "{mode}: {}", String::from_utf8_lossy(&o.stdout));
+        let v = json_out(&o);
+        assert_eq!(ids(&v), ["t_1", "t_2"], "{mode}");
+        assert_eq!(v["meta"]["warnings"][0]["account"], "hey", "{mode}");
+        assert_eq!(v["meta"]["warnings"][0]["code"], code, "{mode}");
+        let v = json_out(&h.run(&m, &["screener"], &[("FAKE_HEY_MODE", mode)]));
+        assert_eq!(v["data"][0]["email"], "new@y.com", "{mode}");
+    }
+    let o = h.run(&m, &["inbox", "--styled"], &[("CLOUDMAIL_HEY_COMMAND", "/nonexistent/hey")]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("the hey CLI isn't installed"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("t_1"));
+
+    // Asking HEY itself for something does fail, with HEY's reason and exit code.
+    let o = h.run(&m, &["thread", "read", "hey:9001:7001"], &[("FAKE_HEY_MODE", "logged_out")]);
+    assert_eq!(o.status.code(), Some(3));
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "account_unauthorized");
+    assert!(v["error"]["message"].as_str().unwrap().contains("hey auth login"));
+    let o = h.run(&m, &["thread", "read", "hey:1234"], &[]);
+    assert_eq!(o.status.code(), Some(4));
+}
+
+#[test]
+fn account_add_list_remove() {
+    let m = mock(default_handler);
+    let h = hey_home("accounts");
+    let cfg = h.home.join("config/cloudmail/config.toml");
+    std::fs::write(&cfg, "poll_seconds = 30\n").unwrap();
+
+    let o = h.run(&m, &["account", "add", "hey"], &[("FAKE_HEY_MODE", "logged_out")]);
+    assert_eq!(o.status.code(), Some(3), "no terminal: no browser login, just the hint");
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "not_logged_in");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("auth login"));
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
+
+    let o = h.run(&m, &["account", "add", "hey"], &[("CLOUDMAIL_HEY_COMMAND", "/nonexistent/hey")]);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(json_out(&o)["error"]["code"], "not_installed");
+
+    let o = h.run(&m, &["account", "add", "hey"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let v = json_out(&o);
+    assert_eq!(v["data"]["addresses"], json!(["me@hey.example"]));
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains("poll_seconds = 30") && text.contains("[accounts.hey]"), "{text}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("auth login")));
+
+    let v = json_out(&h.run(&m, &["account", "list"], &[]));
+    assert_eq!(v["data"]["accounts"][0]["name"], "hey");
+    assert_eq!(v["data"]["accounts"][0]["ok"], true);
+    let v = json_out(&h.run(&m, &["status"], &[]));
+    assert_eq!(v["data"]["accounts"][0]["label"], "HEY");
+
+    // `config set` rewrites the file and must keep the account.
+    assert!(h.run(&m, &["config", "set", "poll-seconds", "45"], &[]).status.success());
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("[accounts.hey]"));
+
+    assert!(h.run(&m, &["account", "remove", "hey"], &[]).status.success());
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
+    assert_eq!(h.run(&m, &["account", "remove", "hey"], &[]).status.code(), Some(4));
+}

@@ -66,6 +66,10 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("config show", &["cloudmail config show", "cloudmail config show --show-token --json"]),
     ("config set", &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"]),
     ("config path", &["cloudmail config path"]),
+    ("account", &["cloudmail account list"]),
+    ("account list", &["cloudmail account list", "cloudmail account list --json"]),
+    ("account add", &["cloudmail account add hey", "cloudmail account add hey --command ~/.local/bin/hey", "cloudmail account add hey --no-login --json"]),
+    ("account remove", &["cloudmail account remove hey"]),
     (
         "setup",
         &[

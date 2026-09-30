@@ -1,3 +1,4 @@
+mod accounts;
 mod admin;
 mod cli;
 mod docs;
@@ -10,12 +11,12 @@ use clap::{CommandFactory, FromArgMatches};
 use std::cell::OnceCell;
 
 use cli::{Cli, Command};
-use cloudmail_api::{Client, config};
+use cloudmail_api::{Client, Mail, config};
 use output::{CliError, CliResult, Mode, Response, exit};
 
 pub struct Ctx {
     pub mode: Mode,
-    client: OnceCell<Client>,
+    mail: OnceCell<Mail>,
 }
 
 impl Ctx {
@@ -25,11 +26,16 @@ impl Ctx {
     }
 
     pub fn client(&self) -> CliResult<&Client> {
-        if let Some(c) = self.client.get() {
-            return Ok(c);
+        Ok(&self.mail()?.client)
+    }
+
+    /// The worker plus any linked accounts (HEY, …) from the config.
+    pub fn mail(&self) -> CliResult<&Mail> {
+        if let Some(m) = self.mail.get() {
+            return Ok(m);
         }
         let cfg = config::load()?;
-        Ok(self.client.get_or_init(|| Client::new(&cfg)))
+        Ok(self.mail.get_or_init(|| Mail::from_config(&cfg)))
     }
 }
 
@@ -98,7 +104,7 @@ fn main() {
             std::process::exit(exit::USAGE);
         }
     };
-    let ctx = Ctx { mode: mode_for(&cli.global), client: OnceCell::new() };
+    let ctx = Ctx { mode: mode_for(&cli.global), mail: OnceCell::new() };
     match dispatch(&ctx, cli.command) {
         Ok(r) => {
             r.print(ctx.mode);
@@ -133,6 +139,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Mailbox(m) => admin::mailbox(ctx, m),
         Command::Settings(s) => admin::settings(ctx, s),
         Command::Config(c) => admin::config_cmd(c),
+        Command::Account(a) => accounts::account(ctx, a),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),
         Command::Commands => Ok(admin::commands()),
         Command::AgentGuide => {

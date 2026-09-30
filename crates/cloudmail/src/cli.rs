@@ -88,6 +88,9 @@ pub enum Command {
     /// View or change the local config file
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Link other mail accounts (HEY) so their mail shows next to yours; opt-in
+    #[command(subcommand)]
+    Account(AccountCommand),
 
     /// Set up (or update) your mail service on Cloudflare: `cloudmail setup you@yourdomain.com`
     Setup(SetupArgs),
@@ -134,6 +137,18 @@ pub enum Folder {
     Blocked,
     /// Every folder except blocked
     All,
+    /// HEY's The Feed (needs `cloudmail account add hey`)
+    #[value(hide = true)]
+    Feed,
+    /// HEY's Paper Trail, which also stands in for HEY's Archive
+    #[value(hide = true)]
+    PaperTrail,
+    /// HEY's Set Aside
+    #[value(hide = true)]
+    SetAside,
+    /// HEY's Reply Later
+    #[value(hide = true)]
+    ReplyLater,
 }
 
 impl Folder {
@@ -145,7 +160,16 @@ impl Folder {
             Folder::Sent => "sent",
             Folder::Blocked => "blocked",
             Folder::All => "all",
+            Folder::Feed => "feed",
+            Folder::PaperTrail => "paper_trail",
+            Folder::SetAside => "set_aside",
+            Folder::ReplyLater => "reply_later",
         }
+    }
+
+    /// The name on the command line (`paper-trail`), for breadcrumbs.
+    pub fn arg(self) -> String {
+        self.as_str().replace('_', "-")
     }
 }
 
@@ -162,7 +186,7 @@ pub struct SearchArgs {
 pub enum ThreadCommand {
     /// Show every message in a thread (does not mark it read unless --mark-read)
     Read {
-        /// Thread ID (t_…)
+        /// Thread ID (t_…, or hey:… for a linked HEY account)
         id: String,
         /// Output the original HTML bodies instead of plain text
         #[arg(long)]
@@ -213,11 +237,13 @@ pub enum ScreenerCommand {
     List,
     /// Screen senders in: their mail moves to the Inbox, future mail goes straight there
     Approve {
+        /// Addresses (decided everywhere the sender waits), or a linked account's sender ID (hey:…)
         #[arg(required = true, num_args = 1..)]
         emails: Vec<String>,
     },
     /// Screen senders out: their mail is hidden in Blocked (undo with approve)
     Block {
+        /// Addresses (decided everywhere the sender waits), or a linked account's sender ID (hey:…)
         #[arg(required = true, num_args = 1..)]
         emails: Vec<String>,
     },
@@ -263,7 +289,8 @@ pub struct ComposeArgs {
     pub cc: Vec<String>,
     #[arg(long, num_args = 1..)]
     pub bcc: Vec<String>,
-    /// One of your mailboxes (see `cloudmail mailbox list`); defaults to the first
+    /// One of your mailboxes (see `cloudmail mailbox list`), or a linked account's address (sent
+    /// through that account); defaults to your first mailbox
     #[arg(long)]
     pub from: Option<String>,
     #[arg(long, short = 's', required = true)]
@@ -277,7 +304,7 @@ pub struct ComposeArgs {
 
 #[derive(Args, Debug)]
 pub struct ReplyArgs {
-    /// Thread ID (t_…)
+    /// Thread ID (t_…, or hey:… to reply through HEY)
     pub thread_id: String,
     /// Reply to everyone on the latest message (your own addresses are left out)
     #[arg(long, short = 'a')]
@@ -299,12 +326,12 @@ pub struct ReplyArgs {
 pub enum AttachmentCommand {
     /// List the attachments in a thread
     List {
-        /// Thread ID (t_…)
+        /// Thread ID (t_… or hey:…)
         thread_id: String,
     },
     /// Download an attachment
     Save {
-        /// Attachment ID (a_…)
+        /// Attachment ID (a_… or hey:…)
         id: String,
         /// Output file or directory (- for stdout); defaults to the attachment's name in the current directory
         #[arg(long, short = 'o')]
@@ -486,4 +513,32 @@ pub struct SetupArgs {
     /// Command used to run wrangler
     #[arg(long, default_value = "npx wrangler", hide = true)]
     pub wrangler: String,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AccountCommand {
+    /// Show your worker and every linked account, with whether each is signed in
+    List,
+    /// Link an account: `cloudmail account add hey` (signs in with `hey auth login` if needed)
+    Add {
+        /// Provider to link (hey)
+        provider: String,
+        /// Name for the account, which prefixes its IDs (default: the provider)
+        #[arg(long)]
+        name: Option<String>,
+        /// The provider's CLI, when it isn't on PATH under its usual name
+        #[arg(long, value_name = "PATH")]
+        command: Option<String>,
+        /// Only this one of the provider's linked accounts (a `hey account list` ID; default: all)
+        #[arg(long, value_name = "ID")]
+        account: Option<String>,
+        /// Don't start a browser sign-in even on a terminal; fail if not signed in
+        #[arg(long)]
+        no_login: bool,
+    },
+    /// Unlink an account (nothing changes in the account itself, and its CLI stays signed in)
+    Remove {
+        /// Account name (see `cloudmail account list`)
+        name: String,
+    },
 }

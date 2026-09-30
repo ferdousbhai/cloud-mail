@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# A stand-in for the `hey` CLI (basecamp/hey-cli 1.7) for tests and headless smoke runs.
+# It answers with synthetic data shaped like real `hey … --json` output and changes nothing.
+#
+#   FAKE_HEY_LOG=<file>   append each invocation's arguments (tab-separated) to <file>
+#   FAKE_HEY_MODE=ok (default) | logged_out | crash | garbage | slow
+#
+# Point cloudmail at it with CLOUDMAIL_HEY_COMMAND=/path/to/fake-hey.
+
+args=()
+for a in "$@"; do
+  [[ "$a" == "--json" ]] || args+=("$a")
+done
+if [[ -n "$FAKE_HEY_LOG" ]]; then
+  (IFS=$'\t'; printf '%s\n' "${args[*]}") >> "$FAKE_HEY_LOG"
+fi
+set -- "${args[@]}"
+mode="${FAKE_HEY_MODE:-ok}"
+
+ok() { printf '{"ok":true,"data":%s,"summary":"%s"}\n' "$1" "${2:-done}"; exit 0; }
+fail() { printf '{"ok":false,"error":"%s","code":"%s"%s}\n' "$2" "$3" "${4:+,\"hint\":\"$4\"}"; exit "$1"; }
+
+case "$1 $2" in
+  "version "*|"--version "*) echo "hey version 1.7.0-fake"; exit 0 ;;
+esac
+
+if [[ "$1 $2" == "auth status" ]]; then
+  if [[ "$mode" == "logged_out" ]]; then ok '{"authenticated":false,"base_url":"https://app.hey.com"}' "Not logged in"; fi
+  ok '{"authenticated":true,"auth_type":"oauth","base_url":"https://app.hey.com","expired":false,"mail_account":"all"}' "Logged in"
+fi
+if [[ "$1 $2" == "auth login" ]]; then
+  echo "fake-hey: pretending to log in" >&2
+  ok '{"authenticated":true}' "Logged in"
+fi
+
+case "$mode" in
+  logged_out) fail 3 "authentication required" auth "Run: hey auth login" ;;
+  crash) echo "panic: fake-hey crashed" >&2; exit 7 ;;
+  garbage) echo "this is not json"; exit 0 ;;
+  slow) sleep 5 ;;
+esac
+
+me='{"id":34,"account_id":1,"avatar_url":"","contactable_type":"User","email_address":"me@hey.example","name":"Sam Sample"}'
+carol='{"id":51,"account_id":1,"contactable_type":"Person","email_address":"carol@example.net","name":"carol@example.net"}'
+joe='{"id":52,"account_id":1,"contactable_type":"Person","email_address":"joe@x.com","name":"Joe"}'
+shop='{"id":53,"account_id":1,"contactable_type":"Service","email_address":"receipts@shop.example","name":"Shop"}'
+news='{"id":54,"account_id":1,"contactable_type":"Service","email_address":"news@letters.example","name":"Weekly Letter"}'
+
+posting() { # id topic subject creator alt seen active count attachments
+  printf '{"account_id":1,"active_at":"%s","addressed_contacts":[%s],"alternative_sender_name":"%s","app_url":"https://app.hey.com/topics/%s","box_id":1,"bubble_up_schedule":{},"contacts":[%s,%s],"created_at":"%s","creator":%s,"entry_kind":"message","id":%s,"includes_attachments":%s,"kind":"topic","name":"%s","note":{"id":0},"observed_at":"%s","seen":%s,"summary":"%s preview text","updated_at":"%s","visible_entry_count":%s,"topic_id":%s}' \
+    "$7" "$me" "$5" "$2" "$me" "$4" "$7" "$4" "$1" "$9" "$3" "$7" "$6" "$3" "$7" "$8" "$2"
+}
+box() { # id kind name postings
+  printf '{"app_url":"https://app.hey.com/x","id":%s,"kind":"%s","name":"%s","url":"https://app.hey.com/x.json","postings":[%s]}' "$1" "$2" "$3" "$4"
+}
+
+case "$1 $2" in
+  "box list") ok '[{"id":1,"kind":"imbox","name":"Imbox"},{"id":2,"kind":"feedbox","name":"The Feed"},{"id":3,"kind":"asidebox","name":"Set Aside"},{"id":4,"kind":"laterbox","name":"Reply Later"},{"id":5,"kind":"trailbox","name":"Paper Trail"}]' "5 mailboxes" ;;
+  "box view")
+    case "$3" in
+      imbox)
+        p1=$(posting 7001 9001 "Quarterly numbers" "$carol" "Carol Chen" false "2026-09-30T08:00:00Z" 2 true)
+        # Cloudmail forwarded this one: the same sender and subject as the worker's thread t_1.
+        p2=$(posting 7002 9002 "Subject t_1" "$joe" "Joe" false "1970-01-01T00:00:01Z" 1 false)
+        bundle='{"id":7009,"kind":"bundle","name":"Updates","seen":false,"active_at":"2026-09-29T08:00:00Z","creator":'"$news"'}'
+        ok "$(box 1 imbox Imbox "$p1,$p2,$bundle")" "3 threads in Imbox" ;;
+      trailbox|"Paper Trail")
+        ok "$(box 5 trailbox "Paper Trail" "$(posting 7003 9003 "Receipt #42" "$shop" "Shop" true "2026-09-28T12:00:00Z" 1 false)")" "1 thread" ;;
+      feedbox|feed)
+        ok "$(box 2 feedbox "The Feed" "$(posting 7004 9004 "This week in letters" "$news" "Weekly Letter" true "2026-09-27T07:00:00Z" 1 false)")" "1 thread" ;;
+      asidebox) ok "$(box 3 asidebox "Set Aside" "")" "0 threads" ;;
+      laterbox) ok "$(box 4 laterbox "Reply Later" "")" "0 threads" ;;
+      *) fail 2 "box \\\"$3\\\" not found" not_found ;;
+    esac ;;
+  "screener list")
+    ok '[{"id":5001,"name":"Dana Diaz","email_address":"dana@example.org","subject":"Hello from Dana","summary":"Hi! We met at the conference","topic_id":9005},{"id":5002,"name":"New","email_address":"new@y.com","subject":"Hello","summary":"forwarded copy","topic_id":9006}]' "2 senders waiting" ;;
+  "screener approve"|"screener deny")
+    status=approved; [[ "$2" == deny ]] && status=denied
+    ok "[{\"id\":$3,\"status\":\"$status\",\"name\":\"Dana Diaz\",\"email_address\":\"dana@example.org\"}]" "1 sender $status" ;;
+  "thread read")
+    case "$3" in
+      9001|9003|9004|9005)
+        if [[ " $* " == *" --html "* ]]; then
+          printf '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Thread %s</title>\n</head>\n<body>\n' "$3"
+          printf '<article id="entry-8001" data-entry-id="8001" data-created-at="2026-09-30T07:00:00Z" data-body-state="hydrated">\n<header>\n<div>From: Carol Chen</div>\n</header>\n<div>Here are the <b>numbers</b>.</div>\n</article>\n'
+          printf '<article id="entry-8002" data-entry-id="8002" data-created-at="2026-09-30T08:00:00Z" data-body-state="hydrated">\n<header>\n<div>From: Sam Sample</div>\n</header>\n<div>Thanks, looking now.</div>\n</article>\n</body>\n</html>\n'
+          exit 0
+        fi
+        ok '[{"id":8001,"created_at":"2026-09-30T07:00:00Z","updated_at":"2026-09-30T07:00:00Z","creator":{"id":51,"name":"carol@example.net","email_address":"carol@example.net"},"alternative_sender_name":"Carol Chen","summary":"Here are the numbers.","kind":"message","app_url":"https://app.hey.com/topics/9001","recipients":{"to":[{"id":34,"name":"Sam Sample","email_address":"me@hey.example"}],"cc":[{"id":55,"name":"Ops","email_address":"ops@example.net"}],"bcc":[]},"received_via":[{"email_address":"me@hey.example"}],"body":"Here are the **numbers**.","body_state":"hydrated"},{"id":8002,"created_at":"2026-09-30T08:00:00Z","updated_at":"2026-09-30T08:00:00Z","creator":{"id":34,"name":"Sam Sample","email_address":"me@hey.example"},"alternative_sender_name":"","summary":"Thanks, looking now.","kind":"message","app_url":"https://app.hey.com/topics/9001","recipients":{"to":[{"id":51,"name":"Carol Chen","email_address":"carol@example.net"}],"cc":[],"bcc":[]},"body":"Thanks, looking now.","body_state":"hydrated"}]' "2 entries" ;;
+      *) fail 2 "topic $3 not found" not_found ;;
+    esac ;;
+  "attachment list")
+    ok '[{"id":"8001:1","message_id":8001,"filename":"numbers.pdf","content_type":"application/pdf","byte_size":5},{"id":"8001:e-abc","message_id":8001,"filename":"logo.png","content_type":"image/png","byte_size":10}]' "2 attachments" ;;
+  "attachment save")
+    out=""; for ((i=1; i<=$#; i++)); do [[ "${!i}" == "--output" || "${!i}" == "-o" ]] && { j=$((i+1)); out="${!j}"; }; done
+    [[ "$3" == "8001:1" ]] || fail 2 "attachment $3 not found" not_found
+    mkdir -p "$out" && printf '%%PDF-' > "${out%/}/numbers.pdf"
+    ok "{\"id\":\"$3\",\"filename\":\"numbers.pdf\",\"path\":\"${out%/}/numbers.pdf\",\"byte_size\":5}" "Saved" ;;
+  "account senders") ok '[{"id":34,"account_id":1,"email":"me@hey.example","default":true}]' "1 sender" ;;
+  "account list") ok '[{"id":"all","name":"All Accounts","active":true},{"id":"1","name":"Sam Sample","email":"me@hey.example","purpose":"home","status":"active","active":false}]' "2" ;;
+  "search "*)
+    ok '[{"id":7001,"topic_id":9001,"subject":"Quarterly numbers","updated_at":"2026-09-30T08:00:00Z","messages":[{"id":8001,"kind":"message","created_at":"2026-09-30T07:00:00Z","creator":'"$carol"',"alternative_sender_name":"Carol Chen","summary":"Here are the numbers."}]},{"topic_id":9010,"subject":"Old numbers","updated_at":"2025-01-02T08:00:00Z","messages":[{"id":8010,"kind":"message","created_at":"2025-01-02T08:00:00Z","creator":'"$carol"',"alternative_sender_name":"Carol Chen","summary":"Last year."}]}]' "2 results" ;;
+  "reply "*)
+    if [[ " $* " == *" --dry-run "* ]]; then
+      ok "{\"thread_id\":$2,\"entry_id\":8002,\"account_id\":1,\"subject\":\"Re: Quarterly numbers\",\"from\":{\"id\":34,\"email_address\":\"me@hey.example\"},\"to\":[\"carol@example.net\"],\"cc\":[],\"bcc\":[]}" "Reply preview; nothing sent"
+    fi
+    [[ "$2" == 9001 ]] || fail 2 "topic $2 not found" not_found
+    ok 'null' "Reply sent" ;;
+  "compose "*) ok 'null' "Message sent" ;;
+  "move "*|"seen "*|"unseen "*)
+    [[ "$2" =~ ^700[0-9]$ ]] || fail 2 "box item $2 not found" not_found
+    ok 'null' "1 thread updated" ;;
+esac
+
+fail 1 "fake-hey doesn't know: $*" usage

@@ -19,9 +19,9 @@ pub mod exit {
         (OK, "success"),
         (GENERIC, "other failure (local I/O, a setup step, a cancelled confirmation or editor)"),
         (USAGE, "invalid arguments, a destructive command run without --yes, or a request the worker rejected"),
-        (AUTH, "not configured, the API token was rejected, or wrangler isn't logged in"),
+        (AUTH, "not configured, the API token was rejected, wrangler isn't logged in, or a linked account (HEY) isn't signed in"),
         (NOT_FOUND, "the thread, message, attachment, mailbox or sender does not exist"),
-        (API, "the worker could not be reached or returned an error"),
+        (API, "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed"),
     ];
 }
 
@@ -316,6 +316,9 @@ impl From<ApiError> for CliError {
             ErrorKind::BadRequest => (exit::USAGE, None),
             ErrorKind::Network => (exit::API, Some("check api_url with `cloudmail config show` and your connection")),
             ErrorKind::Api | ErrorKind::Decode => (exit::API, None),
+            // The message already says which account and what to run.
+            ErrorKind::AccountAuth => (exit::AUTH, None),
+            ErrorKind::AccountUnavailable => (exit::API, Some("see `cloudmail account list`")),
         };
         let mut err = CliError::new(e.kind.code(), exit, e.message);
         err.hint = hint.map(str::to_string);
@@ -330,6 +333,23 @@ impl From<std::io::Error> for CliError {
 }
 
 pub type CliResult<T = Response> = Result<T, CliError>;
+
+impl Response {
+    /// Records linked-account failures the command carried on past: `meta.warnings` in JSON, a
+    /// line each on stderr for people.
+    pub fn warnings(self, warnings: &[cloudmail_api::AccountWarning], mode: Mode) -> Self {
+        if warnings.is_empty() {
+            return self;
+        }
+        if mode == Mode::Human {
+            for w in warnings {
+                // The message already names the account ("HEY: …").
+                eprintln!("{}", terminal_safe(&format!("warning: {} (showing the rest)", w.message)));
+            }
+        }
+        self.meta("warnings", warnings)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -389,6 +409,8 @@ mod tests {
         assert_eq!(e.exit, exit::NOT_FOUND);
         let e: CliError = ApiError::new(ErrorKind::Network, "refused").into();
         assert_eq!(e.exit, exit::API);
+        let e2: CliError = ApiError::new(ErrorKind::AccountAuth, "HEY: not signed in").into();
+        assert_eq!((e2.exit, e2.code.as_str()), (exit::AUTH, "account_unauthorized"));
         let j = e.json();
         assert_eq!(j["ok"], false);
         assert_eq!(j["error"]["code"], "network_error");

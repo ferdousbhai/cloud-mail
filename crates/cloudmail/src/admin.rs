@@ -83,19 +83,28 @@ pub fn status(ctx: &Ctx) -> CliResult {
     if counts.screener > 0 {
         crumbs.insert(0, crumb("screener", "cloudmail screener", "Decide on waiting senders"));
     }
-    Ok(Response::new(
-        json!({
-            "api_url": client.base_url(),
-            "config_path": config::path(),
-            "healthy": true,
-            "counts": counts,
-            "mailboxes": mailboxes.len(),
-            "forward_to": settings.forward_to,
-        }),
-        summary,
-    )
-    .human(human)
-    .crumbs(crumbs))
+    let mut data = json!({
+        "api_url": client.base_url(),
+        "config_path": config::path(),
+        "healthy": true,
+        "counts": counts,
+        "mailboxes": mailboxes.len(),
+        "forward_to": settings.forward_to,
+    });
+    let mut human = human;
+    // Linked accounts only appear for people who added one.
+    let mail = ctx.mail()?;
+    if mail.has_accounts() {
+        let statuses: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = mail.accounts.iter().map(|p| s.spawn(move || p.status())).collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        for st in &statuses {
+            human.push_str(&format!("\n{:<12}{}", format!("{}:", st.label), if st.ok { format!("signed in ({})", st.addresses.join(", ")) } else { st.detail.clone() }));
+        }
+        data["accounts"] = json!(statuses);
+    }
+    Ok(Response::new(data, summary).human(human).crumbs(crumbs))
 }
 
 pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {

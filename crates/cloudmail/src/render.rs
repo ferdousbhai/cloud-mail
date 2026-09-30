@@ -36,13 +36,24 @@ pub fn clean_line(s: &str) -> String {
     clean(s).replace(['\n', '\t'], " ")
 }
 
+/// "HEY" for a linked account's thread, "" for the worker's own.
+pub fn account_tag(account: Option<&str>) -> String {
+    account.map(|a| if a == "hey" { "HEY".to_string() } else { a.to_string() }).unwrap_or_default()
+}
+
 pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
     let w = width();
     let id_w = list.iter().map(|t| t.id.chars().count()).max().unwrap_or(0);
     let from_w = 22;
     let when_w = 10;
-    let folder_w = if show_folder { 10 } else { 0 };
-    let subject_w = w.saturating_sub(id_w + from_w + when_w + folder_w + 8).max(20);
+    // Only lists that mix in a linked account get the account column (and room for its box names).
+    let acct_w = list.iter().map(|t| account_tag(t.account.as_deref()).chars().count()).max().map_or(0, |n| if n == 0 { 0 } else { n + 1 });
+    let folder_w = match (show_folder, acct_w) {
+        (false, _) => 0,
+        (true, 0) => 10,
+        (true, _) => 12,
+    };
+    let subject_w = w.saturating_sub(id_w + from_w + when_w + folder_w + acct_w + 8).max(20);
     list.iter()
         .map(|t| {
             let mark = if t.unread { "●" } else { " " };
@@ -55,8 +66,9 @@ pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
                 subject.push_str(&format!(" ({})", t.message_count));
             }
             let folder = if show_folder { pad(&clean_line(&t.folder), folder_w) } else { String::new() };
+            let acct = if acct_w > 0 { dim(&pad(&account_tag(t.account.as_deref()), acct_w)) } else { String::new() };
             let line = format!(
-                "{mark} {} {folder}{} {} {}",
+                "{mark} {} {acct}{folder}{} {} {}",
                 dim(&pad(&t.id, id_w)),
                 pad(&truncate(&from, from_w), from_w),
                 pad(&truncate(&subject, subject_w), subject_w),
@@ -73,7 +85,16 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
     let mut out = format!(
         "{}\n{}",
         bold(&clean_line(&t.subject)),
-        dim(&clean_line(&format!("{} · {} · {}", t.id, t.folder, t.to_address.as_deref().unwrap_or(""))))
+        dim(&clean_line(&match &t.account {
+            // A linked account's thread read by ID has no folder (its CLI doesn't say which box).
+            Some(a) => [t.id.as_str(), t.folder.as_str(), t.to_address.as_deref().unwrap_or(""), &account_tag(Some(a))]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" · "),
+            None => format!("{} · {} · {}", t.id, t.folder, t.to_address.as_deref().unwrap_or("")),
+        }))
     );
     for m in &detail.messages {
         out.push_str(&format!("\n\n{}\n", dim(&"─".repeat(width().min(80)))));
@@ -113,13 +134,12 @@ pub fn screener(list: &[PendingSender]) -> String {
             let who = clean_line(&s.address().formatted());
             let subject = clean_line(s.last_subject.as_deref().unwrap_or_default());
             let count = if s.thread_count > 1 { format!(" (+{} more)", s.thread_count - 1) } else { String::new() };
-            format!(
-                "{}  {}{}  {}",
-                pad(&truncate(&who, 40), 40),
-                truncate(&subject, w.saturating_sub(62).max(20)),
-                dim(&count),
-                dim(&short_time(s.last_at))
-            )
+            // A linked account's sender says where they wait and how to decide on them alone.
+            let tail = match (&s.account, &s.id) {
+                (Some(a), Some(id)) => format!("{}  {}", account_tag(Some(a)), clean_line(id)),
+                _ => short_time(s.last_at),
+            };
+            format!("{}  {}{}  {}", pad(&truncate(&who, 40), 40), truncate(&subject, w.saturating_sub(62).max(20)), dim(&count), dim(&tail))
         })
         .collect::<Vec<_>>()
         .join("\n")
