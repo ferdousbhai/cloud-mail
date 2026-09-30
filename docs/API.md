@@ -22,7 +22,10 @@ direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight
 A reply only joins an existing thread (by In-Reply-To/References) when its sender is trusted (approved,
 or anyone not blocked on a direct mailbox, and not failing DMARC) and the thread is either their own or
 already in your Inbox/Archive. A sender still in the Screener keeps adding to their own Screener thread.
-Anything else starts a new thread, so no mail hides inside another sender's Screener or Blocked thread. Blocked
+Anything else starts a new thread, so no mail hides inside another sender's Screener or Blocked thread.
+A message that arrives more than once (one copy per recipient mailbox, or directly and via a list) is
+stored once; if a later copy would have gone to the Inbox while the stored one is in the Screener
+(e.g. the later copy was sent to a direct mailbox), the thread moves to the Inbox. Blocked
 senders are blocked everywhere. Replying to / emailing someone approves them.
 
 ## Types
