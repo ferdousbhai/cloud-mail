@@ -171,13 +171,37 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
             }
         }
     }
+    // A linked account's addresses send through that account; they're labelled with it.
+    let mut via: Vec<Option<String>> = vec![None; options.len()];
+    for (account, a) in ui.account_identities.borrow().iter() {
+        if !options.iter().any(|o| o.email.eq_ignore_ascii_case(&a.email)) {
+            options.push(a.clone());
+            via.push(Some(if account == "hey" { "HEY".into() } else { account.clone() }));
+        }
+    }
+    // A reply in a linked account always goes out through it, from its address, even before
+    // that account's addresses have loaded.
+    let account_reply = c.reply_to_message_id.as_deref().and_then(|id| id.split_once(':')).map(|(account, _)| account.to_string());
+    if let (Some(account), Some(w)) = (account_reply, wanted.filter(|w| !w.is_empty()))
+        && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w)) {
+            options.push(Address { name: None, email: w.to_string() });
+            via.push(Some(if account == "hey" { "HEY".into() } else { account }));
+        }
     // Before your mailboxes load, show the wanted address alone; after, only mailboxes can send.
     if let Some(w) = wanted.filter(|w| !w.is_empty())
         && options.is_empty() {
             let name = ids.as_ref().and_then(|i| i.default.as_ref()).and_then(|d| d.name.clone());
             options.push(Address { name, email: w.to_string() });
+            via.push(None);
         }
-    let labels: Vec<String> = options.iter().map(Address::formatted).collect();
+    let labels: Vec<String> = options
+        .iter()
+        .zip(&via)
+        .map(|(a, via)| match via {
+            Some(v) => format!("{}  · {v}", a.formatted()),
+            None => a.formatted(),
+        })
+        .collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     c.from.set_model(Some(&gtk::StringList::new(&refs)));
     let selected = wanted
@@ -196,7 +220,7 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
     if !c.send.is_sensitive() {
         return;
     }
-    let Some(client) = ui.client.clone() else { return };
+    let Some(mail) = ui.mail.clone() else { return };
     let to = util::split_addresses(&c.to.text());
     if to.is_empty() {
         c.error.set_label("Add at least one recipient.");
@@ -222,7 +246,7 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
     c.send.set_sensitive(false);
     c.send.set_label("Sending…");
     util::run(
-        move || client.send(&req),
+        move || mail.send(&req),
         clone!(#[weak] ui, #[strong] c, move |result: Result<crate::api::SendResponse, String>| match result {
             Ok(resp) => {
                 c.window.destroy();

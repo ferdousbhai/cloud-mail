@@ -511,7 +511,14 @@ impl Provider for Hey {
                 if !outgoing && let Some(alt) = nonempty(text(&e["alternative_sender_name"])) {
                     from.name = Some(alt);
                 }
-                let body = e["body"].as_str().map(str::to_string).filter(|b| !b.trim().is_empty()).or_else(|| nonempty(text(&e["summary"])));
+                let html = bodies.get(&entry).cloned().filter(|h| !h.is_empty());
+                // With the HTML at hand, the text is its plain reading; otherwise HEY's Markdown.
+                let body = html
+                    .as_deref()
+                    .map(crate::text::html_to_text)
+                    .or_else(|| e["body"].as_str().map(str::to_string))
+                    .filter(|b| !b.trim().is_empty())
+                    .or_else(|| nonempty(text(&e["summary"])));
                 Message {
                     id: format!("{}:{topic}/{entry}", self.name),
                     thread_id: thread_id.clone(),
@@ -523,7 +530,7 @@ impl Provider for Hey {
                     subject: summary.subject.clone(),
                     date: millis(&e["created_at"]),
                     text: body,
-                    html: bodies.get(&entry).cloned().filter(|h| !h.is_empty()),
+                    html,
                     message_id: None,
                     attachments: Vec::new(),
                     auth: None,

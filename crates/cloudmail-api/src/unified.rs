@@ -56,6 +56,16 @@ pub fn is_copy(copy: &ThreadSummary, original: &ThreadSummary) -> bool {
         && (copy.last_at - original.last_at).abs() <= DUPLICATE_WINDOW_MS
 }
 
+/// The worker's waiting senders followed by the accounts' that aren't also waiting in the worker.
+pub fn merge_senders(mut worker: Vec<PendingSender>, accounts: Vec<PendingSender>) -> Vec<PendingSender> {
+    for s in accounts {
+        if !worker.iter().any(|w| w.email.eq_ignore_ascii_case(&s.email)) {
+            worker.push(s);
+        }
+    }
+    worker
+}
+
 /// Newest first, at most `limit`.
 pub fn merge(mut a: Vec<ThreadSummary>, b: Vec<ThreadSummary>, limit: u32) -> Vec<ThreadSummary> {
     a.extend(b);
@@ -210,25 +220,25 @@ impl Mail {
         if !self.has_accounts() {
             return Ok((self.client.screener()?, self.broken.clone()));
         }
-        let (worker, extra) = std::thread::scope(|s| {
-            let extra = s.spawn(|| self.each_account(|p| p.screener()));
+        let (worker, (extra, mut warnings)) = std::thread::scope(|s| {
+            let extra = s.spawn(|| self.accounts_screener());
             (self.client.screener(), extra.join().unwrap_or_default())
         });
-        let mut senders = worker?;
-        let mut warnings = self.broken.clone();
-        for (name, r) in extra {
+        warnings.extend(self.broken.iter().cloned());
+        Ok((merge_senders(worker?, extra), warnings))
+    }
+
+    /// Senders waiting in the linked accounts' Screeners.
+    pub fn accounts_screener(&self) -> (Vec<PendingSender>, Vec<AccountWarning>) {
+        let mut senders = Vec::new();
+        let mut warnings = Vec::new();
+        for (name, r) in self.each_account(|p| p.screener()) {
             match r {
-                Ok(list) => {
-                    for s in list {
-                        if !senders.iter().any(|w| w.email.eq_ignore_ascii_case(&s.email)) {
-                            senders.push(s);
-                        }
-                    }
-                }
+                Ok(list) => senders.extend(list),
                 Err(e) => warnings.push(AccountWarning::new(&name, &e)),
             }
         }
-        Ok((senders, warnings))
+        (senders, warnings)
     }
 
     /// Screens a sender in or out. `key` is an address (decided in the worker, and in every

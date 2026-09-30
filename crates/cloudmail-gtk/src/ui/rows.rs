@@ -3,6 +3,17 @@ use gtk::{pango, prelude::*};
 use crate::api::{PendingSender, ThreadSummary};
 use crate::util::{short_time, subject_or_placeholder};
 
+/// A small tag naming the linked account a row came from ("HEY"); nothing for your worker's mail.
+fn account_badge(account: Option<&str>) -> Option<gtk::Label> {
+    let account = account?;
+    let text = if account == "hey" { "HEY".to_string() } else { account.to_string() };
+    let l = gtk::Label::new(Some(&text));
+    l.add_css_class("account-badge");
+    l.set_tooltip_text(Some(&format!("In your linked {text} account")));
+    l.set_valign(gtk::Align::Center);
+    Some(l)
+}
+
 fn label(text: &str, class: &str) -> gtk::Label {
     let l = gtk::Label::builder()
         .label(text)
@@ -27,7 +38,12 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     if t.has_attachments {
         top.append(&label("\u{f0c6}", "time"));
     }
-    top.append(&label(&short_time(t.last_at), "time"));
+    if let Some(badge) = account_badge(t.account.as_deref()) {
+        top.append(&badge);
+    }
+    if t.last_at > 0 {
+        top.append(&label(&short_time(t.last_at), "time"));
+    }
 
     let subject = subject_or_placeholder(&t.subject);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -41,7 +57,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     snippet.set_hexpand(true);
     bottom.append(&snippet);
     if let (Some(to), Some(default)) = (t.to_address.as_deref(), default_email)
-        && !sent_view && !to.eq_ignore_ascii_case(default) {
+        && !sent_view && !to.eq_ignore_ascii_case(default) && t.account.is_none() {
             // Not ellipsized: the snippet gives way so the address stays readable.
             let to_label = gtk::Label::new(Some(to));
             to_label.add_css_class("time");
@@ -84,7 +100,12 @@ pub fn sender_row(s: &PendingSender) -> SenderRow {
     let name = label(&s.display(), "sender");
     name.set_hexpand(true);
     top.append(&name);
-    top.append(&label(&short_time(s.last_at), "time"));
+    if let Some(badge) = account_badge(s.account.as_deref()) {
+        top.append(&badge);
+    }
+    if s.last_at > 0 {
+        top.append(&label(&short_time(s.last_at), "time"));
+    }
     text.append(&top);
     if s.display() != s.email {
         text.append(&label(&s.email, "snippet"));

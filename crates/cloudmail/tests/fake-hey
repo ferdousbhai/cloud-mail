@@ -79,7 +79,7 @@ case "$1 $2" in
     ok "[{\"id\":$3,\"status\":\"$status\",\"name\":\"Dana Diaz\",\"email_address\":\"dana@example.org\"}]" "1 sender $status" ;;
   "thread read")
     case "$3" in
-      9001|9003|9004|9005)
+      9001|9002|9003|9004|9005|9006)
         if [[ " $* " == *" --html "* ]]; then
           printf '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Thread %s</title>\n</head>\n<body>\n' "$3"
           printf '<article id="entry-8001" data-entry-id="8001" data-created-at="2026-09-30T07:00:00Z" data-body-state="hydrated">\n<header>\n<div>From: Carol Chen</div>\n</header>\n<div>Here are the <b>numbers</b>.</div>\n</article>\n'

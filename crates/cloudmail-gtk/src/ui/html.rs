@@ -13,7 +13,12 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         let open = i == last || (i + 1 == last && detail.messages.len() <= 3);
         body.push_str(&message(m, open, &mut blocked_remote));
     }
-    let heading = format!(r#"<h1 class="subject">{}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
+    let badge = match detail.thread.account.as_deref() {
+        Some("hey") => r#" <span class="acct" title="In your linked HEY account">HEY</span>"#.to_string(),
+        Some(other) => format!(r#" <span class="acct">{}</span>"#, escape_html(other)),
+        None => String::new(),
+    };
+    let heading = format!(r#"<h1 class="subject">{}{badge}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
     let note = if blocked_remote && !remote_images {
         r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
     } else {
@@ -28,6 +33,7 @@ body {{ margin: 0; padding: 18px 22px 60px; font: 10.5pt "JetBrainsMono Nerd Fon
 a {{ color: {accent}; }}
 .subject {{ color: {bfg}; font-size: 13pt; font-weight: bold; margin: 0 0 16px; overflow-wrap: anywhere; }}
 .note {{ color: {dfg}; font-size: 9pt; margin: 0 0 14px; }}
+.acct {{ color: {dfg}; font-size: 8pt; font-weight: normal; border: 1px solid {muted}; border-radius: 4px; padding: 0 5px; vertical-align: middle; }}
 .msg {{ margin: 0 0 18px; border-bottom: 1px solid {lbg}; padding-bottom: 14px; }}
 .msg:last-child {{ border-bottom: none; }}
 summary {{ list-style: none; cursor: pointer; }}

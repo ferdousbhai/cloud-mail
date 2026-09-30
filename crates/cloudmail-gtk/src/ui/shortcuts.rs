@@ -11,6 +11,7 @@ const KEYS: &[(&str, &str)] = &[
     ("c", "Compose"),
     ("y / n", "Screener: let in / block"),
     ("1 2 3 4", "Screener · Inbox · Archive · Sent"),
+    ("5 6 7 8", "HEY: The Feed · Paper Trail · Set Aside · Reply Later"),
     ("/", "Search"),
     ("Esc", "Clear search"),
     ("L", "Load remote images"),
