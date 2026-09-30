@@ -27,7 +27,7 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 | `worker/` | Cloudflare Worker (TypeScript): inbound handler, Screener, JSON API |
 | `crates/cloudmail` | `cloudmail` CLI |
 | `crates/cloudmail-gtk` | `cloudmail-gtk` desktop app (GTK4 + WebKitGTK), themed from Omarchy if present |
-| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY, through the `hey` CLI) |
+| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI) |
 | `docs/API.md` | HTTP API reference |
 
 ## Get started
@@ -143,6 +143,50 @@ or one that arrived much later, can still show.
 **If HEY is unavailable** (not installed, signed out, offline), your own mail loads as usual and one
 line says what's wrong with HEY. The CLI puts it in `meta.warnings` and on stderr.
 
+## Your Gmail too (optional)
+
+Gmail can sit next to your mail the same way, in the app and the CLI, and again nothing changes until
+you add it. Cloudmail reaches Gmail through Google's own
+[Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in and no Google
+Cloud setup of your own: Cloudmail brings its own Google sign-in.
+
+```sh
+npm install -g @googleworkspace/cli   # installs `gws`
+cloudmail account add gmail           # opens Google's sign-in in your browser, once
+cloudmail account list
+cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
+```
+
+The sign-in asks for Gmail only (read, label, archive and send; nothing else in your Google account).
+While Cloudmail's Google app awaits Google's verification, Google shows **"Google hasn't verified
+this app"**: choose **Advanced**, then **Go to Cloudmail**. The sign-in is kept in Cloudmail's own
+directory (`~/.config/cloudmail/gws/gmail`), apart from any `gws` you use yourself, which it never
+reads or changes. A second Gmail account links with `cloudmail account add gmail --name work`.
+
+| In Cloudmail | Your worker | Gmail |
+|---|---|---|
+| Inbox | Inbox | Inbox (unread = Gmail's unread) |
+| Archive (`e`) | Archive | Gmail's archive: the thread leaves the Inbox, `i` brings it back |
+| Screener | Screener | (Gmail has no Screener: its mail goes straight to the Inbox) |
+| Sent | Sent | Sent |
+| Search | full-text search | Gmail search (its own syntax works: `from:ana has:attachment`) |
+
+Gmail threads carry a small **Gmail** tag. Reading, replying (threaded in Gmail, from your Gmail
+address), writing from your Gmail address or a verified send-as alias (pick it in From), marking
+read/unread, archiving, attachments and `cloudmail raw` all go through `gws`; Gmail's IDs start with
+`gmail:`. Gmail's categories and labels aren't shown separately: everything in Gmail's Inbox,
+Promotions and Social included, is in the Inbox.
+
+**Forwarding.** If your worker forwards to your Gmail address, or Gmail forwards into your worker,
+Gmail's copy is hidden: Gmail gives out Message-IDs, so a copy is matched exactly, message for
+message, however long after the original it arrived.
+
+**If Gmail is unavailable** (gws not installed, signed out, offline), your own mail loads as usual and
+one line says what's wrong. When Google's sign-in has expired or been revoked, it says to run
+`cloudmail account add gmail` again. Each listing reads Gmail's threads one `gws` run at a time (a
+few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
+takes a moment; your own mail doesn't wait for it.
+
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
@@ -175,12 +219,23 @@ cargo test --workspace && cargo clippy --workspace --all-targets
 ```
 
 Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
-`Client` implements it too), `hey.rs` maps `hey … --json` into it, and `unified.rs` merges providers,
-turns their failures into warnings and hides forwarded copies. A new provider (Gmail through Google's
-`gws` CLI, say) implements `Provider`, prefixes its IDs with its account name and is added to
-`provider::open`; the config entry is `[accounts.<name>] provider = "…"`. Tests and headless runs
-never touch a real HEY account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey` answers with
-synthetic data (`FAKE_HEY_MODE=logged_out|crash|garbage` to test failures).
+`Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls
+through `gws gmail users … --params '<json>'`, and `unified.rs` merges providers, turns their failures
+into warnings and hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
+its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
+"…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
+and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
+(`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
+
+Cloudmail's Google sign-in is one OAuth client, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in
+`crates/cloudmail-api/src/gmail.rs` (a desktop client's secret isn't secret). Until those are filled
+in, `account add gmail` says the sign-in isn't configured; a build can use its own client with
+`CLOUDMAIL_GOOGLE_CLIENT_ID`/`CLOUDMAIL_GOOGLE_CLIENT_SECRET` or `--client-id`/`--client-secret`. To
+make one: a Google Cloud project with the Gmail API enabled, an OAuth consent screen (External,
+published "In production", since test-mode sign-ins expire after 7 days) with the
+`https://www.googleapis.com/auth/gmail.modify` scope, and an OAuth client of type "Desktop app".
+`gmail.modify` is a restricted scope: until Google verifies the app, users see the unverified-app
+screen and at most 100 people can sign in.
 
 `worker/wrangler.jsonc` is generated by `cloudmail setup` from `wrangler.template.jsonc` and is not
 committed. Mail that can't be parsed or stored is never bounced: the raw message is kept in R2
