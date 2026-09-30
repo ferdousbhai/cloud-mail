@@ -63,15 +63,18 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const parsed = await PostalMime.parse(raw, { attachmentEncoding: "arraybuffer" });
   const messageId = normalizeMessageId(parsed.messageId);
 
-  // One message can arrive several times: once per recipient mailbox, or directly and through a list.
-  const earlier = messageId
-    ? await env.DB.prepare(
-        `SELECT m.thread_id, t.folder FROM messages m JOIN threads t ON t.id = m.thread_id
-         WHERE m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
-      )
-        .bind(messageId)
-        .first<{ thread_id: string; folder: Folder }>()
-    : null;
+  // One message can arrive several times: once per recipient mailbox (often concurrently), or
+  // directly and through a list. A unique index keeps one stored copy; see absorbDuplicate.
+  const findEarlier = () =>
+    messageId
+      ? env.DB.prepare(
+          `SELECT m.thread_id, t.folder FROM messages m JOIN threads t ON t.id = m.thread_id
+           WHERE m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
+        )
+          .bind(messageId)
+          .first<{ thread_id: string; folder: Folder }>()
+      : Promise.resolve(null);
+  const earlier = await findEarlier();
 
   const from = flattenAddresses(parsed.from)[0] ?? { name: "", email: envelopeFrom };
   // Unknown recipients (e.g. a routing rule added without a mailbox entry) are screened.
@@ -100,25 +103,29 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
         : status === "approved" && !spoofable
           ? "inbox"
           : "screener";
-  if (earlier) {
-    // Already stored. A copy that is more trusted than the one that got here first (sent to a
-    // direct mailbox, or passing DMARC from an approved sender) lifts it out of the Screener.
-    if (earlier.folder === "screener" && newThreadFolder === "inbox") {
-      await env.DB.prepare("UPDATE threads SET folder = 'inbox', unread = 1 WHERE id = ?").bind(earlier.thread_id).run();
+  // Already stored: a copy more trusted than the one that got here first (sent to a direct
+  // mailbox, or passing DMARC from an approved sender) lifts it out of the Screener.
+  const absorbDuplicate = async (stored: { thread_id: string; folder: Folder }) => {
+    if (stored.folder === "screener" && newThreadFolder === "inbox") {
+      await env.DB.prepare("UPDATE threads SET folder = 'inbox', unread = 1 WHERE id = ? AND folder = 'screener'")
+        .bind(stored.thread_id)
+        .run();
     }
-    return;
-  }
+  };
+  if (earlier) return absorbDuplicate(earlier);
 
   // Only a sender you'd let in anyway may join an existing conversation. Otherwise quoting a known
   // Message-ID would carry a blocked, unscreened or forged sender past the Screener.
   const mayJoinThread = (thread: ThreadRef): boolean => {
     if (status === "blocked" || spoofable) return false;
-    // Your own conversation with them, wherever it is (a pending sender's Screener thread included).
-    if (thread.sender_email === from.email) return true;
-    // Someone else's conversation only once it's yours to read: joining a thread still in the
-    // Screener or in Blocked would hide this mail there, and blocking that sender would take it along.
-    const readable = thread.folder === "inbox" || thread.folder === "archive";
-    return readable && (!screened || status === "approved");
+    const own = thread.sender_email === from.email;
+    // A sender still waiting in the Screener only adds to their own Screener thread; joining
+    // anything already in the Inbox or Archive would skip the Screener.
+    if (screened && status !== "approved") return own && thread.folder === "screener";
+    // Otherwise: their own conversation, or someone else's once it's yours to read. Joining a
+    // thread still in the Screener or in Blocked would hide this mail there, and blocking that
+    // sender would take it along.
+    return own || thread.folder === "inbox" || thread.folder === "archive";
   };
   const existingThreadFolder = (current: Folder): Folder => {
     if (status === "blocked") return current;
@@ -142,25 +149,40 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const now = Date.now();
   const date = Number.isFinite(parsedDate) && parsedDate < now + 86_400_000 ? parsedDate : now;
 
-  await storeMessage(env, {
-    outgoing: false,
-    messageId,
-    inReplyTo: normalizeMessageId(parsed.inReplyTo),
-    refs: messageIdList(parsed.references),
-    from,
-    to: flattenAddresses(parsed.to),
-    cc: flattenAddresses(parsed.cc),
-    replyTo: flattenAddresses(parsed.replyTo),
-    envelopeTo,
-    subject: parsed.subject?.trim() || "(no subject)",
-    text: parsed.text ?? null,
-    html: parsed.html ?? null,
-    date,
-    raw,
-    auth,
-    attachments,
-    newThreadFolder,
-    existingThreadFolder,
-    joinThread: mayJoinThread,
-  });
+  let stored: { id: string; threadId: string };
+  try {
+    stored = await storeMessage(env, {
+      outgoing: false,
+      messageId,
+      inReplyTo: normalizeMessageId(parsed.inReplyTo),
+      refs: messageIdList(parsed.references),
+      from,
+      to: flattenAddresses(parsed.to),
+      cc: flattenAddresses(parsed.cc),
+      replyTo: flattenAddresses(parsed.replyTo),
+      envelopeTo,
+      subject: parsed.subject?.trim() || "(no subject)",
+      text: parsed.text ?? null,
+      html: parsed.html ?? null,
+      date,
+      raw,
+      auth,
+      attachments,
+      newThreadFolder,
+      existingThreadFolder,
+      joinThread: mayJoinThread,
+    });
+  } catch (err) {
+    // A concurrent copy won the unique index; its thread stands, possibly lifted by this copy.
+    const winner = /UNIQUE/i.test(String(err)) ? await findEarlier() : null;
+    if (winner) return absorbDuplicate(winner);
+    throw err;
+  }
+
+  // Blocked while this message was being stored: its new Screener thread follows the decision.
+  if (newThreadFolder === "screener" && (await senderStatus(env, from.email)) === "blocked") {
+    await env.DB.prepare("UPDATE threads SET folder = 'blocked', unread = 0 WHERE id = ? AND folder = 'screener'")
+      .bind(stored.threadId)
+      .run();
+  }
 }

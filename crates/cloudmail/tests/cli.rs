@@ -295,6 +295,24 @@ fn watch_streams_jsonl_from_newest_activity() {
 }
 
 #[test]
+fn unread_is_filtered_by_the_worker_and_kept_in_the_next_page_hint() {
+    // A full page of unread threads, as a worker that honours unread=1 returns it.
+    let m = mock(Box::new(|req: &Req| {
+        let threads: Vec<Value> = (1..=2i64)
+            .map(|i| json!({ "id": format!("t_{i}"), "subject": "s", "folder": "inbox", "snippet": "", "from": { "name": "", "email": "a@b.c" }, "to_address": "hi@x.y", "message_count": 1, "unread": true, "has_attachments": false, "last_at": 100 - i }))
+            .collect();
+        let _ = req;
+        ok(json!({ "threads": threads }))
+    }));
+    let v = json_out(&cloudmail(&m, &["inbox", "--unread", "--limit", "2", "--since", "5"], None));
+    let path = requests(&m).into_iter().map(|r| r.path).find(|p| p.starts_with("/api/threads")).unwrap();
+    assert!(path.contains("unread=1") && path.contains("since=5"), "{path}");
+    let more = v["breadcrumbs"].as_array().unwrap().iter().find(|b| b["action"] == "more").expect("a next-page hint");
+    let cmd = more["command"].as_str().unwrap();
+    assert!(cmd.contains("--before 98") && cmd.contains("--unread") && cmd.contains("--since 5"), "{cmd}");
+}
+
+#[test]
 fn watch_pages_back_through_a_burst_larger_than_one_page() {
     // 250 threads changed after `since`; the worker returns at most `limit` per request, newest first.
     let m = mock(Box::new(|req: &Req| {

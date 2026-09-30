@@ -172,13 +172,14 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
   const before = Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
   const q = url.searchParams.get("q")?.trim();
   const since = Number(url.searchParams.get("since")) || 0;
+  const unread = url.searchParams.get("unread") === "1" ? "AND unread = 1" : "";
 
   let rows: D1Result<ThreadRow>;
   if (q) {
     const match = ftsQuery(q);
     if (!match) return json({ threads: [] });
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ? AND id IN (
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ? ${unread} AND id IN (
          SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?
        ) ORDER BY last_at DESC LIMIT ?`,
     )
@@ -187,7 +188,7 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
   } else if (folder === "sent") {
     rows = await env.DB.prepare(
       `SELECT ${THREAD_COLUMNS} FROM threads WHERE last_sent_at IS NOT NULL AND last_sent_at < ? AND last_sent_at > ?
-       ORDER BY last_sent_at DESC LIMIT ?`,
+       ${unread} ORDER BY last_sent_at DESC LIMIT ?`,
     )
       .bind(before, since, limit)
       .all<ThreadRow>();
@@ -195,14 +196,14 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
   } else if (folder === "all") {
     rows = await env.DB.prepare(
       `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ?
-       ORDER BY last_at DESC LIMIT ?`,
+       ${unread} ORDER BY last_at DESC LIMIT ?`,
     )
       .bind(before, since, limit)
       .all<ThreadRow>();
   } else if (["inbox", "archive", "screener", "blocked"].includes(folder)) {
     rows = await env.DB.prepare(
       `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder = ? AND last_at < ? AND last_at > ?
-       ORDER BY last_at DESC LIMIT ?`,
+       ${unread} ORDER BY last_at DESC LIMIT ?`,
     )
       .bind(folder, before, since, limit)
       .all<ThreadRow>();

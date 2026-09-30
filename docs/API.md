@@ -82,7 +82,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
 | GET | `/api/counts` | | `{ "screener": 3, "inbox": 12, "inbox_unread": 2 }` (screener = pending sender count) |
-| GET | `/api/threads` | `?folder=inbox\|archive\|screener\|sent\|blocked\|all&limit=50&before=<last_at>&since=<last_at>&q=<search>` | `{ "threads": [ThreadSummary] }` newest first. `all` = every non-blocked folder. `since` returns only threads with activity after that time (use it to poll for new mail). `q` does full-text search across all non-blocked folders (folder ignored). |
+| GET | `/api/threads` | `?folder=inbox\|archive\|screener\|sent\|blocked\|all&limit=50&before=<last_at>&since=<last_at>&unread=1&q=<search>` | `{ "threads": [ThreadSummary] }` newest first. `all` = every non-blocked folder. `since` returns only threads with activity after that time (use it to poll for new mail); `unread=1` only unread threads. `q` does full-text search across all non-blocked folders (folder ignored). |
 | GET | `/api/threads/:id` | | `{ "thread": ThreadSummary, "messages": [Message] }` oldest first. Does not mark read. |
 | POST | `/api/threads/:id/move` | `{ "folder": "inbox"\|"archive" }` | `{ "ok": true }` |
 | POST | `/api/threads/:id/read` | `{ "unread": false }` | `{ "ok": true }` |

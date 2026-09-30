@@ -45,7 +45,12 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
         before: a.before,
         since: a.since,
         limit: a.limit,
+        unread: a.unread,
     })?;
+    // The page as the worker returned it decides whether there is more; an older worker that
+    // ignores `unread=1` is filtered here too.
+    let full_page = threads.len() as u32 >= a.limit;
+    let oldest = threads.last().map(|t| t.last_at);
     if a.unread {
         threads.retain(|t| t.unread);
     }
@@ -56,10 +61,16 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
     };
     let summary = format!("{} in {where_}", plural(threads.len(), "thread", "threads"));
     let mut crumbs = thread_crumbs();
-    if threads.len() as u32 >= a.limit
-        && let Some(last) = threads.last() {
-            crumbs.push(crumb("more", &format!("cloudmail threads list --folder {} --before {}", folder.as_str(), last.last_at), "Next page"));
+    if full_page && let Some(before) = oldest {
+        let mut next = format!("cloudmail threads list --folder {} --before {before} --limit {}", folder.as_str(), a.limit);
+        if a.unread {
+            next.push_str(" --unread");
         }
+        if let Some(since) = a.since {
+            next.push_str(&format!(" --since {since}"));
+        }
+        crumbs.push(crumb("more", &next, "Next page"));
+    }
     if folder == Folder::Screener {
         crumbs.insert(0, crumb("approve", "cloudmail screener approve <email>", "Screen a sender in"));
     }
@@ -489,7 +500,16 @@ pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
             std::fs::write(&path, &bytes)?;
             Ok(Response::new(json!({ "id": a.id, "path": path, "size": bytes.len() }), format!("Saved {}", path.display())))
         }
-        _ => {
+        Some(_) => {
+            // `-o -` asks for the bytes on stdout explicitly.
+            std::io::stdout().write_all(&bytes)?;
+            Ok(Response::silent())
+        }
+        None if output::stdout_is_tty() => Err(CliError::usage(
+            "raw mail is exactly what the sender wrote, escape sequences included, so it isn't printed to a terminal",
+        )
+        .hint(format!("redirect it (`cloudmail raw {id} > message.eml`), save it with `-o message.eml`, or force it with `-o -`", id = a.id))),
+        None => {
             std::io::stdout().write_all(&bytes)?;
             Ok(Response::silent())
         }

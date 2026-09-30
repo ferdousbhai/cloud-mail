@@ -85,7 +85,7 @@ pub struct Ui {
     current: RefCell<Option<ThreadDetail>>,
     /// The thread the user allowed remote images for (L). Tied to one thread, so a press while
     /// another thread is still loading can't unblock that one's trackers.
-    images_for: RefCell<Option<String>>,
+    images_for: RefCell<Option<(String, std::collections::HashSet<String>)>>,
     list_gen: Cell<u64>,
     open_gen: Cell<u64>,
     loading_more: Cell<bool>,
@@ -754,17 +754,31 @@ impl Ui {
         let folder = detail.thread.folder.as_str();
         self.archive_btn.set_visible(folder == "inbox");
         self.inbox_btn.set_visible(folder == "archive");
-        let images = self.images_for.borrow().as_deref() == Some(detail.thread.id.as_str());
+        // Consent covers the messages that were on screen when L was pressed; moving to another
+        // thread ends it, and a message that arrived since stays blocked until L is pressed again.
+        if self.images_for.borrow().as_ref().is_some_and(|(id, _)| *id != detail.thread.id) {
+            *self.images_for.borrow_mut() = None;
+        }
+        let images = self
+            .images_for
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, allowed)| detail.messages.iter().all(|m| allowed.contains(&m.id)));
         let html = html::thread(detail, &self.palette.borrow(), images);
         self.webview.load_html(&html, Some("about:blank"));
         self.reader_stack.set_visible_child_name("thread");
     }
 
     fn load_images(&self) {
-        // For the thread on screen, which is the one the user is looking at when they press L.
-        let Some(id) = self.current.borrow().as_ref().map(|d| d.thread.id.clone()) else { return };
-        if self.images_for.borrow().as_deref() != Some(id.as_str()) {
-            *self.images_for.borrow_mut() = Some(id);
+        // For the messages on screen, which are what the user is looking at when they press L.
+        let consent = self
+            .current
+            .borrow()
+            .as_ref()
+            .map(|d| (d.thread.id.clone(), d.messages.iter().map(|m| m.id.clone()).collect::<std::collections::HashSet<_>>()));
+        let Some(consent) = consent else { return };
+        if self.images_for.borrow().as_ref() != Some(&consent) {
+            *self.images_for.borrow_mut() = Some(consent);
             self.render_current();
         }
     }
@@ -939,10 +953,13 @@ impl Ui {
     }
 
     fn toggle_unread(self: &Rc<Self>) {
-        let target = self
-            .selected_index()
-            .and_then(|i| self.threads.borrow().get(i).map(|t| (t.id.clone(), t.unread)))
-            .or_else(|| self.current.borrow().as_ref().map(|d| (d.thread.id.clone(), d.thread.unread)));
+        // In the Screener the rows are senders, not threads: act on the thread shown.
+        let from_row = if self.view.get() == View::Screener {
+            None
+        } else {
+            self.selected_index().and_then(|i| self.threads.borrow().get(i).map(|t| (t.id.clone(), t.unread)))
+        };
+        let target = from_row.or_else(|| self.current.borrow().as_ref().map(|d| (d.thread.id.clone(), d.thread.unread)));
         if let Some((id, unread)) = target {
             self.set_unread(&id, !unread);
             self.toast(if unread { "Marked read" } else { "Marked unread" });
@@ -1119,7 +1136,7 @@ impl Ui {
 
     fn poll(self: &Rc<Self>) {
         self.refresh_counts();
-        let paginated = self.threads.borrow().len() > PAGE as usize;
+        let paginated = self.view.get() != View::Screener && self.threads.borrow().len() > PAGE as usize;
         if self.view.get() != View::Search && !paginated {
             self.load_list(true);
         }

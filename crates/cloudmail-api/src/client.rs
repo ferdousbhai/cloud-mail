@@ -16,6 +16,8 @@ pub struct ThreadQuery {
     pub before: Option<i64>,
     pub since: Option<i64>,
     pub limit: u32,
+    /// Only unread threads (filtered by the worker, so paging is correct).
+    pub unread: bool,
 }
 
 #[derive(Clone)]
@@ -144,6 +146,7 @@ impl Client {
             before,
             since: None,
             limit,
+            unread: false,
         })
     }
 
@@ -162,6 +165,9 @@ impl Client {
         }
         if let Some(s) = q.since {
             path.push_str(&format!("&since={s}"));
+        }
+        if q.unread {
+            path.push_str("&unread=1");
         }
         self.get::<Threads>(&path).map(|t| t.threads)
     }
