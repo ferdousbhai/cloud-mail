@@ -69,10 +69,10 @@ CLOUDFLARE_API_TOKEN=… cloudmail setup you@yourdomain.com --yes
 
 Create the token under *My Profile › API Tokens* with these permissions:
 **Account**: Workers Scripts, D1, Workers R2 Storage, Email Routing Addresses and Email Sending (all
-Edit), Account Settings (Read); **Zone** (your mail domains): Email Routing Rules and Zone Settings
-(Edit), Zone (Read).
+Edit), Account Settings (Read); **Zone** (your mail domains): Email Routing Rules, Zone Settings and
+DNS (Edit), Zone (Read). If setup can't tell which account to use, add `--account <id>` (the Account
+ID on your Cloudflare dashboard's home page).
 
-With several Cloudflare accounts, add `--account <id>`.
 
 Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu
 ([omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724),

@@ -583,6 +583,9 @@ fn choose_account(w: &Wrangler, flag: Option<&str>, previous: Option<String>, wh
     }
     let accounts = parse_accounts(whoami);
     match accounts.len() {
+        // A token that can't list accounts leaves wrangler unable to pick one either.
+        0 if !w.dry_run => Err(CliError::usage("couldn't tell which Cloudflare account to use")
+            .hint("pass --account <ID> (the Account ID on your Cloudflare dashboard's home page), or set CLOUDFLARE_ACCOUNT_ID")),
         0 => Ok(None),
         1 => Ok(Some(accounts[0].1.clone())),
         _ if w.interactive && !w.dry_run => {
