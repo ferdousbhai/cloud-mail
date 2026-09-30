@@ -3,12 +3,15 @@
 //! The worker is authoritative: its errors fail an operation as they always have. A linked
 //! account's errors never do; they come back as warnings next to whatever the worker returned.
 //!
-//! Duplicates: a worker that forwards to a linked account (`forward_to` = your HEY address)
-//! puts every message in both. HEY's CLI exposes no Message-ID, so a linked account's thread is
-//! taken for a copy of a worker thread when the sender's address and the subject (ignoring
-//! Re:/Fwd:) match and the latest activity is within `DUPLICATE_WINDOW_MS`; the copy is hidden.
+//! Duplicates: a worker that forwards to a linked account (`forward_to` = your HEY address), or
+//! an account that forwards into your worker, puts every message in both; the account's copy is
+//! hidden. Where the account exposes Message-IDs (Gmail), a thread is a copy when one of its
+//! messages has the Message-ID of a message in a worker thread with the same subject. Otherwise
+//! (HEY's CLI exposes none) it is a copy when the sender's address and the subject (ignoring
+//! Re:/Fwd:) match and the latest activity is within `DUPLICATE_WINDOW_MS`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::client::{Client, ThreadQuery};
 use crate::config::Config;
@@ -18,12 +21,17 @@ use crate::types::*;
 
 pub const DUPLICATE_WINDOW_MS: i64 = 15 * 60 * 1000;
 
+/// A worker thread's `last_at` when read, and its messages' Message-IDs.
+type WorkerIds = (i64, Vec<String>);
+
 #[derive(Clone)]
 pub struct Mail {
     pub client: Client,
     pub accounts: Vec<Arc<dyn Provider>>,
     /// Configured accounts that couldn't be opened (unknown provider, …).
     pub broken: Vec<AccountWarning>,
+    /// Worker threads' Message-IDs, by thread ID, with the `last_at` they were read at.
+    worker_ids: Arc<Mutex<HashMap<String, WorkerIds>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,7 +92,7 @@ impl Mail {
                 Err(e) => broken.push(AccountWarning::new(name, &e)),
             }
         }
-        Self { client, accounts, broken }
+        Self { client, accounts, broken, worker_ids: Default::default() }
     }
 
     pub fn from_config(config: &Config) -> Self {
@@ -193,9 +201,28 @@ impl Mail {
             }
         }
         let before = threads.len();
-        if dedupe {
+        if dedupe && !threads.is_empty() {
             let index = self.worker_index(&threads);
-            threads.retain(|t| !index.iter().any(|w| is_copy(t, w)));
+            let exact: Vec<Vec<String>> = threads.iter().map(|t| self.account_for(&t.id).map(|p| p.message_ids(&t.id)).unwrap_or_default()).collect();
+            let same_subject = |t: &ThreadSummary| index.iter().filter(|w| subject_key(&w.subject) == subject_key(&t.subject)).collect::<Vec<_>>();
+            let candidates: Vec<&ThreadSummary> = threads.iter().zip(&exact).filter(|(_, ids)| !ids.is_empty()).flat_map(|(t, _)| same_subject(t)).collect();
+            let known = self.worker_message_ids(&candidates);
+            let mut keep = Vec::with_capacity(threads.len());
+            for (t, ids) in threads.into_iter().zip(exact) {
+                let copy = if ids.is_empty() {
+                    index.iter().any(|w| is_copy(&t, w))
+                } else {
+                    // A worker thread whose messages couldn't be read is judged the other way.
+                    same_subject(&t).into_iter().any(|w| match known.get(&w.id) {
+                        Some(worker) => worker.iter().any(|m| ids.contains(m)),
+                        None => is_copy(&t, w),
+                    })
+                };
+                if !copy {
+                    keep.push(t);
+                }
+            }
+            threads = keep;
         }
         let hidden = before - threads.len();
         (threads, warnings, hidden)
@@ -213,6 +240,38 @@ impl Mail {
         });
         all.extend(blocked);
         all
+    }
+
+    /// Normalized Message-IDs of these worker threads' messages (cached until a thread changes);
+    /// threads that couldn't be read are missing.
+    fn worker_message_ids(&self, threads: &[&ThreadSummary]) -> HashMap<String, Vec<String>> {
+        let mut out = HashMap::new();
+        let mut todo: Vec<(String, i64)> = Vec::new();
+        {
+            let cache = self.worker_ids.lock().unwrap();
+            for t in threads {
+                match cache.get(&t.id).filter(|(at, _)| *at == t.last_at) {
+                    Some((_, ids)) => {
+                        out.insert(t.id.clone(), ids.clone());
+                    }
+                    None if !todo.iter().any(|(id, _)| *id == t.id) => todo.push((t.id.clone(), t.last_at)),
+                    None => {}
+                }
+            }
+        }
+        for chunk in todo.chunks(8) {
+            let read: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk.iter().map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id)))).collect();
+                handles.into_iter().map(|(id, at, h)| (id, at, h.join().ok().and_then(|r| r.ok()))).collect()
+            });
+            for (id, at, detail) in read {
+                let Some(detail) = detail else { continue };
+                let ids: Vec<String> = detail.messages.iter().filter_map(|m| m.message_id.as_deref()).map(crate::gmail::normalize_message_id).filter(|m| !m.is_empty()).collect();
+                self.worker_ids.lock().unwrap().insert(id.clone(), (at, ids.clone()));
+                out.insert(id, ids);
+            }
+        }
+        out
     }
 
     /// Senders waiting in the worker's Screener and every account's. An account's sender who is

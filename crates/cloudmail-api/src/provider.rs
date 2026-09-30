@@ -1,11 +1,14 @@
-//! Mail providers: your Cloudmail worker, and linked accounts (HEY; Gmail can follow the same shape).
+//! Mail providers: your Cloudmail worker, and linked accounts (HEY, Gmail).
 //!
 //! A provider speaks in cloudmail's own types. A linked account prefixes every ID it hands out
 //! with its name (`hey:…`), so any later action on that ID goes back to it; the worker's own IDs
 //! (`t_…`, `m_…`, `a_…`) stay as they are.
 
 use serde::Serialize;
+use std::io::{Read, Write};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::client::{Client, ThreadQuery};
 use crate::config::AccountConfig;
@@ -59,6 +62,10 @@ pub trait Provider: Send + Sync {
     fn extra_folders(&self) -> &[ExtraFolder] {
         &[]
     }
+    /// Where archiving puts a thread, as a folder name (HEY's is Paper Trail).
+    fn archive_folder(&self) -> &str {
+        "archive"
+    }
     /// Whether the provider has anything in this folder (HEY has no Sent or Blocked box).
     fn has_folder(&self, folder: &str) -> bool;
     /// Whether an ID (thread, message, attachment or screener sender) belongs to this provider.
@@ -82,6 +89,15 @@ pub trait Provider: Send + Sync {
     /// Sends a new message, or a reply when `reply_to_message_id` is one of this provider's message IDs.
     fn send(&self, req: &SendRequest) -> Result<SendResponse>;
     fn download_attachment(&self, id: &str) -> Result<Download>;
+    /// A message's original .eml, when the provider gives it out.
+    fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
+        Err(Error::new(ErrorKind::BadRequest, format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label())))
+    }
+    /// The Message-ID headers of a thread's messages as last listed, for spotting copies of
+    /// worker mail exactly; empty when the provider doesn't expose them.
+    fn message_ids(&self, _thread_id: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Your Cloudmail worker, as a provider. Its IDs are unprefixed.
@@ -156,15 +172,31 @@ impl Provider for Client {
     fn download_attachment(&self, id: &str) -> Result<Download> {
         Client::download_attachment(self, id)
     }
+
+    fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
+        Client::raw_message(self, id)
+    }
 }
 
 /// Providers cloudmail knows how to link, for `account add` and its help.
-pub const KNOWN_PROVIDERS: &[(&str, &str)] = &[("hey", "HEY (hey.com), through the official `hey` CLI")];
+pub const KNOWN_PROVIDERS: &[(&str, &str)] =
+    &[("hey", "HEY (hey.com), through the official `hey` CLI"), ("gmail", "Gmail, through Google's Workspace CLI `gws`")];
+
+/// How an account is named on screen: its provider's name for the usual account names, else the
+/// name it was given.
+pub fn account_label(account: &str) -> String {
+    match account {
+        "hey" => "HEY".into(),
+        "gmail" => "Gmail".into(),
+        other => other.to_string(),
+    }
+}
 
 /// Opens a configured linked account.
 pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
     match cfg.provider(name) {
         "hey" => Ok(Arc::new(crate::hey::Hey::new(name, cfg))),
+        "gmail" => Ok(Arc::new(crate::gmail::Gmail::new(name, cfg))),
         other => Err(Error::new(
             ErrorKind::Config,
             format!("account {name}: unknown provider \"{other}\" (known: {})", KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")),
@@ -175,4 +207,55 @@ pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
 /// Account names become ID prefixes, so they are short lowercase words.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 32 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name != "cloudmail"
+}
+
+/// How a linked account's command-line tool ended.
+pub(crate) enum Run {
+    Done { status: ExitStatus, stdout: Vec<u8>, stderr: String },
+    Missing,
+    TimedOut,
+    Failed(std::io::Error),
+}
+
+/// Runs a prepared command (stdout and stderr piped, stdin fed when given), killing it after `timeout`.
+pub(crate) fn run_command(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Run {
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Run::Missing,
+        Err(e) => return Run::Failed(e),
+    };
+    if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        let input = input.to_string();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(input.as_bytes());
+        });
+    }
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Run::TimedOut;
+            }
+            Err(e) => return Run::Failed(e),
+        }
+    };
+    let stdout = out.join().unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).trim().to_string();
+    Run::Done { status, stdout, stderr }
 }

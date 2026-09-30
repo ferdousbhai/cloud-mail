@@ -28,6 +28,11 @@ pub struct AccountConfig {
     /// The provider's own account selector (e.g. a HEY linked-account ID); default: all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Gmail: a Google OAuth client to sign in with instead of the one built into cloudmail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 }
 
 impl AccountConfig {

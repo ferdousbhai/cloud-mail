@@ -74,7 +74,7 @@ fn add(ctx: &Ctx, provider_name: &str, name: Option<String>, command: Option<Str
     if !provider::valid_name(&name) {
         return Err(CliError::usage(format!("\"{name}\" can't be an account name")).hint("use lowercase letters, digits and dashes (it prefixes the account's IDs)"));
     }
-    let cfg = AccountConfig { provider: (name != provider_name).then(|| provider_name.clone()), command, account };
+    let cfg = AccountConfig { provider: (name != provider_name).then(|| provider_name.clone()), command, account, ..Default::default() };
     let hey = Hey::new(&name, &cfg);
     let version = hey.version().map_err(|e| CliError::new("not_installed", exit::GENERIC, e.message).hint(HEY_INSTALL))?;
     if !hey.signed_in()? {

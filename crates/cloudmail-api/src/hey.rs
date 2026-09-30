@@ -12,15 +12,14 @@
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::client::ThreadQuery;
 use crate::config::AccountConfig;
 use crate::error::{Error, ErrorKind, Result};
-use crate::provider::{AccountStatus, ExtraFolder, Provider};
+use crate::provider::{AccountStatus, ExtraFolder, Provider, Run, run_command};
 use crate::text::bare_email;
 use crate::types::*;
 
@@ -169,49 +168,17 @@ impl Hey {
         if let Some(a) = &self.account {
             cmd.args(["--account", a]);
         }
-        cmd.env("HEY_NONINTERACTIVE", "1")
-            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                self.fail(ErrorKind::AccountUnavailable, format!("the hey CLI isn't installed (no `{}` on PATH); see https://github.com/basecamp/hey-cli", self.command))
-            } else {
-                self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))
+        cmd.env("HEY_NONINTERACTIVE", "1");
+        let (status, stdout, stderr) = match run_command(&mut cmd, stdin, TIMEOUT) {
+            Run::Done { status, stdout, stderr } => (status, stdout, stderr),
+            Run::Missing => {
+                return Err(self.fail(ErrorKind::AccountUnavailable, format!("the hey CLI isn't installed (no `{}` on PATH); see https://github.com/basecamp/hey-cli", self.command)));
             }
-        })?;
-        if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
-            let input = input.to_string();
-            std::thread::spawn(move || {
-                let _ = pipe.write_all(input.as_bytes());
-            });
-        }
-        let reader = |pipe: Option<Box<dyn Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                if let Some(mut p) = pipe {
-                    let _ = p.read_to_end(&mut buf);
-                }
-                buf
-            })
-        };
-        let out = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-        let err = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-        let deadline = Instant::now() + TIMEOUT;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(self.fail(ErrorKind::AccountUnavailable, format!("`hey {}` took longer than {}s", args.first().map(String::as_str).unwrap_or(""), TIMEOUT.as_secs())));
-                }
-                Err(e) => return Err(self.fail(ErrorKind::AccountUnavailable, e.to_string())),
+            Run::TimedOut => {
+                return Err(self.fail(ErrorKind::AccountUnavailable, format!("`hey {}` took longer than {}s", args.first().map(String::as_str).unwrap_or(""), TIMEOUT.as_secs())));
             }
+            Run::Failed(e) => return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))),
         };
-        let stdout = out.join().unwrap_or_default();
-        let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).trim().to_string();
         if status.success() {
             return Ok(stdout);
         }
@@ -390,6 +357,10 @@ impl Provider for Hey {
 
     fn extra_folders(&self) -> &[ExtraFolder] {
         EXTRA_FOLDERS
+    }
+
+    fn archive_folder(&self) -> &str {
+        "paper_trail"
     }
 
     fn has_folder(&self, folder: &str) -> bool {
