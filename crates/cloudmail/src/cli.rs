@@ -361,7 +361,7 @@ pub struct RouteArgs {
     /// Replace an existing routing rule that sends this address elsewhere (with --route)
     #[arg(long, requires = "route")]
     pub take_over_route: bool,
-    /// Worker directory holding wrangler.jsonc (with --route; default ./worker)
+    /// Worker directory holding wrangler.jsonc (with --route; default: ./worker in a clone, else the packaged worker copied to ~/.local/share/cloudmail/worker)
     #[arg(long)]
     pub worker_dir: Option<PathBuf>,
     /// Worker name (with --route; default: "name" from wrangler.jsonc)
@@ -454,7 +454,7 @@ pub enum ConfigKey {
 
 #[derive(Args, Debug)]
 pub struct SetupArgs {
-    /// Worker directory (contains wrangler.template.jsonc); default ./worker
+    /// Worker directory (contains wrangler.template.jsonc); default: ./worker in a clone, else the packaged worker copied to ~/.local/share/cloudmail/worker
     #[arg(long)]
     pub worker_dir: Option<PathBuf>,
     /// Name for the worker, D1 database and R2 bucket

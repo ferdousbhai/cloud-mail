@@ -225,8 +225,11 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
         clone!(#[weak] ui, #[strong] c, move |result: Result<crate::api::SendResponse, String>| match result {
             Ok(resp) => {
                 c.window.destroy();
-                ui.toast("Sent");
-                ui.after_send(&resp.thread_id);
+                match &resp.warning {
+                    Some(w) => ui.toast(&format!("Sent, but {w}")),
+                    None => ui.toast("Sent"),
+                }
+                ui.after_send(resp.thread_id.as_deref());
             }
             Err(e) => {
                 c.send.set_sensitive(true);

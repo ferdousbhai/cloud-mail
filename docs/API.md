@@ -18,7 +18,10 @@ query, not a folder. Threads from approved senders land in `inbox`; a new messag
 thread moves it back to `inbox`.
 
 Senders are screened by lowercase address, only on mailboxes configured with `screen: true`; mail to
-direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight to `inbox`. Blocked
+direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight to `inbox`.
+A reply only joins an existing thread (by In-Reply-To/References) when its sender is trusted: approved
+(or anyone not blocked, on a direct mailbox) and not failing DMARC. A sender still in the Screener keeps
+adding to their own Screener thread. Anyone else starts a new thread. Blocked
 senders are blocked everywhere. Replying to / emailing someone approves them.
 
 ## Types
@@ -54,8 +57,10 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
   "text": "plain text body or null",
   "html": "html body or null (cid: images already inlined as data: URIs). Untrusted: render without scripts or remote loads.",
   "message_id": "<abc@example.com>",
-  // Cloudflare MX verdicts for incoming mail, null for sent mail. When dmarc is "fail" the From header
-  // can't be trusted: an approval doesn't apply and the message goes to the Screener.
+  // Cloudflare MX verdicts for incoming mail, null for sent mail. When dmarc is anything but "pass" or
+  // "none", the From header can't be trusted: the message never joins an existing thread; on a screened
+  // mailbox an approval doesn't apply and it goes to the Screener; on a direct mailbox it still reaches
+  // the Inbox (clients show a warning); mail forged as one of your own addresses goes to `blocked`.
   "auth": { "dmarc": "pass", "spf": "pass", "dkim": "pass", "spam_score": 0 },
   "attachments": [{ "id": "a_…", "filename": "invoice.pdf", "mime_type": "application/pdf", "size": 12345, "inline": false }]
 }
@@ -81,7 +86,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | GET | `/api/screener` | | `{ "senders": [PendingSender] }` |
 | POST | `/api/senders/:email` | `{ "status": "approved"\|"blocked" }` | `{ "ok": true, "moved": 2 }` – approved moves their screener threads to inbox; blocked moves them to blocked |
 | GET | `/api/senders` | `?status=approved\|blocked` | `{ "senders": [{ "email", "name", "status", "decided_at" }] }` |
-| POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }` |
+| POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }`; if the mail was sent but couldn't be saved: `{ "ok": true, "thread_id": null, "message": null, "warning": "…" }` (don't retry) |
 | GET | `/api/attachments/:id` | | raw bytes with `Content-Type` and `Content-Disposition` |
 | GET | `/api/messages/:id/raw` | | original `.eml` (`message/rfc822`) |
 | GET | `/api/identities` | | `{ "identities": [Address], "default": Address }` – addresses you can send from (= mailboxes) |

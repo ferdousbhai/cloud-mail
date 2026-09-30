@@ -37,8 +37,8 @@ export interface NewMessage {
   newThreadFolder: Folder;
   /** Folder to move an existing thread to, if any. */
   existingThreadFolder?: (current: Folder) => Folder;
-  /** False starts a new thread even when In-Reply-To/References match one. */
-  joinThread?: boolean;
+  /** Whether the message may join the thread its In-Reply-To/References match; otherwise it starts one. */
+  joinThread?: (thread: ThreadRef) => boolean;
 }
 
 export async function senderStatus(env: Env, email: string): Promise<SenderStatus | null> {
@@ -46,16 +46,22 @@ export async function senderStatus(env: Env, email: string): Promise<SenderStatu
   return row?.status ?? null;
 }
 
-export async function findThreadByMessageIds(env: Env, ids: string[]): Promise<{ id: string; folder: Folder } | null> {
+export interface ThreadRef {
+  id: string;
+  folder: Folder;
+  sender_email: string | null;
+}
+
+export async function findThreadByMessageIds(env: Env, ids: string[]): Promise<ThreadRef | null> {
   if (ids.length === 0) return null;
   const unique = [...new Set(ids)].slice(-50);
   const placeholders = unique.map(() => "?").join(",");
   return env.DB.prepare(
-    `SELECT t.id, t.folder FROM messages m JOIN threads t ON t.id = m.thread_id
+    `SELECT t.id, t.folder, t.sender_email FROM messages m JOIN threads t ON t.id = m.thread_id
      WHERE m.message_id IN (${placeholders}) ORDER BY m.date DESC LIMIT 1`,
   )
     .bind(...unique)
-    .first<{ id: string; folder: Folder }>();
+    .first<ThreadRef>();
 }
 
 export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: string; threadId: string }> {
@@ -66,10 +72,11 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   if (msg.threadId) {
     thread = await env.DB.prepare("SELECT id, folder FROM threads WHERE id = ?").bind(msg.threadId).first();
   }
-  if (!thread && msg.joinThread !== false) {
+  if (!thread) {
     // Includes the message's own id so a message you sent to yourself joins the thread it was sent from.
     const ids = [...msg.refs, msg.inReplyTo, msg.outgoing ? null : msg.messageId];
-    thread = await findThreadByMessageIds(env, ids.filter((x): x is string => !!x));
+    const match = await findThreadByMessageIds(env, ids.filter((x): x is string => !!x));
+    if (match && (!msg.joinThread || msg.joinThread(match))) thread = match;
   }
 
   const rawKey = msg.raw ? `raw/${id}.eml` : null;

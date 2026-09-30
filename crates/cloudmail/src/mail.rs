@@ -292,12 +292,17 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
         return Ok(Response::new(json!({ "dry_run": true, "request": req }), summary).human(human));
     }
     let resp = ctx.client()?.send(&req)?;
-    let summary = format!("Sent \"{}\" to {to_text}", req.subject);
-    let id = resp.thread_id.clone();
-    Ok(Response::new(&resp, summary).ids(vec![id.clone()]).crumbs(vec![
-        crumb("read", &format!("cloudmail thread read {id}"), "See the conversation"),
-        crumb("sent", "cloudmail sent", "List sent threads"),
-    ]))
+    let mut summary = format!("Sent \"{}\" to {to_text}", req.subject);
+    if let Some(w) = &resp.warning {
+        // The mail went out: retrying would send it twice.
+        summary.push_str(&format!(" (warning: {w})"));
+    }
+    let mut crumbs = vec![crumb("sent", "cloudmail sent", "List sent threads")];
+    let ids = resp.thread_id.clone().into_iter().collect::<Vec<_>>();
+    if let Some(id) = &resp.thread_id {
+        crumbs.insert(0, crumb("read", &format!("cloudmail thread read {id}"), "See the conversation"));
+    }
+    Ok(Response::new(&resp, summary).ids(ids).crumbs(crumbs))
 }
 
 pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {

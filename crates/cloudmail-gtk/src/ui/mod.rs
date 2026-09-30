@@ -1054,10 +1054,11 @@ impl Ui {
         compose::open(self, draft);
     }
 
-    pub fn after_send(self: &Rc<Self>, thread_id: &str) {
+    pub fn after_send(self: &Rc<Self>, thread_id: Option<&str>) {
         self.refresh_counts();
-        let open = self.current.borrow().as_ref().is_some_and(|d| d.thread.id == thread_id);
-        if open {
+        if let Some(thread_id) = thread_id
+            && self.current.borrow().as_ref().is_some_and(|d| d.thread.id == thread_id)
+        {
             self.open_thread(thread_id, true);
         }
         if matches!(self.view.get(), View::Sent | View::Inbox) {

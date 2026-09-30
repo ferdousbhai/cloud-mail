@@ -264,6 +264,38 @@ async function send(env: Env, req: Request): Promise<Response> {
     return error(`send failed: ${e.code ?? ""} ${e.message ?? String(err)}`.trim(), 502);
   }
 
+  // The mail has gone out. Anything failing from here must not look like a failed send, or a
+  // client would retry and send it twice.
+  try {
+    return await recordSent(env, { body, result, original, refs, from, to, cc, bcc, subject, html, ids });
+  } catch (err) {
+    console.error("sent but not stored", err);
+    return json({
+      ok: true,
+      thread_id: original?.thread_id ?? null,
+      message: null,
+      warning: "it couldn't be saved to Sent",
+    });
+  }
+}
+
+async function recordSent(
+  env: Env,
+  s: {
+    body: SendBody;
+    result: EmailSendResult;
+    original: MessageRow | null;
+    refs: string[];
+    from: Address;
+    to: Address[];
+    cc: Address[];
+    bcc: Address[];
+    subject: string;
+    html: string;
+    ids: Address[];
+  },
+): Promise<Response> {
+  const { body, result, original, refs, from, to, cc, bcc, subject, html, ids } = s;
   const { id, threadId } = await storeMessage(env, {
     outgoing: true,
     messageId: normalizeMessageId(result.messageId) ?? `<${result.messageId}>`,
@@ -275,7 +307,7 @@ async function send(env: Env, req: Request): Promise<Response> {
     replyTo: [],
     envelopeTo: null,
     subject,
-    text: body.text,
+    text: body.text ?? null,
     html,
     date: Date.now(),
     raw: null,
@@ -415,6 +447,8 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
       const body = await readJson<{ name?: unknown; screen?: unknown; position?: unknown }>(req);
       if (!body) return error("invalid JSON");
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return error("invalid email address");
+      // Mail to this address would be forwarded straight back here, forever.
+      if ((await getSettings(env)).forward_to === email) return error("this address is the forward_to target; change forward_to first");
       if (body.name !== undefined && typeof body.name !== "string") return error("name must be a string");
       if (body.screen !== undefined && typeof body.screen !== "boolean") return error("screen must be a boolean");
       if (body.position !== undefined && !Number.isInteger(body.position)) return error("position must be an integer");

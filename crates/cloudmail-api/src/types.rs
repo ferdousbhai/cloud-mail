@@ -71,9 +71,13 @@ pub struct Message {
 }
 
 impl Message {
-    /// True when the receiving MX reported a DMARC failure: the From address may be forged.
+    /// The From address may be forged: DMARC gave anything but pass or none (fail, temperror,
+    /// permerror, …), matching the worker's rule for trusting a sender.
     pub fn dmarc_failed(&self) -> bool {
-        self.auth.as_ref().and_then(|a| a.dmarc.as_deref()).is_some_and(|d| d.eq_ignore_ascii_case("fail"))
+        self.auth
+            .as_ref()
+            .and_then(|a| a.dmarc.as_deref())
+            .is_some_and(|d| !d.eq_ignore_ascii_case("pass") && !d.eq_ignore_ascii_case("none"))
     }
 }
 
@@ -168,8 +172,13 @@ pub struct SendRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SendResponse {
-    pub thread_id: String,
+    /// Absent when the mail went out but couldn't be saved to Sent (see `warning`).
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub message: Option<Message>,
+    /// Set when the mail was sent but something after sending failed; the send itself succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
