@@ -115,15 +115,16 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const absorbDuplicate = async (stored: StoredCopy): Promise<boolean> => {
     const storedDmarc = stored.auth ? (JSON.parse(stored.auth) as AuthVerdict).dmarc : null;
     const storedUntrusted = !!storedDmarc && !["pass", "none"].includes(storedDmarc);
-    // A copy that failed DMARC got here first (say, forged from a list copy) and this one is
-    // genuine: the forgery is alone in its thread (untrusted mail never joins one), so replace it.
-    if (storedUntrusted && !spoofable && stored.message_count === 1) {
+    // A copy claiming the same sender that failed DMARC got here first (say, forged from a list
+    // copy) and this one passes: the forgery is alone in its thread (untrusted mail never joins
+    // one), so replace it. A different sender reusing the Message-ID never replaces anything.
+    if (storedUntrusted && !spoofable && stored.message_count === 1 && stored.from_email === from.email) {
       await deleteThread(env, stored.thread_id);
       return true;
     }
     // The same sender's more trusted copy (to a direct mailbox, or passing DMARC while approved)
-    // lifts the stored one out of the Screener. Never lift a copy that itself failed DMARC.
-    if (!storedUntrusted && stored.from_email === from.email && stored.folder === "screener" && newThreadFolder === "inbox") {
+    // lifts the stored one out of the Screener. Neither copy may have failed DMARC.
+    if (!storedUntrusted && !spoofable && stored.from_email === from.email && stored.folder === "screener" && newThreadFolder === "inbox") {
       await env.DB.prepare("UPDATE threads SET folder = 'inbox', unread = 1 WHERE id = ? AND folder = 'screener'")
         .bind(stored.thread_id)
         .run();

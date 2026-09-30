@@ -100,16 +100,16 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             let from = t.from.as_ref().map(|a| a.display()).unwrap_or_default();
             let summary = render::clean(&format!("{} · {} · {}", t.subject, from, plural(detail.messages.len(), "message", "messages")));
             let mut crumbs = vec![
-                crumb("reply", &format!("cloudmail reply {id} -m <text>"), "Reply to the latest message"),
-                crumb("archive", &format!("cloudmail thread archive {id}"), "Archive this thread"),
+                crumb("reply", &format!("cloudmail reply {} -m <text>", output::shell_arg(&id)), "Reply to the latest message"),
+                crumb("archive", &format!("cloudmail thread archive {}", output::shell_arg(&id)), "Archive this thread"),
             ];
             if detail.messages.iter().any(|m| m.attachments.iter().any(|a| !a.inline)) {
-                crumbs.push(crumb("attachments", &format!("cloudmail attachment list {id}"), "List attachments"));
+                crumbs.push(crumb("attachments", &format!("cloudmail attachment list {}", output::shell_arg(&id)), "List attachments"));
             }
             if t.folder == "screener"
                 && let Some(f) = &t.from {
-                    crumbs.insert(0, crumb("approve", &format!("cloudmail screener approve {}", f.email), "Screen this sender in"));
-                    crumbs.insert(1, crumb("block", &format!("cloudmail screener block {}", f.email), "Screen this sender out"));
+                    crumbs.insert(0, crumb("approve", &format!("cloudmail screener approve {}", output::shell_arg(&f.email)), "Screen this sender in"));
+                    crumbs.insert(1, crumb("block", &format!("cloudmail screener block {}", output::shell_arg(&f.email)), "Screen this sender out"));
                 }
             let ids = detail.messages.iter().map(|m| m.id.clone()).collect();
             let mut data = serde_json::to_value(&detail).unwrap_or_default();
@@ -229,7 +229,7 @@ fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> Cl
     let crumbs = if status == "approved" {
         vec![crumb("inbox", "cloudmail inbox", "See their mail in the Inbox")]
     } else {
-        vec![crumb("undo", &format!("cloudmail screener approve {}", bare_email(&emails[0])), "Undo by approving")]
+        vec![crumb("undo", &format!("cloudmail screener approve {}", output::shell_arg(&bare_email(&emails[0]))), "Undo by approving")]
     };
     Ok(Response::new(results, summary).crumbs(crumbs).ids(emails.iter().map(|e| bare_email(e)).collect()))
 }
@@ -311,7 +311,7 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
     let mut crumbs = vec![crumb("sent", "cloudmail sent", "List sent threads")];
     let ids = resp.thread_id.clone().into_iter().collect::<Vec<_>>();
     if let Some(id) = &resp.thread_id {
-        crumbs.insert(0, crumb("read", &format!("cloudmail thread read {id}"), "See the conversation"));
+        crumbs.insert(0, crumb("read", &format!("cloudmail thread read {}", output::shell_arg(id)), "See the conversation"));
     }
     Ok(Response::new(&resp, summary).ids(ids).crumbs(crumbs))
 }

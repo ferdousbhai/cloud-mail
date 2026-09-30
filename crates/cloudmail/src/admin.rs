@@ -9,7 +9,7 @@ use crate::Ctx;
 use crate::cli::*;
 use crate::docs;
 use crate::mail::confirm;
-use crate::output::{CliError, CliResult, Response, bold, crumb, dim};
+use crate::output::{CliError, CliResult, Response, bold, crumb, dim, shell_arg};
 use crate::render;
 use crate::setup;
 
@@ -125,7 +125,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             }
             let mut crumbs = vec![crumb("list", "cloudmail mailbox list", "List mailboxes")];
             if !route.route {
-                crumbs.push(crumb("route", &format!("cloudmail mailbox add {addr} --route"), "Point the address's Email Routing rule at the worker"));
+                crumbs.push(crumb("route", &format!("cloudmail mailbox add {} --route", shell_arg(&addr)), "Point the address's Email Routing rule at the worker"));
             }
             Ok(Response::new(data, summary).crumbs(crumbs))
         }
