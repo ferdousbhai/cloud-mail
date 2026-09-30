@@ -67,7 +67,7 @@ if ! command -v pacman >/dev/null; then
 fi
 if [[ $(uname -m) != x86_64 ]]; then
   echo "The signed repository has x86_64 packages only; on $(uname -m), build from source:" >&2
-  echo "  https://github.com/ferdousbhai/cloud-mail#install" >&2
+  echo "  https://github.com/ferdousbhai/cloud-mail#from-source" >&2
   exit 1
 fi
 
@@ -82,11 +82,9 @@ if command -v omarchy-pkg-add >/dev/null; then
 else
   # Upgrade and install in one transaction: add_signed_repo has just synced every database, and
   # installing from those without upgrading is a partial upgrade.
-  if (( EUID == 0 )); then
-    pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
-  else
-    sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
-  fi
+  sudo=''
+  (( EUID == 0 )) || sudo=sudo
+  $sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
 fi
 
 cat <<EOT
@@ -94,5 +92,5 @@ cat <<EOT
 Done. Launch "Cloudmail" from the app launcher (Super + Space), or run: cloudmail
 To deploy your own mail worker to your Cloudflare account:
   cloudmail setup you@yourdomain.com
-Updates arrive with the rest of the system through: omarchy update
+Updates arrive with the rest of the system: omarchy update (or pacman -Syu elsewhere)
 EOT

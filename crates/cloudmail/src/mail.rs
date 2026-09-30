@@ -4,8 +4,8 @@ use serde_json::json;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use cloudmail_api::text::{bare_email, html_to_text, quote, reply_subject, split_addresses};
-use cloudmail_api::{ErrorKind, Message, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
+use cloudmail_api::text::{bare_email, html_to_text, human_size, quote, reply_subject, short_time, split_addresses, unused_path};
+use cloudmail_api::{ErrorKind, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
 
 use crate::Ctx;
 use crate::cli::*;
@@ -13,8 +13,7 @@ use crate::output::{self, CliError, CliResult, Response, crumb, exit};
 use crate::render;
 
 /// Names the missing object in a not-found error.
-fn missing(what: &str, id: &str, list_hint: &str) -> impl FnOnce(cloudmail_api::Error) -> CliError {
-    let (what, id, list_hint) = (what.to_string(), id.to_string(), list_hint.to_string());
+fn missing<'a>(what: &'a str, id: &'a str, list_hint: &'a str) -> impl FnOnce(cloudmail_api::Error) -> CliError + 'a {
     move |e| {
         if e.kind == ErrorKind::NotFound {
             CliError::not_found(format!("no {what} {id}")).hint(list_hint)
@@ -24,8 +23,9 @@ fn missing(what: &str, id: &str, list_hint: &str) -> impl FnOnce(cloudmail_api::
     }
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
+/// "1 thread", "2 threads".
+fn plural(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
 
 fn thread_crumbs() -> Vec<output::Breadcrumb> {
@@ -55,11 +55,11 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
         threads.retain(|t| t.unread);
     }
     let where_ = match folder {
-        Folder::All => "all folders".to_string(),
-        Folder::Sent => "Sent".to_string(),
-        f => f.as_str().to_string(),
+        Folder::All => "all folders",
+        Folder::Sent => "Sent",
+        f => f.as_str(),
     };
-    let summary = format!("{} in {where_}", plural(threads.len(), "thread", "threads"));
+    let summary = format!("{} in {where_}", plural(threads.len(), "thread"));
     let mut crumbs = thread_crumbs();
     if full_page && let Some(before) = oldest {
         let mut next = format!("cloudmail threads list --folder {} --before {before} --limit {}", folder.as_str(), a.limit);
@@ -74,7 +74,7 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
     if folder == Folder::Screener {
         crumbs.insert(0, crumb("approve", "cloudmail screener approve <email>", "Screen a sender in"));
     }
-    let human = if threads.is_empty() { summary.clone() } else { render::threads(&threads, folder == Folder::All) };
+    let human = render::threads(&threads, folder == Folder::All);
     let ids = threads.iter().map(|t| t.id.clone()).collect();
     Ok(Response::new(&threads, summary).human(human).ids(ids).crumbs(crumbs).meta("folder", folder.as_str()))
 }
@@ -82,8 +82,8 @@ pub fn list(ctx: &Ctx, folder: Folder, a: &ListArgs) -> CliResult {
 pub fn search(ctx: &Ctx, a: &SearchArgs) -> CliResult {
     let query = a.query.join(" ");
     let threads = ctx.client()?.list_threads(&ThreadQuery { folder: "all".into(), q: Some(query.clone()), limit: a.limit, ..Default::default() })?;
-    let summary = format!("{} matching \"{query}\"", plural(threads.len(), "thread", "threads"));
-    let human = if threads.is_empty() { summary.clone() } else { render::threads(&threads, true) };
+    let summary = format!("{} matching \"{query}\"", plural(threads.len(), "thread"));
+    let human = render::threads(&threads, true);
     let ids = threads.iter().map(|t| t.id.clone()).collect();
     Ok(Response::new(&threads, summary).human(human).ids(ids).crumbs(thread_crumbs()).meta("query", query))
 }
@@ -92,13 +92,14 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
     let client = ctx.client()?;
     match cmd {
         ThreadCommand::Read { id, html, mark_read } => {
-            let detail = client.thread(&id).map_err(missing("thread", &id, "list threads with `cloudmail inbox` or `cloudmail search <words>`"))?;
+            let mut detail = client.thread(&id).map_err(missing("thread", &id, "list threads with `cloudmail inbox` or `cloudmail search <words>`"))?;
             if mark_read && detail.thread.unread {
                 client.set_unread(&id, false)?;
+                detail.thread.unread = false;
             }
             let t = &detail.thread;
-            let from = t.from.as_ref().map(|a| a.display()).unwrap_or_default();
-            let summary = render::clean(&format!("{} · {} · {}", t.subject, from, plural(detail.messages.len(), "message", "messages")));
+            let from = t.sender().unwrap_or_default();
+            let summary = render::clean(&format!("{} · {} · {}", t.subject, from, plural(detail.messages.len(), "message")));
             let mut crumbs = vec![
                 crumb("reply", &format!("cloudmail reply {} -m <text>", output::shell_arg(&id)), "Reply to the latest message"),
                 crumb("archive", &format!("cloudmail thread archive {}", output::shell_arg(&id)), "Archive this thread"),
@@ -126,19 +127,19 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             }
             Ok(Response { data, ..Response::new((), summary) }.human(render::thread(&detail, html)).ids(ids).crumbs(crumbs))
         }
-        ThreadCommand::Archive { ids } => each(ctx, &ids, "archived", |id| client.move_thread(id, "archive")),
-        ThreadCommand::Unarchive { ids } => each(ctx, &ids, "moved to the Inbox", |id| client.move_thread(id, "inbox")),
-        ThreadCommand::Unread { ids } => each(ctx, &ids, "marked unread", |id| client.set_unread(id, true)),
-        ThreadCommand::Markread { ids } => each(ctx, &ids, "marked read", |id| client.set_unread(id, false)),
+        ThreadCommand::Archive { ids } => each(&ids, "archived", |id| client.move_thread(id, "archive")),
+        ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| client.move_thread(id, "inbox")),
+        ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| client.set_unread(id, true)),
+        ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| client.set_unread(id, false)),
         ThreadCommand::Delete { ids, yes } => {
-            confirm(yes, &format!("Permanently delete {}?", plural(ids.len(), "thread", "threads")))?;
-            each(ctx, &ids, "deleted", |id| client.delete_thread(id))
+            confirm(yes, &format!("Permanently delete {}?", plural(ids.len(), "thread")))?;
+            each(&ids, "deleted", |id| client.delete_thread(id))
         }
     }
 }
 
 /// Applies an action to several IDs, continuing past failures and reporting each.
-fn each(_ctx: &Ctx, ids: &[String], verb: &str, f: impl Fn(&str) -> cloudmail_api::Result<()>) -> CliResult {
+fn each(ids: &[String], verb: &str, f: impl Fn(&str) -> cloudmail_api::Result<()>) -> CliResult {
     let mut done = Vec::new();
     let mut failed = Vec::new();
     for id in ids {
@@ -147,28 +148,19 @@ fn each(_ctx: &Ctx, ids: &[String], verb: &str, f: impl Fn(&str) -> cloudmail_ap
             Err(e) => failed.push((id.clone(), e)),
         }
     }
-    if done.is_empty()
-        && let Some((_, e)) = failed.first() {
-            return Err(e.clone().into());
-        }
-    let summary = if failed.is_empty() {
-        format!("{} {verb}", plural(done.len(), "thread", "threads"))
-    } else {
-        format!("{} {verb}, {} failed", plural(done.len(), "thread", "threads"), failed.len())
+    let summary = format!("{} {verb}", plural(done.len(), "thread"));
+    let Some((_, first)) = failed.first() else {
+        return Ok(Response::new(json!({ "done": done, "failed": [] }), summary).ids(done));
     };
-    let failures: Vec<_> = failed.iter().map(|(id, e)| json!({ "id": id, "code": e.kind.code(), "message": e.message })).collect();
-    let human = std::iter::once(summary.clone())
-        .chain(failed.iter().map(|(id, e)| format!("  {id}: {e}")))
-        .collect::<Vec<_>>()
-        .join("\n");
-    // A partial failure exits with the first failure's code; the message says what did succeed.
-    if let Some((_, e)) = failed.first() {
-        let mut err = CliError::from(e.clone());
-        err.message = human.replace('\n', "; ");
-        err.hint = Some(format!("done: {}", if done.is_empty() { "none".to_string() } else { done.join(", ") }));
-        return Err(err);
+    if done.is_empty() {
+        return Err(first.clone().into());
     }
-    Ok(Response::new(json!({ "done": done, "failed": failures }), summary).human(human).ids(done.clone()))
+    // A partial failure exits with the first failure's code; the message says what did succeed.
+    let mut err = CliError::from(first.clone());
+    let failures = failed.iter().map(|(id, e)| format!("{id}: {e}")).collect::<Vec<_>>().join("; ");
+    err.message = format!("{summary}, {} failed; {}", failed.len(), failures.replace('\n', "; "));
+    err.hint = Some(format!("done: {}", done.join(", ")));
+    Err(err)
 }
 
 pub fn confirm(yes: bool, question: &str) -> CliResult<()> {
@@ -178,15 +170,7 @@ pub fn confirm(yes: bool, question: &str) -> CliResult<()> {
     if !(output::stdin_is_tty() && output::stdout_is_tty()) {
         return Err(CliError::new("confirmation_required", exit::USAGE, "refusing to do this without confirmation").hint("add --yes"));
     }
-    eprint!("{question} [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(())
-    } else {
-        Err(CliError::new("cancelled", exit::GENERIC, "cancelled"))
-    }
+    if output::ask_yes(question)? { Ok(()) } else { Err(CliError::cancelled("cancelled")) }
 }
 
 pub fn screener(ctx: &Ctx, cmd: Option<ScreenerCommand>) -> CliResult {
@@ -197,11 +181,10 @@ pub fn screener(ctx: &Ctx, cmd: Option<ScreenerCommand>) -> CliResult {
             let summary = if senders.is_empty() {
                 "The Screener is empty".to_string()
             } else {
-                format!("{} waiting in the Screener", plural(senders.len(), "sender", "senders"))
+                format!("{} waiting in the Screener", plural(senders.len(), "sender"))
             };
-            let human = if senders.is_empty() { summary.clone() } else { render::screener(&senders) };
             let ids = senders.iter().map(|s| s.email.clone()).collect();
-            Ok(Response::new(&senders, summary).human(human).ids(ids).crumbs(vec![
+            Ok(Response::new(&senders, summary).human(render::screener(&senders)).ids(ids).crumbs(vec![
                 crumb("approve", "cloudmail screener approve <email>", "Screen a sender in; their mail moves to the Inbox"),
                 crumb("block", "cloudmail screener block <email>", "Screen a sender out"),
                 crumb("threads", "cloudmail threads list --folder screener", "See the waiting threads"),
@@ -214,6 +197,7 @@ pub fn screener(ctx: &Ctx, cmd: Option<ScreenerCommand>) -> CliResult {
 
 fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> CliResult {
     let mut results = Vec::new();
+    let mut done = Vec::new();
     let mut moved_total = 0;
     for e in emails {
         let email = bare_email(e);
@@ -223,23 +207,23 @@ fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> Cl
         let moved = client.decide_sender(&email, status)?;
         moved_total += moved;
         results.push(json!({ "email": email, "status": status, "moved": moved }));
+        done.push(email);
     }
     let verb = if status == "approved" { "Approved" } else { "Blocked" };
-    let summary = format!("{verb} {}; {} moved", plural(emails.len(), "sender", "senders"), plural(moved_total as usize, "thread", "threads"));
+    let summary = format!("{verb} {}; {} moved", plural(done.len(), "sender"), plural(moved_total as usize, "thread"));
     let crumbs = if status == "approved" {
         vec![crumb("inbox", "cloudmail inbox", "See their mail in the Inbox")]
     } else {
-        vec![crumb("undo", &format!("cloudmail screener approve {}", output::shell_arg(&bare_email(&emails[0]))), "Undo by approving")]
+        vec![crumb("undo", &format!("cloudmail screener approve {}", output::shell_arg(&done[0])), "Undo by approving")]
     };
-    Ok(Response::new(results, summary).crumbs(crumbs).ids(emails.iter().map(|e| bare_email(e)).collect()))
+    Ok(Response::new(results, summary).crumbs(crumbs).ids(done))
 }
 
 pub fn senders(ctx: &Ctx, status: SenderStatus) -> CliResult {
     let list = ctx.client()?.senders(status.as_str())?;
-    let summary = format!("{} {}", plural(list.len(), "sender", "senders"), status.as_str());
-    let human = if list.is_empty() { summary.clone() } else { render::senders(&list) };
+    let summary = format!("{} {}", plural(list.len(), "sender"), status.as_str());
     let ids = list.iter().map(|s| s.email.clone()).collect();
-    Ok(Response::new(&list, summary).human(human).ids(ids))
+    Ok(Response::new(&list, summary).human(render::senders(&list)).ids(ids))
 }
 
 // ---------- sending ----------
@@ -252,8 +236,13 @@ fn read_stdin() -> CliResult<String> {
 
 fn edit(template: &str) -> CliResult<String> {
     let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
+    // The draft quotes private mail: create it fresh (never through a planted link) and owner-only.
     let path = std::env::temp_dir().join(format!("cloudmail-{}.txt", std::process::id()));
-    std::fs::write(&path, template)?;
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    file.open(&path)?.write_all(template.as_bytes())?;
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$1\""))
@@ -263,7 +252,7 @@ fn edit(template: &str) -> CliResult<String> {
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let _ = std::fs::remove_file(&path);
     if !status.success() {
-        return Err(CliError::new("cancelled", exit::GENERIC, "editor exited with an error; nothing sent"));
+        return Err(CliError::cancelled("editor exited with an error; nothing sent"));
     }
     Ok(text)
 }
@@ -321,11 +310,10 @@ pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {
     if to.is_empty() {
         return Err(CliError::usage("--to needs at least one address"));
     }
-    let (text, edited) = body(&a.body, "")?;
+    let (text, _) = body(&a.body, "")?;
     if text.trim().is_empty() {
         return Err(CliError::usage("the message body is empty; nothing sent"));
     }
-    let _ = edited;
     let req = SendRequest {
         from: a.from.clone(),
         to,
@@ -340,25 +328,12 @@ pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {
 
 /// Builds a reply: recipients, From mailbox, subject and quoted text.
 pub fn build_reply(detail: &ThreadDetail, own: &[String], default_from: Option<&str>, all: bool, from_override: Option<&str>) -> CliResult<(SendRequest, String)> {
-    let latest: &Message = detail
-        .messages
-        .iter()
-        .rev()
-        .find(|m| !m.outgoing)
-        .or_else(|| detail.messages.last())
-        .ok_or_else(|| CliError::not_found("the thread has no messages"))?;
+    let latest = detail.reply_target().ok_or_else(|| CliError::not_found("the thread has no messages"))?;
     let is_own = |e: &str| own.iter().any(|o| o.eq_ignore_ascii_case(e));
 
-    let to: Vec<String> = if latest.outgoing {
-        latest.to.iter().map(|a| a.formatted()).collect()
-    } else if !latest.reply_to.is_empty() {
-        latest.reply_to.iter().map(|a| a.formatted()).collect()
-    } else {
-        vec![latest.from.formatted()]
-    };
-    let to_emails: Vec<String> = to.iter().map(|t| bare_email(t)).collect();
+    let to: Vec<String> = latest.reply_recipients().iter().map(|a| a.formatted()).collect();
     let cc: Vec<String> = if all {
-        let mut seen = to_emails.clone();
+        let mut seen: Vec<String> = to.iter().map(|t| bare_email(t)).collect();
         latest
             .to
             .iter()
@@ -378,12 +353,7 @@ pub fn build_reply(detail: &ThreadDetail, own: &[String], default_from: Option<&
     };
     let to_address = detail.thread.to_address.as_deref().filter(|t| is_own(t));
     let from = from_override.or(to_address).or(default_from).map(str::to_string);
-    let original = match (&latest.text, &latest.html) {
-        (Some(t), _) if !t.trim().is_empty() => t.clone(),
-        (_, Some(h)) => html_to_text(h),
-        _ => String::new(),
-    };
-    let quoted = quote(&original, &latest.from.display(), latest.date);
+    let quoted = quote(&latest.plain_text(), &latest.from.display(), latest.date);
     let req = SendRequest {
         from,
         to,
@@ -423,22 +393,17 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
     match cmd {
         AttachmentCommand::List { thread_id } => {
             let detail = client.thread(&thread_id).map_err(missing("thread", &thread_id, "list threads with `cloudmail inbox`"))?;
-            let atts: Vec<_> = detail
-                .messages
+            let atts: Vec<_> = detail.messages.iter().flat_map(|m| m.attachments.iter().filter(|a| !a.inline).map(move |a| (m, a))).collect();
+            let human = atts
                 .iter()
-                .flat_map(|m| m.attachments.iter().filter(|a| !a.inline).map(move |a| json!({ "message_id": m.id, "attachment": a })))
-                .collect();
-            let human = detail
-                .messages
-                .iter()
-                .flat_map(|m| m.attachments.iter().filter(|a| !a.inline))
-                .map(|a| render::clean(&format!("{}  {}  {}  {}", a.id, a.filename, a.mime_type, cloudmail_api::text::human_size(a.size))).replace(['\n', '\t'], " "))
+                .map(|(_, a)| render::clean_line(&format!("{}  {}  {}  {}", a.id, a.filename, a.mime_type, human_size(a.size))))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let ids = atts.iter().filter_map(|a| a["attachment"]["id"].as_str().map(str::to_string)).collect::<Vec<_>>();
-            let summary = render::clean(&format!("{} in {}", plural(ids.len(), "attachment", "attachments"), detail.thread.subject));
-            Ok(Response::new(atts, summary.clone())
-                .human(if human.is_empty() { summary } else { human })
+            let ids = atts.iter().map(|(_, a)| a.id.clone()).collect::<Vec<_>>();
+            let summary = render::clean(&format!("{} in {}", plural(ids.len(), "attachment"), detail.thread.subject));
+            let data: Vec<_> = atts.iter().map(|(m, a)| json!({ "message_id": m.id, "attachment": a })).collect();
+            Ok(Response::new(data, summary)
+                .human(human)
                 .ids(ids)
                 .crumbs(vec![crumb("save", "cloudmail attachment save <attachment-id> -o <path>", "Download an attachment")]))
         }
@@ -451,11 +416,12 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
                 return Ok(Response::silent());
             }
             // A name chosen by the sender never replaces an existing file; an explicit -o path may.
-            let explicit_file = output.as_ref().is_some_and(|p| !(p.is_dir() || p.to_string_lossy().ends_with('/')));
-            let path = target_path(output, &name);
-            let path = if explicit_file { path } else { unused_path(path) };
+            let path = match output {
+                Some(p) if !is_dir_target(&p) => p,
+                dir => unused_path(target_path(dir, &name)),
+            };
             std::fs::write(&path, &dl.bytes).map_err(|e| CliError::generic(format!("could not write {}: {e}", path.display())))?;
-            let summary = format!("Saved {} ({})", path.display(), cloudmail_api::text::human_size(size as i64));
+            let summary = format!("Saved {} ({})", path.display(), human_size(size as i64));
             Ok(Response::new(json!({ "id": id, "path": path, "size": size, "content_type": dl.content_type }), summary))
         }
     }
@@ -471,22 +437,14 @@ fn safe_attachment_name(filename: Option<&str>, id: &str) -> String {
     if base.is_empty() { format!("{id}.bin") } else { base }
 }
 
-/// `path`, or `name (1).ext`, `name (2).ext`, … when something is already there.
-fn unused_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
-        return path;
-    }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    (1..)
-        .map(|i| path.with_file_name(format!("{stem} ({i}){ext}")))
-        .find(|p| !p.exists())
-        .expect("an unused name exists")
+/// `-o` names a directory to save into rather than a file.
+fn is_dir_target(p: &Path) -> bool {
+    p.is_dir() || p.to_string_lossy().ends_with('/')
 }
 
 fn target_path(output: Option<PathBuf>, name: &str) -> PathBuf {
     match output {
-        Some(p) if p.is_dir() || p.to_string_lossy().ends_with('/') => p.join(name),
+        Some(p) if is_dir_target(&p) => p.join(name),
         Some(p) => p,
         None => PathBuf::from(name),
     }
@@ -500,16 +458,12 @@ pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
             std::fs::write(&path, &bytes)?;
             Ok(Response::new(json!({ "id": a.id, "path": path, "size": bytes.len() }), format!("Saved {}", path.display())))
         }
-        Some(_) => {
-            // `-o -` asks for the bytes on stdout explicitly.
-            std::io::stdout().write_all(&bytes)?;
-            Ok(Response::silent())
-        }
+        // Without -o, raw bytes go to a terminal only when asked for explicitly with `-o -`.
         None if output::stdout_is_tty() => Err(CliError::usage(
             "raw mail is exactly what the sender wrote, escape sequences included, so it isn't printed to a terminal",
         )
         .hint(format!("redirect it (`cloudmail raw {id} > message.eml`), save it with `-o message.eml`, or force it with `-o -`", id = a.id))),
-        None => {
+        _ => {
             std::io::stdout().write_all(&bytes)?;
             Ok(Response::silent())
         }
@@ -589,9 +543,9 @@ fn emit(t: &ThreadSummary, machine: bool) {
     let line = if machine {
         output::json_safe(&json!({ "event": "thread", "thread": t }).to_string())
     } else {
-        let from = render::clean(&t.from.as_ref().map(|a| a.display()).unwrap_or_default());
-        let line = format!("{}  {:<8}  {}  {}  ", cloudmail_api::text::short_time(t.last_at), t.folder, render::truncate(&from, 24), t.subject);
-        format!("{}{}", render::clean(&line).replace(['\n', '\t'], " "), output::dim(&render::clean(&t.id)))
+        let from = t.sender().unwrap_or_default();
+        let line = format!("{}  {:<8}  {}  {}  ", short_time(t.last_at), t.folder, render::truncate(&from, 24), t.subject);
+        format!("{}{}", render::clean_line(&line), output::dim(&render::clean(&t.id)))
     };
     let mut out = std::io::stdout().lock();
     if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
@@ -602,6 +556,7 @@ fn emit(t: &ThreadSummary, machine: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cloudmail_api::{Address, Message, MessageAuth};
 
     #[test]
     fn attachment_names_are_plain_and_never_clobber() {
@@ -617,7 +572,6 @@ mod tests {
         assert_eq!(unused_path(dir.join("new.pdf")), dir.join("new.pdf"));
         let _ = std::fs::remove_dir_all(&dir);
     }
-    use cloudmail_api::{Address, MessageAuth};
 
     fn addr(name: &str, email: &str) -> Address {
         Address { name: Some(name.into()), email: email.into() }

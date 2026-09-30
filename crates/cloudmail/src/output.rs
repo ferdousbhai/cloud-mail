@@ -53,6 +53,21 @@ pub fn stdin_is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
+/// Reads a line from the terminal after a prompt.
+pub fn prompt(question: &str) -> CliResult<String> {
+    eprint!("{question} ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(answer.trim().to_string())
+}
+
+/// Asks a yes/no question at the terminal; anything but y/yes is no.
+pub fn ask_yes(question: &str) -> CliResult<bool> {
+    let answer = prompt(&format!("{question} [y/N]"))?;
+    Ok(matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Breadcrumb {
     pub action: String,
@@ -134,9 +149,9 @@ impl Response {
         }
     }
 
-    pub fn print(&self, mode: Mode) -> Result<(), CliError> {
+    pub fn print(&self, mode: Mode) {
         if self.silent {
-            return Ok(());
+            return;
         }
         let text = match mode {
             Mode::Json => pretty(&self.envelope()),
@@ -152,8 +167,7 @@ impl Response {
                 }
             },
             Mode::Human => {
-                let mut out = if self.human.trim().is_empty() { self.summary.clone() } else { self.human.clone() };
-                out = terminal_safe(&out);
+                let mut out = terminal_safe(if self.human.trim().is_empty() { &self.summary } else { &self.human });
                 if !self.breadcrumbs.is_empty() && stdout_is_tty() {
                     out.push_str("\n\n");
                     out.push_str(&dim("Next:"));
@@ -165,7 +179,6 @@ impl Response {
             }
         };
         write_line(&text);
-        Ok(())
     }
 }
 
@@ -217,28 +230,26 @@ pub fn json_safe(json: &str) -> String {
 }
 
 fn write_line(text: &str) {
-    let mut out = std::io::stdout().lock();
-    if text.is_empty() {
-        return;
+    if !text.is_empty() {
+        // Ignore EPIPE (e.g. `cloudmail inbox | head`).
+        let _ = writeln!(std::io::stdout(), "{text}");
     }
-    // Ignore EPIPE (e.g. `cloudmail inbox | head`).
-    let _ = writeln!(out, "{text}");
+}
+
+fn style(code: &str, s: &str) -> String {
+    if stdout_is_tty() && std::env::var_os("NO_COLOR").is_none() {
+        format!("\x1b[{code}m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
 }
 
 pub fn dim(s: &str) -> String {
-    if stdout_is_tty() && std::env::var_os("NO_COLOR").is_none() {
-        format!("\x1b[2m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
+    style("2", s)
 }
 
 pub fn bold(s: &str) -> String {
-    if stdout_is_tty() && std::env::var_os("NO_COLOR").is_none() {
-        format!("\x1b[1m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
+    style("1", s)
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +275,10 @@ impl CliError {
 
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new("not_found", exit::NOT_FOUND, message)
+    }
+
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self::new("cancelled", exit::GENERIC, message)
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Self {

@@ -43,7 +43,6 @@ export function messageIdList(value: string | null | undefined): string[] {
 }
 
 export function normalizeMessageId(value: string | null | undefined): string | null {
-  if (!value) return null;
   return messageIdList(value)[0] ?? null;
 }
 
@@ -78,7 +77,7 @@ export function makeSnippet(text: string): string {
   return kept.join(" ").replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
-export function escapeHtml(s: string): string {
+function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 

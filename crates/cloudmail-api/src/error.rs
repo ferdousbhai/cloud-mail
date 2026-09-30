@@ -7,7 +7,7 @@ pub enum ErrorKind {
     /// The worker rejected the API token.
     Unauthorized,
     NotFound,
-    /// The worker rejected the request as invalid (HTTP 400).
+    /// The worker rejected the request as invalid (HTTP 400, 409 or 422).
     BadRequest,
     /// The worker returned another error status.
     Api,
@@ -36,12 +36,11 @@ impl ErrorKind {
 pub struct Error {
     pub kind: ErrorKind,
     pub message: String,
-    pub status: Option<u16>,
 }
 
 impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), status: None }
+        Self { kind, message: message.into() }
     }
 }
 

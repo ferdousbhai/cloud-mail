@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use cloudmail_api::{Client, Config, MailboxUpdate, config};
 
 use crate::cli::{RouteArgs, SetupArgs};
-use crate::output::{CliError, CliResult, Response, crumb, exit};
+use crate::output::{self, CliError, CliResult, Response, crumb, exit, prompt};
 
 // ---------- parsing helpers (pure, unit-tested) ----------
 
@@ -65,11 +65,6 @@ pub fn jsonc_field(jsonc: &str, key: &str) -> Option<String> {
         return after.split('"').next().map(str::to_string);
     }
     None
-}
-
-/// The worker `"name"` of a wrangler.jsonc.
-pub fn parse_worker_name(jsonc: &str) -> Option<String> {
-    jsonc_field(jsonc, "name")
 }
 
 pub fn parse_d1_list(json_text: &str, name: &str) -> Option<String> {
@@ -216,10 +211,17 @@ pub struct Step {
     pub detail: Option<String>,
 }
 
+/// A command line for display, quoting arguments that contain spaces.
+fn shell_line(program: &[String], args: &[&str]) -> String {
+    let mut parts = program.to_vec();
+    parts.extend(args.iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a.to_string() }));
+    parts.join(" ")
+}
+
 pub struct Wrangler {
     program: Vec<String>,
     dir: PathBuf,
-    envs: Vec<(String, String)>,
+    account: Option<String>,
     pub dry_run: bool,
     /// Someone is at a terminal: questions may be asked and steps are shown as they happen.
     pub interactive: bool,
@@ -229,13 +231,12 @@ pub struct Wrangler {
 impl Wrangler {
     pub fn new(program: &str, dir: PathBuf, dry_run: bool, interactive: bool) -> Self {
         let program = program.split_whitespace().map(str::to_string).collect();
-        Self { program, dir, envs: Vec::new(), dry_run, interactive, steps: Vec::new() }
+        Self { program, dir, account: None, dry_run, interactive, steps: Vec::new() }
     }
 
     /// Runs every later wrangler command against this Cloudflare account.
     pub fn use_account(&mut self, id: &str) {
-        self.envs.retain(|(k, _)| k != "CLOUDFLARE_ACCOUNT_ID");
-        self.envs.push(("CLOUDFLARE_ACCOUNT_ID".into(), id.into()));
+        self.account = Some(id.into());
     }
 
     /// Asks a yes/no question at the terminal; None when nobody is there to answer.
@@ -243,24 +244,11 @@ impl Wrangler {
         if !self.interactive || self.dry_run {
             return None;
         }
-        eprint!("{question} [y/N] ");
-        let _ = std::io::stderr().flush();
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer).ok()?;
-        Some(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-    }
-
-    fn announce(&self, step: &str) {
-        if self.interactive {
-            eprint!("[    ...] {step}\r");
-            let _ = std::io::stderr().flush();
-        }
+        output::ask_yes(question).ok()
     }
 
     fn render(&self, args: &[&str]) -> String {
-        let mut parts = self.program.clone();
-        parts.extend(args.iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a.to_string() }));
-        parts.join(" ")
+        shell_line(&self.program, args)
     }
 
     pub fn record(&mut self, step: &str, status: &str, command: Option<String>, detail: Option<String>) {
@@ -271,6 +259,27 @@ impl Wrangler {
             }
         }
         self.steps.push(Step { step: step.into(), status: status.into(), command, detail });
+    }
+
+    /// Does a step that changes something, or records it as planned during --dry-run.
+    pub fn perform<T: Default>(
+        &mut self,
+        step: &str,
+        command: Option<String>,
+        detail: Option<String>,
+        action: impl FnOnce(&Self) -> CliResult<T>,
+    ) -> CliResult<T> {
+        if self.dry_run {
+            self.record(step, "planned", command, detail);
+            return Ok(T::default());
+        }
+        if self.interactive {
+            eprint!("[    ...] {step}\r");
+            let _ = std::io::stderr().flush();
+        }
+        let out = action(self)?;
+        self.record(step, "done", command, detail);
+        Ok(out)
     }
 
     /// Runs a read-only wrangler command (also during --dry-run, where its result only informs the plan).
@@ -288,51 +297,41 @@ impl Wrangler {
 
     /// Runs a mutating command, or records it as planned during --dry-run.
     pub fn mutate(&mut self, step: &str, args: &[&str], stdin: Option<&str>) -> CliResult<String> {
-        let command = self.render(args);
-        if self.dry_run {
-            self.record(step, "planned", Some(command), None);
-            return Ok(String::new());
-        }
-        self.announce(step);
-        let out = self.exec(&self.program, args, stdin)?;
-        self.record(step, "done", Some(command), None);
-        Ok(out)
+        self.perform(step, Some(self.render(args)), None, |w| w.exec(&w.program, args, stdin))
     }
 
     pub fn run_program(&mut self, step: &str, program: &[&str]) -> CliResult<()> {
-        let prog: Vec<String> = program.iter().map(|s| s.to_string()).collect();
-        let command = prog.join(" ");
-        if self.dry_run {
-            self.record(step, "planned", Some(command), None);
-            return Ok(());
+        let (bin, args) = program.split_first().expect("a program to run");
+        self.perform(step, Some(program.join(" ")), None, |w| w.exec(&[bin.to_string()], args, None).map(drop))
+    }
+
+    fn command(&self, program: &[String], args: &[&str]) -> CliResult<Command> {
+        let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
+        let mut cmd = Command::new(bin);
+        cmd.args(pre).args(args).current_dir(&self.dir);
+        if let Some(id) = &self.account {
+            cmd.env("CLOUDFLARE_ACCOUNT_ID", id);
         }
-        self.announce(step);
-        self.exec(&prog[..1], &program[1..], None)?;
-        self.record(step, "done", Some(command), None);
-        Ok(())
+        Ok(cmd)
     }
 
     /// Runs wrangler attached to the terminal (for `wrangler login`, which opens a browser).
     pub fn attached(&self, args: &[&str]) -> CliResult<()> {
-        let (bin, pre) = self.program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
-        let status = Command::new(bin)
-            .args(pre)
-            .args(args)
-            .current_dir(&self.dir)
-            .envs(self.envs.iter().map(|(k, v)| (k, v)))
+        let status = self
+            .command(&self.program, args)?
             .status()
-            .map_err(|e| CliError::generic(format!("could not run `{bin}`: {e}")).hint("install Node.js (npm)"))?;
+            .map_err(|e| CliError::generic(format!("could not run `{}`: {e}", self.program[0])).hint("install Node.js (npm)"))?;
         if status.success() { Ok(()) } else { Err(CliError::generic(format!("`{}` failed", self.render(args)))) }
     }
 
     fn exec(&self, program: &[String], args: &[&str], stdin: Option<&str>) -> CliResult<String> {
-        let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
-        let mut cmd = Command::new(bin);
-        cmd.args(pre).args(args).current_dir(&self.dir).envs(self.envs.iter().map(|(k, v)| (k, v))).stdout(Stdio::piped()).stderr(Stdio::piped());
-        cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-        let mut child = cmd
+        let mut child = self
+            .command(program, args)?
+            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| CliError::generic(format!("could not run `{bin}`: {e}")).hint("install Node.js (npx) or pass --wrangler \"bunx wrangler\""))?;
+            .map_err(|e| CliError::generic(format!("could not run `{}`: {e}", program[0])).hint("install Node.js (npx) or pass --wrangler \"bunx wrangler\""))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(input.as_bytes())?;
         }
@@ -342,7 +341,7 @@ impl Wrangler {
             let clean = strip_ansi(&text);
             let tail: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
             let tail = tail[tail.len().saturating_sub(6)..].join("\n");
-            return Err(CliError::generic(format!("`{}` failed:\n{tail}", self.render(args))));
+            return Err(CliError::generic(format!("`{}` failed:\n{tail}", shell_line(program, args))));
         }
         Ok(text)
     }
@@ -425,6 +424,7 @@ fn wait_until_live(client: &Client) -> CliResult<()> {
 
 // ---------- routing one address ----------
 
+#[derive(Serialize)]
 pub struct RouteOutcome {
     pub address: String,
     pub status: String,
@@ -459,14 +459,12 @@ pub fn route_address(
 ) -> CliResult<RouteOutcome> {
     let domain = domain_of(address).ok_or_else(|| CliError::usage(format!("not an email address: {address}")))?.to_string();
 
-    if routing_zones.is_none() {
-        *routing_zones = Some(enabled_zones(&w.probe(&["email", "routing", "list"])?));
-    }
-    if !routing_zones.as_ref().is_some_and(|z| z.contains(&domain)) {
+    let routing = zones(w, routing_zones, "routing")?;
+    if !routing.contains(&domain) {
         // Enabling Email Routing replaces the domain's MX records: free to do when nothing receives
         // mail there yet, a question when something else does.
         let mx = if yes { None } else { mx_hosts(&domain) };
-        let elsewhere: Vec<String> = mx.clone().unwrap_or_default().into_iter().filter(|h| !h.ends_with(".mx.cloudflare.net")).collect();
+        let elsewhere: Vec<String> = mx.iter().flatten().filter(|h| !h.ends_with(".mx.cloudflare.net")).cloned().collect();
         let safe = mx.is_some() && elsewhere.is_empty();
         if !safe {
             let current = if elsewhere.is_empty() { "somewhere we couldn't look up".to_string() } else { elsewhere.join(", ") };
@@ -476,53 +474,46 @@ pub fn route_address(
             }
         }
         w.mutate(&format!("enable Email Routing for {domain}"), &["email", "routing", "enable", &domain], None)?;
-        routing_zones.get_or_insert_with(Vec::new).push(domain.clone());
+        routing.push(domain.clone());
     }
 
-    if sending_zones.is_none() {
-        *sending_zones = Some(enabled_zones(&w.probe(&["email", "sending", "list"])?));
-    }
-    if sending_zones.as_ref().is_some_and(|z| z.contains(&domain)) {
+    let sending = zones(w, sending_zones, "sending")?;
+    if sending.contains(&domain) {
         w.record(&format!("sending for {domain}"), "exists", None, None);
     } else {
         w.mutate(&format!("enable sending for {domain}"), &["email", "sending", "enable", &domain], None)?;
-        sending_zones.get_or_insert_with(Vec::new).push(domain.clone());
+        sending.push(domain.clone());
     }
 
     let rules = parse_rules(&w.probe(&["email", "routing", "rules", "list", &domain])?);
     let target = format!("worker:{worker}");
     let matcher = format!("to:{address}");
     let step = format!("route {address}");
-    let set_args = |verb: &str, id: Option<&str>| -> Vec<String> {
-        let mut a = vec!["email".to_string(), "routing".into(), "rules".into(), verb.into(), domain.clone()];
-        a.extend(id.map(str::to_string));
-        a.extend(
-            ["--match-type", "literal", "--match-field", "to", "--match-value", address, "--action-type", "worker", "--action-value", worker]
-                .iter()
-                .map(|s| s.to_string()),
-        );
-        a
-    };
     let outcome = |status: &str, detail: String| RouteOutcome { address: address.into(), status: status.into(), detail };
-    match rules.iter().find(|r| r.matcher.eq_ignore_ascii_case(&matcher)) {
+    let (verb, id, status, detail) = match rules.iter().find(|r| r.matcher.eq_ignore_ascii_case(&matcher)) {
         Some(r) if r.action == target => {
             w.record(&step, "exists", None, Some(target.clone()));
-            Ok(outcome("exists", target))
+            return Ok(outcome("exists", target));
         }
         Some(r) if !consent(w, yes, &format!("{address} is routed to {}. Send it to Cloudmail instead?", r.action)) => {
-            Ok(blocked(w, address, format!("an existing rule sends {address} to {}", r.action)))
+            return Ok(blocked(w, address, format!("an existing rule sends {address} to {}", r.action)));
         }
-        Some(r) => {
-            let args = set_args("update", Some(&r.id));
-            w.mutate(&step, &args.iter().map(String::as_str).collect::<Vec<_>>(), None)?;
-            Ok(outcome(if w.dry_run { "planned" } else { "updated" }, format!("was {}", r.action)))
-        }
-        None => {
-            let args = set_args("create", None);
-            w.mutate(&step, &args.iter().map(String::as_str).collect::<Vec<_>>(), None)?;
-            Ok(outcome(if w.dry_run { "planned" } else { "created" }, target))
-        }
+        Some(r) => ("update", Some(r.id.as_str()), "updated", format!("was {}", r.action)),
+        None => ("create", None, "created", target),
+    };
+    let mut args = vec!["email", "routing", "rules", verb, &domain];
+    args.extend(id);
+    args.extend(["--match-type", "literal", "--match-field", "to", "--match-value", address, "--action-type", "worker", "--action-value", worker]);
+    w.mutate(&step, &args, None)?;
+    Ok(outcome(if w.dry_run { "planned" } else { status }, detail))
+}
+
+/// The domains with Email Routing or sending (`kind`) enabled, listed once per run.
+fn zones<'a>(w: &Wrangler, cache: &'a mut Option<Vec<String>>, kind: &str) -> CliResult<&'a mut Vec<String>> {
+    if cache.is_none() {
+        *cache = Some(enabled_zones(&w.probe(&["email", kind, "list"])?));
     }
+    Ok(cache.get_or_insert_with(Vec::new))
 }
 
 pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> CliResult<Value> {
@@ -532,7 +523,7 @@ pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> 
         Some(n) => n.clone(),
         None => generated
             .as_deref()
-            .and_then(parse_worker_name)
+            .and_then(|t| jsonc_field(t, "name"))
             .ok_or_else(|| CliError::usage("could not read the worker name from wrangler.jsonc").hint("run `cloudmail setup` first"))?,
     };
     let mut w = Wrangler::new(&args.wrangler, dir, false, interactive);
@@ -544,19 +535,6 @@ pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> 
 }
 
 // ---------- setup ----------
-
-fn plural_steps(n: usize) -> String {
-    if n == 1 { "1 step".into() } else { format!("{n} steps") }
-}
-
-/// Reads a line from the terminal after a prompt.
-fn prompt(question: &str) -> CliResult<String> {
-    eprint!("{question} ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(answer.trim().to_string())
-}
 
 /// Makes sure wrangler can reach Cloudflare, logging in through the browser when someone is there
 /// to do it, and returns `wrangler whoami`'s output.
@@ -599,7 +577,7 @@ fn choose_account(w: &Wrangler, flag: Option<&str>, previous: Option<String>, wh
                 eprintln!("  {}. {name} ({id})", i + 1);
             }
             let pick = prompt(&format!("Which one holds your domains? [1-{}]", accounts.len()))?;
-            let i = pick.parse::<usize>().ok().filter(|i| (1..=accounts.len()).contains(i)).ok_or_else(|| CliError::new("cancelled", exit::GENERIC, "no account chosen"))?;
+            let i = pick.parse::<usize>().ok().filter(|i| (1..=accounts.len()).contains(i)).ok_or_else(|| CliError::cancelled("no account chosen"))?;
             Ok(Some(accounts[i - 1].1.clone()))
         }
         _ => {
@@ -619,7 +597,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
         }
         let addr = prompt("Email address to set up (e.g. you@yourdomain.com):")?;
         if addr.is_empty() {
-            return Err(CliError::new("cancelled", exit::GENERIC, "cancelled"));
+            return Err(CliError::cancelled("cancelled"));
         }
         specs.push(addr);
     }
@@ -683,11 +661,8 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     if keep {
         let status = if current.as_deref() == Some(rendered.as_str()) { "exists" } else { "kept" };
         w.record("write wrangler.jsonc", status, None, Some(format!("using the existing file (worker \"{worker_name}\"); --force regenerates it")));
-    } else if args.dry_run {
-        w.record("write wrangler.jsonc", "planned", None, Some(config_path.display().to_string()));
     } else {
-        std::fs::write(&config_path, &rendered)?;
-        w.record("write wrangler.jsonc", "done", None, Some(config_path.display().to_string()));
+        w.perform("write wrangler.jsonc", None, Some(config_path.display().to_string()), |_| Ok(std::fs::write(&config_path, &rendered)?))?;
     }
 
     // 5. schema + deploy
@@ -714,57 +689,49 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
             configured == url
         }
     };
-    let reuse = !args.force
-        && existing_cfg.as_ref().is_some_and(|c| c.api_url.as_deref().is_some_and(same_worker) && c.api_token.is_some());
-    let token = if reuse {
+    let reused = existing_cfg
+        .as_ref()
+        .filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker))
+        .and_then(|c| c.api_token.clone());
+    let token = if let Some(token) = reused {
         w.record("API token", "exists", None, Some(cfg_path.display().to_string()));
-        existing_cfg.as_ref().and_then(|c| c.api_token.clone()).unwrap_or_default()
-    } else if !first_time && !args.force && args.dry_run {
+        token
+    } else if !first_time && !args.force {
+        if !args.dry_run {
+            return Err(CliError::generic(format!("{} already points at another worker", cfg_path.display()))
+                .hint("re-run with --force to rotate the token and overwrite the config"));
+        }
         w.record("API token", "blocked", None, Some(format!("{} points at another worker; setup would stop here without --force", cfg_path.display())));
         String::new()
-    } else if !first_time && !args.force {
-        return Err(CliError::generic(format!("{} already points at another worker", cfg_path.display()))
-            .hint("re-run with --force to rotate the token and overwrite the config"));
     } else {
         let token = if args.dry_run { "<generated>".to_string() } else { random_token()? };
         w.mutate("set API_TOKEN secret", &["secret", "put", "API_TOKEN"], Some(&token))?;
-        if args.dry_run {
-            w.record("write config", "planned", None, Some(cfg_path.display().to_string()));
-        } else {
-            let file = config::FileConfig {
-                api_url: Some(url.clone()),
-                api_token: Some(token.clone()),
-                poll_seconds: Some(config::DEFAULT_POLL_SECONDS),
-            };
+        let file = config::FileConfig {
+            api_url: Some(url.clone()),
+            api_token: Some(token.clone()),
+            poll_seconds: Some(config::DEFAULT_POLL_SECONDS),
+        };
+        w.perform("write config", None, Some(cfg_path.display().to_string()), |_| {
             config::save(&file)?;
-            w.record("write config", "done", None, Some(cfg_path.display().to_string()));
-        }
+            Ok(())
+        })?;
         token
     };
 
     // 7. a new workers.dev hostname and secret take a few seconds to go live
-    let client = Client::new(&Config { api_url: url.clone(), api_token: token, poll_seconds: 60 });
-    if args.dry_run {
-        w.record("wait for the worker", "planned", None, Some(url.clone()));
-    } else {
-        w.announce("wait for the worker");
-        wait_until_live(&client)?;
-        w.record("wait for the worker", "done", None, Some(url.clone()));
-    }
+    let client = Client::new(&Config { api_url: url.clone(), api_token: token, poll_seconds: config::DEFAULT_POLL_SECONDS });
+    w.perform("wait for the worker", None, Some(url.clone()), |_| wait_until_live(&client))?;
 
     // 8. mailboxes and routes
     let mut routes = Vec::new();
     let (mut sending, mut routing) = (None, None);
     for (addr, screen) in &mailboxes {
         let kind = if *screen { "screened" } else { "direct" };
-        if args.dry_run {
-            w.record(&format!("mailbox {addr}"), "planned", None, Some(kind.into()));
-        } else {
+        w.perform(&format!("mailbox {addr}"), None, Some(kind.into()), |_| {
             client.put_mailbox(addr, &MailboxUpdate { screen: Some(*screen), ..Default::default() })?;
-            w.record(&format!("mailbox {addr}"), "done", None, Some(kind.into()));
-        }
-        let r = route_address(&mut w, addr, &worker_name, args.yes, &mut sending, &mut routing)?;
-        routes.push(json!({ "address": r.address, "status": r.status, "detail": r.detail }));
+            Ok(())
+        })?;
+        routes.push(route_address(&mut w, addr, &worker_name, args.yes, &mut sending, &mut routing)?);
     }
 
     // 9. forwarding: Email Routing only forwards to verified destinations, and Cloudflare verifies
@@ -780,43 +747,37 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
                 w.record(&format!("verify {fwd}"), "pending", None, Some(pending));
             }
         }
-        if args.dry_run {
-            w.record("forward a copy", "planned", None, Some(fwd.clone()));
-        } else {
+        w.perform("forward a copy", None, Some(fwd.clone()), |_| {
             client.update_settings(&json!({ "forward_to": fwd }))?;
-            w.record("forward a copy", "done", None, Some(fwd.clone()));
-        }
+            Ok(())
+        })?;
     }
 
-    let attention: Vec<&Step> = w.steps.iter().filter(|s| matches!(s.status.as_str(), "blocked" | "pending")).collect();
+    let needs_attention = |s: &&Step| matches!(s.status.as_str(), "blocked" | "pending");
     let mut summary = if args.dry_run {
         format!("Planned {} steps (dry run, nothing changed)", w.steps.iter().filter(|s| s.status == "planned").count())
     } else {
         format!("Cloudmail is running at {url}")
     };
-    if !attention.is_empty() {
-        summary.push_str(&format!("; {} need attention", plural_steps(attention.len())));
+    match w.steps.iter().filter(needs_attention).count() {
+        0 => {}
+        1 => summary.push_str("; 1 step needs attention"),
+        n => summary.push_str(&format!("; {n} steps need attention")),
     }
-    let details = |steps: &[&Step]| {
-        steps
-            .iter()
-            .map(|s| {
-                let mut line = format!("[{:>7}] {}", s.status, s.step);
-                if let Some(c) = &s.command {
-                    line.push_str(&format!("\n          $ {c}"));
-                }
-                if let Some(d) = &s.detail {
-                    line.push_str(&format!("\n          {d}"));
-                }
-                line
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
     // At a terminal the steps were shown as they ran; repeat only what still needs the person.
-    let mut human = if interactive && !args.dry_run { details(&attention) } else { details(&w.steps.iter().collect::<Vec<_>>()) };
+    let show_all = !interactive || args.dry_run;
+    let mut human = String::new();
+    for s in w.steps.iter().filter(|s| show_all || needs_attention(s)) {
+        human.push_str(&format!("[{:>7}] {}\n", s.status, s.step));
+        if let Some(c) = &s.command {
+            human.push_str(&format!("          $ {c}\n"));
+        }
+        if let Some(d) = &s.detail {
+            human.push_str(&format!("          {d}\n"));
+        }
+    }
     if !human.is_empty() {
-        human.push_str("\n\n");
+        human.push('\n');
     }
     human.push_str(&summary);
     if !args.dry_run {
@@ -824,7 +785,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     }
     Ok(Response::new(
         json!({ "dry_run": args.dry_run, "worker": worker_name, "account": account, "url": url, "steps": w.steps, "routes": routes }),
-        summary.clone(),
+        summary,
     )
     .human(human)
     .crumbs(vec![
@@ -931,7 +892,7 @@ mod tests {
     #[test]
     fn parses_worker_name() {
         let j = "{\n  \"$schema\": \"x\",\n  \"name\": \"cloud-mail\",\n  \"main\": \"src/index.ts\",";
-        assert_eq!(parse_worker_name(j).as_deref(), Some("cloud-mail"));
+        assert_eq!(jsonc_field(j, "name").as_deref(), Some("cloud-mail"));
     }
 
     #[test]

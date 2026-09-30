@@ -33,7 +33,7 @@ pub fn path() -> PathBuf {
 }
 
 /// Pre-rename location, still read (and migrated) for compatibility.
-pub fn legacy_path() -> PathBuf {
+fn legacy_path() -> PathBuf {
     config_dir().join("cloud-mail").join("config.toml")
 }
 
@@ -66,7 +66,7 @@ pub fn save(file: &FileConfig) -> Result<PathBuf> {
 }
 
 /// Writes a file readable only by the current user (it holds the API token).
-pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -101,8 +101,20 @@ pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+const API_URL_ENV: [&str; 2] = ["CLOUDMAIL_API_URL", "CLOUD_MAIL_API_URL"];
+const API_TOKEN_ENV: [&str; 2] = ["CLOUDMAIL_API_TOKEN", "CLOUD_MAIL_API_TOKEN"];
+
+fn env_value(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 fn env(keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+    keys.iter().find_map(|k| env_value(k))
+}
+
+/// The environment variables that are set and so override the config file.
+pub fn env_overrides() -> Vec<&'static str> {
+    API_URL_ENV.into_iter().zip(API_TOKEN_ENV).flat_map(|(u, t)| [u, t]).filter(|k| env_value(k).is_some()).collect()
 }
 
 /// Loads config from env (CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN, legacy CLOUD_MAIL_*) over the file.
@@ -112,8 +124,8 @@ pub fn load() -> Result<Config> {
         Some(f) => f,
         None => read_file(&legacy_path())?.unwrap_or_default(),
     };
-    let api_url = env(&["CLOUDMAIL_API_URL", "CLOUD_MAIL_API_URL"]).or(file.api_url).filter(|v| !v.trim().is_empty());
-    let api_token = env(&["CLOUDMAIL_API_TOKEN", "CLOUD_MAIL_API_TOKEN"]).or(file.api_token).filter(|v| !v.trim().is_empty());
+    let api_url = env(&API_URL_ENV).or(file.api_url).filter(|v| !v.trim().is_empty());
+    let api_token = env(&API_TOKEN_ENV).or(file.api_token).filter(|v| !v.trim().is_empty());
 
     match (api_url, api_token) {
         (Some(api_url), Some(api_token)) => Ok(Config {

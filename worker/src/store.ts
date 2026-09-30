@@ -1,7 +1,7 @@
 import { type Address, htmlToText, makeSnippet, newId, byteLength } from "./util";
 
 export type Folder = "screener" | "inbox" | "archive" | "blocked";
-export type SenderStatus = "pending" | "approved" | "blocked";
+type SenderStatus = "pending" | "approved" | "blocked";
 
 // D1 rows cap out around 2 MB; bigger bodies live in R2.
 const MAX_INLINE_BODY = 512 * 1024;
@@ -53,7 +53,7 @@ export interface ThreadRef {
 }
 
 /** Threads containing any of these Message-IDs, most recent first. */
-export async function findThreadsByMessageIds(env: Env, ids: string[]): Promise<ThreadRef[]> {
+async function findThreadsByMessageIds(env: Env, ids: string[]): Promise<ThreadRef[]> {
   if (ids.length === 0) return [];
   const unique = [...new Set(ids)].slice(-50);
   const placeholders = unique.map(() => "?").join(",");
@@ -109,12 +109,14 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
     puts.push(env.BUCKET.put(key, a.content, { httpMetadata: { contentType: a.mimeType } }));
     return { id: attId, key, a, size: a.content.byteLength };
   });
-  // If any upload fails, remove the ones that landed: nothing will reference them.
+  // Nothing references the objects just written until the batch below lands; don't leave them behind.
+  const removeWritten = () =>
+    env.BUCKET.delete([rawKey, htmlKey, textKey, ...attachmentRows.map((r) => r.key)].filter((k): k is string => !!k)).catch(() => {});
+  // If any upload fails, remove the ones that landed.
   const settled = await Promise.allSettled(puts);
   const rejected = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
   if (rejected) {
-    const written = [rawKey, htmlKey, textKey, ...attachmentRows.map((r) => r.key)].filter((k): k is string => !!k);
-    await env.BUCKET.delete(written).catch(() => {});
+    await removeWritten();
     throw rejected.reason;
   }
 
@@ -203,9 +205,7 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   try {
     await env.DB.batch(stmts);
   } catch (err) {
-    // Nothing references the objects just written; don't leave them behind.
-    const written = [rawKey, htmlKey, textKey, ...attachmentRows.map((r) => r.key)].filter((k): k is string => !!k);
-    await env.BUCKET.delete(written).catch(() => {});
+    await removeWritten();
     throw err;
   }
   return { id, threadId };
@@ -239,9 +239,9 @@ export async function setSenderStatus(env: Env, email: string, name: string | nu
 }
 
 export async function deleteThread(env: Env, threadId: string): Promise<boolean> {
-  const messages = await env.DB.prepare("SELECT id, raw_key, html_key, text_key FROM messages WHERE thread_id = ?")
+  const messages = await env.DB.prepare("SELECT raw_key, html_key, text_key FROM messages WHERE thread_id = ?")
     .bind(threadId)
-    .all<{ id: string; raw_key: string | null; html_key: string | null; text_key: string | null }>();
+    .all<{ raw_key: string | null; html_key: string | null; text_key: string | null }>();
   const atts = await env.DB.prepare(
     "SELECT a.r2_key FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.thread_id = ?",
   )

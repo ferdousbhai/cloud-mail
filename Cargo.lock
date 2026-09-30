@@ -216,13 +216,11 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 name = "cloudmail"
 version = "0.1.3"
 dependencies = [
- "chrono",
  "clap",
  "cloudmail-api",
  "dirs",
  "serde",
  "serde_json",
- "toml",
  "ureq",
 ]
 
@@ -244,12 +242,9 @@ name = "cloudmail-gtk"
 version = "0.1.3"
 dependencies = [
  "ammonia",
- "chrono",
  "cloudmail-api",
  "dirs",
  "gtk4",
- "serde",
- "serde_json",
  "toml",
  "urlencoding",
  "webkit6",

@@ -1,4 +1,4 @@
-pub use cloudmail_api::text::{html_to_text, human_size, long_time, quote, reply_subject, short_time, split_addresses};
+pub use cloudmail_api::text::{format_addresses, html_to_text, human_size, long_time, quote, reply_subject, short_time, split_addresses, unused_path};
 use gtk::{gio, glib};
 
 /// Runs `work` on a worker thread and hands its result to `done` on the GTK main loop.
@@ -61,22 +61,22 @@ pub fn notify(title: &str, body: &str) {
     // Notification daemons read the body as Pango markup; `--` keeps a subject like "-20% off"
     // from being taken for an option.
     let title = title.to_string();
-    let body = escape_markup(body);
+    let body = escape_html(body);
     std::thread::spawn(move || {
         let _ = std::process::Command::new("notify-send")
-            .args(["-a", "Cloudmail", "-i", "com.ferdousbhai.Cloudmail", "--", &title, &body])
+            .args(["-a", "Cloudmail", "-i", crate::APP_ID, "--", &title, &body])
             .status();
     });
-}
-
-fn escape_markup(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 pub fn open_uri(uri: &str) {
     if let Err(e) = gio::AppInfo::launch_default_for_uri(uri, gio::AppLaunchContext::NONE) {
         eprintln!("could not open {uri}: {e}");
     }
+}
+
+pub fn subject_or_placeholder(subject: &str) -> &str {
+    if subject.trim().is_empty() { "(no subject)" } else { subject }
 }
 
 pub fn escape_html(s: &str) -> String {

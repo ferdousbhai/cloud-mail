@@ -12,9 +12,9 @@ use std::rc::Rc;
 use webkit6::prelude::*;
 
 use crate::api::{Client, Identities, PendingSender, ThreadDetail, ThreadSummary};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::theme::{self, Palette};
-use crate::util::{self, Draft};
+use crate::util::{self, Draft, unused_path};
 
 const PAGE: u32 = 50;
 
@@ -85,7 +85,7 @@ pub struct Ui {
     current: RefCell<Option<ThreadDetail>>,
     /// The thread the user allowed remote images for (L). Tied to one thread, so a press while
     /// another thread is still loading can't unblock that one's trackers.
-    images_for: RefCell<Option<(String, std::collections::HashSet<String>)>>,
+    images_for: RefCell<Option<(String, HashSet<String>)>>,
     /// The thread an open is in flight for, so a list rebuild keeps that row selected rather
     /// than the one still on screen (which would let e/i/u act on the wrong thread).
     opening: RefCell<Option<String>>,
@@ -184,9 +184,9 @@ impl Ui {
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
         sidebar.append(&hint);
-        wide_only.push(hint.clone().upcast());
+        wide_only.push(hint.upcast());
         wide_only.push(compose_label.upcast());
-        wide_only.push(brand.clone().upcast());
+        wide_only.push(brand.upcast());
 
         // Thread list column
         let middle = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -228,12 +228,8 @@ impl Ui {
         let reader = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         bar.add_css_class("reader-bar");
-        let reader_subject = gtk::Label::builder()
-            .xalign(0.0)
-            .hexpand(true)
-            .ellipsize(pango::EllipsizeMode::End)
-            .build();
-        reader_subject.add_css_class("reader-subject");
+        // An empty spacer that pushes the buttons right and carries the subject as its tooltip.
+        let reader_subject = gtk::Label::builder().hexpand(true).build();
         bar.append(&reader_subject);
         let reply_btn = icon_button("\u{f112}", "Reply (r)");
         let reply_all_btn = icon_button("\u{f122}", "Reply all (a)");
@@ -284,15 +280,13 @@ impl Ui {
 
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.append(&sidebar);
-        let sidebar_ref = sidebar.clone();
-        let paned_ref = paned.clone();
         match &config {
             Ok(_) => root.append(&paned),
             Err(msg) => root.append(&setup_page(msg)),
         }
         window.set_child(Some(&root));
 
-        let poll_seconds = config.as_ref().map(|c| c.poll_seconds).unwrap_or(60);
+        let poll_seconds = config.as_ref().map(|c| c.poll_seconds).unwrap_or(config::DEFAULT_POLL_SECONDS);
         let ui = Rc::new(Self {
             window,
             client: config.as_ref().ok().map(Client::new),
@@ -319,8 +313,8 @@ impl Ui {
             nav,
             badges,
             wide_only,
-            sidebar: sidebar_ref,
-            paned: paned_ref,
+            sidebar,
+            paned,
             compact: Cell::new(None),
             list,
             scroller,
@@ -332,8 +326,8 @@ impl Ui {
             search,
             reader_stack,
             reader_subject,
-            archive_btn: archive_btn.clone(),
-            inbox_btn: inbox_btn.clone(),
+            archive_btn,
+            inbox_btn,
             webview,
         });
         ui.apply_webview_background();
@@ -392,8 +386,8 @@ impl Ui {
         compose_btn.connect_clicked(clone!(#[weak] ui, move |_| compose::open(&ui, Draft::default())));
         reply_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(false)));
         reply_all_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(true)));
-        archive_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("archive")));
-        inbox_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("inbox")));
+        ui.archive_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("archive")));
+        ui.inbox_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("inbox")));
         unread_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.toggle_unread()));
         images_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.load_images()));
 
@@ -521,13 +515,9 @@ impl Ui {
 
     fn list_focus(&self) {
         match self.list.selected_row() {
-            Some(row) => {
-                row.grab_focus();
-            }
-            None => {
-                self.list.grab_focus();
-            }
-        }
+            Some(row) => row.grab_focus(),
+            None => self.list.grab_focus(),
+        };
     }
 
     fn load_list(self: &Rc<Self>, soft: bool) {
@@ -609,8 +599,9 @@ impl Ui {
                         ui.exhausted.set(more.len() < PAGE as usize);
                         let known: HashSet<String> = ui.threads.borrow().iter().map(|t| t.id.clone()).collect();
                         let sent = view == View::Sent;
+                        let default_email = ui.default_email();
                         for t in more.into_iter().filter(|t| !known.contains(&t.id)) {
-                            ui.list.append(&rows::thread_row(&t, sent, ui.default_email().as_deref()));
+                            ui.list.append(&rows::thread_row(&t, sent, default_email.as_deref()));
                             ui.threads.borrow_mut().push(t);
                         }
                         ui.update_subtitle();
@@ -679,20 +670,22 @@ impl Ui {
                 if n == 0 {
                     String::new()
                 } else {
-                    format!("{n} new sender{} · y lets them in, n blocks", if n == 1 { "" } else { "s" })
+                    format!("{n} new sender{} · y lets them in, n blocks", plural(n))
                 }
             }
-            View::Search => format!("“{}” · {} result{}", self.query.borrow(), self.threads.borrow().len(), if self.threads.borrow().len() == 1 { "" } else { "s" }),
+            View::Search => {
+                let n = self.threads.borrow().len();
+                format!("“{}” · {n} result{}", self.query.borrow(), plural(n))
+            }
             _ => {
                 let threads = self.threads.borrow();
                 let unread = threads.iter().filter(|t| t.unread).count();
                 let more = if self.exhausted.get() { "" } else { "+" };
+                let unread = if unread > 0 { format!(" · {unread} unread") } else { String::new() };
                 if threads.is_empty() {
                     String::new()
-                } else if unread > 0 {
-                    format!("{}{more} conversation{} · {unread} unread", threads.len(), plural(threads.len()))
                 } else {
-                    format!("{}{more} conversation{}", threads.len(), plural(threads.len()))
+                    format!("{}{more} conversation{}{unread}", threads.len(), plural(threads.len()))
                 }
             }
         };
@@ -760,9 +753,8 @@ impl Ui {
     fn render_current(&self) {
         let current = self.current.borrow();
         let Some(detail) = current.as_ref() else { return };
-        let subject = if detail.thread.subject.trim().is_empty() { "(no subject)" } else { detail.thread.subject.as_str() };
+        let subject = util::subject_or_placeholder(&detail.thread.subject);
         // The full subject heads the message pane; the toolbar keeps only its buttons.
-        self.reader_subject.set_label("");
         self.reader_subject.set_tooltip_text(Some(subject));
         let folder = detail.thread.folder.as_str();
         self.archive_btn.set_visible(folder == "inbox");
@@ -788,7 +780,7 @@ impl Ui {
             .current
             .borrow()
             .as_ref()
-            .map(|d| (d.thread.id.clone(), d.messages.iter().map(|m| m.id.clone()).collect::<std::collections::HashSet<_>>()));
+            .map(|d| (d.thread.id.clone(), d.messages.iter().map(|m| m.id.clone()).collect::<HashSet<_>>()));
         let Some(consent) = consent else { return };
         if self.images_for.borrow().as_ref() != Some(&consent) {
             *self.images_for.borrow_mut() = Some(consent);
@@ -837,10 +829,10 @@ impl Ui {
         self.toast(&format!("Downloading {filename}…"));
         util::run(
             move || {
-                let bytes = client.attachment(&id)?;
+                let bytes = client.download_attachment(&id)?.bytes;
                 let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let path = unique_path(&dir, &filename);
+                let path = unused_path(dir.join(attachment_file_name(&filename)));
                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
                 Ok::<_, String>(path)
             },
@@ -901,19 +893,18 @@ impl Ui {
             return;
         }
         let Some(client) = self.client.clone() else { return };
-        let (idx, id) = match self.selected_index().and_then(|i| self.threads.borrow().get(i).map(|t| (i, t.id.clone()))) {
-            Some(v) => v,
-            None => match self.current.borrow().as_ref() {
-                Some(d) => match self.threads.borrow().iter().position(|t| t.id == d.thread.id) {
-                    Some(i) => (i, d.thread.id.clone()),
-                    None => return,
-                },
-                None => return,
-            },
+        let (idx, id, current_folder) = {
+            let threads = self.threads.borrow();
+            let idx = self.selected_index().filter(|&i| i < threads.len()).or_else(|| {
+                let current = self.current.borrow();
+                let current = &current.as_ref()?.thread.id;
+                threads.iter().position(|t| t.id == *current)
+            });
+            let Some(idx) = idx else { return };
+            (idx, threads[idx].id.clone(), threads[idx].folder.clone())
         };
         // Only between Inbox and Archive, like the toolbar buttons: a Screener thread (reachable
         // from Search) is moved by screening its sender, never by archiving it.
-        let current_folder = self.threads.borrow()[idx].folder.clone();
         if current_folder == folder || !matches!(current_folder.as_str(), "inbox" | "archive") {
             return;
         }
@@ -930,9 +921,8 @@ impl Ui {
             self.render_current();
         }
         self.toast(if folder == "archive" { "Archived" } else { "Moved to Inbox" });
-        let id2 = id.clone();
         util::run(
-            move || client.move_thread(&id2, folder),
+            move || client.move_thread(&id, folder),
             clone!(#[weak(rename_to = ui)] self, move |result| {
                 if let Err(e) = result {
                     ui.toast(&format!("Couldn't move conversation: {e}"));
@@ -986,10 +976,9 @@ impl Ui {
         let Some(client) = self.client.clone() else { return };
         let Some(idx) = self.senders.borrow().iter().position(|s| s.email == email) else { return };
         let sender = self.senders.borrow_mut().remove(idx);
-        let lower = email.to_ascii_lowercase();
         self.screener_threads
             .borrow_mut()
-            .retain(|t| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()) != Some(lower.clone()));
+            .retain(|t| !t.is_from(email));
         self.clear_reader();
         self.remove_row(idx);
         self.toast(&format!(
@@ -1032,10 +1021,7 @@ impl Ui {
     fn my_addresses(&self) -> HashSet<String> {
         let mut mine: HashSet<String> = HashSet::new();
         if let Some(ids) = self.identities.borrow().as_ref() {
-            mine.extend(ids.identities.iter().map(|a| a.email.to_ascii_lowercase()));
-            if let Some(d) = &ids.default {
-                mine.insert(d.email.to_ascii_lowercase());
-            }
+            mine.extend(ids.identities.iter().chain(&ids.default).map(|a| a.email.to_ascii_lowercase()));
         }
         if let Some(d) = self.current.borrow().as_ref() {
             if let Some(a) = &d.thread.to_address {
@@ -1052,39 +1038,20 @@ impl Ui {
         let draft = {
             let current = self.current.borrow();
             let Some(detail) = current.as_ref() else { return };
-            let Some(msg) = detail.messages.iter().rev().find(|m| !m.outgoing).or(detail.messages.last()) else { return };
+            let Some(msg) = detail.reply_target() else { return };
             let mine = self.my_addresses();
-            let primary: Vec<_> = if msg.outgoing {
-                msg.to.clone()
-            } else if !msg.reply_to.is_empty() {
-                msg.reply_to.clone()
-            } else {
-                vec![msg.from.clone()]
-            };
-            let others: Vec<_> = primary.iter().filter(|a| !mine.contains(&a.email.to_ascii_lowercase())).cloned().collect();
-            let primary = if others.is_empty() { primary } else { others };
+            let primary = msg.reply_recipients();
+            let others: Vec<_> = primary.iter().filter(|a| !mine.contains(&a.email.to_ascii_lowercase())).collect();
+            let primary = if others.is_empty() { primary.iter().collect() } else { others };
             let mut seen: HashSet<String> = HashSet::new();
-            let mut to = Vec::new();
-            for a in &primary {
-                if seen.insert(a.email.to_ascii_lowercase()) {
-                    to.push(a.formatted());
-                }
-            }
+            let to: Vec<_> = primary.iter().filter(|a| seen.insert(a.email.to_ascii_lowercase())).map(|a| a.formatted()).collect();
             seen.extend(mine.iter().cloned());
-            let mut cc = Vec::new();
-            if all {
-                for a in msg.to.iter().chain(&msg.cc) {
-                    if seen.insert(a.email.to_ascii_lowercase()) {
-                        cc.push(a.formatted());
-                    }
-                }
-            }
-            let text = msg
-                .text
-                .clone()
-                .filter(|t| !t.trim().is_empty())
-                .or_else(|| msg.html.as_deref().map(util::html_to_text))
-                .unwrap_or_default();
+            let cc: Vec<_> = if all {
+                msg.to.iter().chain(&msg.cc).filter(|a| seen.insert(a.email.to_ascii_lowercase())).map(|a| a.formatted()).collect()
+            } else {
+                Vec::new()
+            };
+            let text = msg.plain_text();
             let from = detail
                 .thread
                 .to_address
@@ -1152,7 +1119,6 @@ impl Ui {
     }
 
     fn poll(self: &Rc<Self>) {
-        self.refresh_counts();
         let paginated = self.view.get() != View::Screener && self.threads.borrow().len() > PAGE as usize;
         if self.view.get() != View::Search && !paginated {
             self.load_list(true);
@@ -1185,7 +1151,7 @@ impl Ui {
                         util::notify(&format!("{} new emails", new_mail.len()), "");
                     } else {
                         for t in new_mail {
-                            let who = t.from.as_ref().map(|a| a.display()).unwrap_or_default();
+                            let who = t.sender().unwrap_or_default();
                             util::notify(&who, &t.subject);
                         }
                     }
@@ -1225,10 +1191,7 @@ impl Ui {
             }
             return Proceed;
         }
-        if typing || mods.contains(gdk::ModifierType::ALT_MASK) {
-            return Proceed;
-        }
-        if self.client.is_none() {
+        if typing || mods.contains(gdk::ModifierType::ALT_MASK) || self.client.is_none() {
             return Proceed;
         }
         if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
@@ -1275,25 +1238,14 @@ impl Ui {
 fn latest_thread_for<'a>(threads: &'a [ThreadSummary], email: &str) -> Option<&'a ThreadSummary> {
     threads
         .iter()
-        .filter(|t| t.from.as_ref().is_some_and(|a| a.email.eq_ignore_ascii_case(email)))
+        .filter(|t| t.is_from(email))
         .max_by_key(|t| t.last_at)
 }
 
-fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
+/// The sender's filename with path separators and control characters made harmless.
+fn attachment_file_name(filename: &str) -> String {
     let clean: String = filename.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
-    let clean = if clean.trim().is_empty() || clean == "." || clean == ".." { "attachment".to_string() } else { clean };
-    let candidate = dir.join(&clean);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let (stem, ext) = match clean.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
-        _ => (clean.clone(), String::new()),
-    };
-    (1..)
-        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|p| !p.exists())
-        .expect("unbounded")
+    if clean.trim().is_empty() || clean == "." || clean == ".." { "attachment".to_string() } else { clean }
 }
 
 fn setup_page(msg: &str) -> gtk::Widget {

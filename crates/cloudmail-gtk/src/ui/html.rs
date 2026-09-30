@@ -1,6 +1,6 @@
 use crate::api::{Address, Message, ThreadDetail};
 use crate::theme::Palette;
-use crate::util::{escape_html, human_size, long_time};
+use crate::util::{escape_html, format_addresses, html_to_text, human_size, long_time, subject_or_placeholder};
 
 pub const ATTACHMENT_SCHEME: &str = "cloudmail-attachment:";
 
@@ -13,8 +13,7 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         let open = i == last || (i + 1 == last && detail.messages.len() <= 3);
         body.push_str(&message(m, open, &mut blocked_remote));
     }
-    let subject = if detail.thread.subject.trim().is_empty() { "(no subject)" } else { detail.thread.subject.as_str() };
-    let heading = format!(r#"<h1 class="subject">{}</h1>"#, escape_html(subject));
+    let heading = format!(r#"<h1 class="subject">{}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
     let note = if blocked_remote && !remote_images {
         r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
     } else {
@@ -74,20 +73,17 @@ fn addr_list(list: &[Address]) -> String {
     list.iter().map(|a| escape_html(&a.display())).collect::<Vec<_>>().join(", ")
 }
 
-fn addr_list_full(list: &[Address]) -> String {
-    list.iter().map(|a| a.formatted()).collect::<Vec<_>>().join(", ")
-}
 
 fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     let mut rcpt = String::new();
     let mut rcpt_full = String::new();
     if !m.to.is_empty() {
         rcpt.push_str(&format!("to {}", addr_list(&m.to)));
-        rcpt_full.push_str(&format!("To: {}", addr_list_full(&m.to)));
+        rcpt_full.push_str(&format!("To: {}", format_addresses(&m.to)));
     }
     if !m.cc.is_empty() {
         rcpt.push_str(&format!(" · cc {}", addr_list(&m.cc)));
-        rcpt_full.push_str(&format!("\nCc: {}", addr_list_full(&m.cc)));
+        rcpt_full.push_str(&format!("\nCc: {}", format_addresses(&m.cc)));
     }
     let preview = m
         .text
@@ -99,7 +95,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
         name = escape_html(&m.from.display()),
         email = escape_html(&m.from.email),
-        warn = if m.dmarc_failed() {
+        warn = if m.unverified() {
             r#" <span class="warn" title="The sender's domain didn't authenticate this message (no DMARC pass, and no aligned DKIM or SPF): the From address may be forged.">⚠ sender not verified</span>"#
         } else {
             ""
@@ -157,7 +153,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
 /// HTML carries the message.
 fn is_stub(text: &str, html: &str) -> bool {
     let text_len = text.trim().chars().count();
-    let html_len = cloudmail_api::text::html_to_text(html).trim().chars().count();
+    let html_len = html_to_text(html).trim().chars().count();
     html_len > 200 && html_len > text_len * 2
 }
 
@@ -200,7 +196,6 @@ fn sanitize(html: &str) -> String {
         .to_string()
 }
 
-
 fn plain(text: &str) -> String {
     let mut out = String::new();
     let mut quoted: Vec<&str> = Vec::new();
@@ -208,10 +203,7 @@ fn plain(text: &str) -> String {
         if quoted.is_empty() {
             return;
         }
-        out.push_str(&format!(
-            r#"<details class="quoted"><summary>•••</summary><div class="plain">{}</div></details>"#,
-            linkify(&escape_html(&quoted.join("\n")))
-        ));
+        out.push_str(&format!(r#"<details class="quoted"><summary>•••</summary>{}</details>"#, plain_block(quoted)));
         quoted.clear();
     };
     let mut normal: Vec<&str> = Vec::new();
@@ -221,7 +213,7 @@ fn plain(text: &str) -> String {
         let is_attribution = line.trim_end().ends_with("wrote:") && next_quoted;
         if line.starts_with('>') || (is_attribution && quoted.is_empty()) {
             if !normal.is_empty() {
-                out.push_str(&format!(r#"<div class="plain">{}</div>"#, linkify(&escape_html(&normal.join("\n")))));
+                out.push_str(&plain_block(&normal));
                 normal.clear();
             }
             quoted.push(line);
@@ -232,9 +224,13 @@ fn plain(text: &str) -> String {
     }
     flush(&mut out, &mut quoted);
     if !normal.is_empty() {
-        out.push_str(&format!(r#"<div class="plain">{}</div>"#, linkify(&escape_html(&normal.join("\n")))));
+        out.push_str(&plain_block(&normal));
     }
     out
+}
+
+fn plain_block(lines: &[&str]) -> String {
+    format!(r#"<div class="plain">{}</div>"#, linkify(&escape_html(&lines.join("\n"))))
 }
 
 /// Wraps http(s) URLs in already-escaped text with anchors.

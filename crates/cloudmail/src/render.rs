@@ -1,6 +1,6 @@
 //! Human-readable rendering for terminals.
 
-use cloudmail_api::text::{html_to_text, human_size, long_time, short_time};
+use cloudmail_api::text::{format_addresses, human_size, long_time, short_time};
 use cloudmail_api::{Mailbox, PendingSender, Sender, ThreadDetail, ThreadSummary};
 
 use crate::output::{bold, dim};
@@ -32,14 +32,11 @@ pub fn clean(s: &str) -> String {
 }
 
 /// `clean` for one-line fields, where a newline would also break the layout.
-fn clean_line(s: &str) -> String {
+pub fn clean_line(s: &str) -> String {
     clean(s).replace(['\n', '\t'], " ")
 }
 
 pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
-    if list.is_empty() {
-        return String::new();
-    }
     let w = width();
     let id_w = list.iter().map(|t| t.id.chars().count()).max().unwrap_or(0);
     let from_w = 22;
@@ -49,7 +46,7 @@ pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
     list.iter()
         .map(|t| {
             let mark = if t.unread { "●" } else { " " };
-            let from = clean_line(&t.from.as_ref().map(|a| a.display()).unwrap_or_default());
+            let from = clean_line(&t.sender().unwrap_or_default());
             let mut subject = clean_line(&t.subject);
             if t.has_attachments {
                 subject.push_str(" 📎");
@@ -86,26 +83,17 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
             clean_line(&m.from.email),
             if m.outgoing { dim("  (sent)") } else { String::new() }
         ));
-        if m.dmarc_failed() {
+        if m.unverified() {
             out.push_str("⚠ sender not verified (its domain didn't authenticate this message): the From address may be forged\n");
         }
-        let to = m.to.iter().map(|a| a.formatted()).collect::<Vec<_>>().join(", ");
-        out.push_str(&dim(&clean_line(&format!("to {to}"))));
+        out.push_str(&dim(&clean_line(&format!("to {}", format_addresses(&m.to)))));
         if !m.cc.is_empty() {
-            out.push_str(&dim(&clean_line(&format!(" · cc {}", m.cc.iter().map(|a| a.formatted()).collect::<Vec<_>>().join(", ")))));
+            out.push_str(&dim(&clean_line(&format!(" · cc {}", format_addresses(&m.cc)))));
         }
         out.push('\n');
         out.push_str(&dim(&clean_line(&format!("{} · {}", long_time(m.date), m.id))));
         out.push_str("\n\n");
-        let body = if html {
-            m.html.clone().or_else(|| m.text.clone()).unwrap_or_default()
-        } else {
-            match (&m.text, &m.html) {
-                (Some(t), _) if !t.trim().is_empty() => t.clone(),
-                (_, Some(h)) => html_to_text(h),
-                _ => String::new(),
-            }
-        };
+        let body = if html { m.html.clone().or_else(|| m.text.clone()).unwrap_or_default() } else { m.plain_text() };
         out.push_str(&clean(body.trim_end()));
         let atts: Vec<_> = m.attachments.iter().filter(|a| !a.inline).collect();
         if !atts.is_empty() {
@@ -122,12 +110,8 @@ pub fn screener(list: &[PendingSender]) -> String {
     let w = width();
     list.iter()
         .map(|s| {
-            let who = if s.name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
-                clean_line(&format!("{} <{}>", s.display(), s.email))
-            } else {
-                clean_line(&s.email)
-            };
-            let subject = clean_line(&s.last_subject.clone().unwrap_or_default());
+            let who = clean_line(&s.address().formatted());
+            let subject = clean_line(s.last_subject.as_deref().unwrap_or_default());
             let count = if s.thread_count > 1 { format!(" (+{} more)", s.thread_count - 1) } else { String::new() };
             format!(
                 "{}  {}{}  {}",

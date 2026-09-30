@@ -6,7 +6,7 @@ use cloudmail_api as api;
 use cloudmail_api::config;
 
 use gtk::{gio, glib, prelude::*};
-use std::cell::RefCell;
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 pub const APP_ID: &str = "com.ferdousbhai.Cloudmail";
@@ -17,19 +17,8 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
-    let main_ui: Rc<RefCell<Option<Rc<ui::Ui>>>> = Rc::new(RefCell::new(None));
-
-    let ensure = {
-        let main_ui = main_ui.clone();
-        move |app: &gtk::Application| -> Rc<ui::Ui> {
-            if let Some(existing) = main_ui.borrow().as_ref() {
-                return existing.clone();
-            }
-            let created = ui::Ui::new(app, config::load().map_err(|e| setup_hint(&e)));
-            *main_ui.borrow_mut() = Some(created.clone());
-            created
-        }
-    };
+    let main_ui: Rc<OnceCell<Rc<ui::Ui>>> = Rc::default();
+    let ensure = move |app: &gtk::Application| main_ui.get_or_init(|| ui::Ui::new(app, config::load().map_err(|e| setup_hint(&e)))).clone();
 
     app.connect_activate({
         let ensure = ensure.clone();

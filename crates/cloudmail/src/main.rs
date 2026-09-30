@@ -99,9 +99,11 @@ fn main() {
         }
     };
     let ctx = Ctx { mode: mode_for(&cli.global), client: OnceCell::new() };
-    let result = dispatch(&ctx, cli.command);
-    match result.and_then(|r| r.print(ctx.mode)) {
-        Ok(()) => std::process::exit(exit::OK),
+    match dispatch(&ctx, cli.command) {
+        Ok(r) => {
+            r.print(ctx.mode);
+            std::process::exit(exit::OK);
+        }
         Err(e) => {
             e.print(ctx.mode);
             std::process::exit(e.exit);
@@ -111,7 +113,7 @@ fn main() {
 
 fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
     use cli::*;
-    let Some(command) = command else { return Ok(admin::orientation(ctx)) };
+    let Some(command) = command else { return Ok(admin::orientation()) };
     match command {
         Command::Status => admin::status(ctx),
         Command::Inbox(a) => mail::list(ctx, Folder::Inbox, &a),
@@ -133,6 +135,9 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Config(c) => admin::config_cmd(c),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),
         Command::Commands => Ok(admin::commands()),
-        Command::AgentGuide => Ok(Response::new(docs::agent_guide(), "cloudmail agent guide").human(docs::agent_guide())),
+        Command::AgentGuide => {
+            let guide = docs::agent_guide();
+            Ok(Response::new(&guide, "cloudmail agent guide").human(guide))
+        }
     }
 }

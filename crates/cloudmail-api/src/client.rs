@@ -29,6 +29,11 @@ pub struct Client {
 
 type HttpResult = std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>;
 
+#[derive(serde::Deserialize)]
+struct SettingsEnvelope {
+    settings: Settings,
+}
+
 struct Raw {
     bytes: Vec<u8>,
     content_type: Option<String>,
@@ -89,7 +94,7 @@ impl Client {
             400 | 409 | 422 => ErrorKind::BadRequest,
             _ => ErrorKind::Api,
         };
-        Err(Error { kind, message, status: Some(status.as_u16()) })
+        Err(Error::new(kind, message))
     }
 
     fn decode<T: DeserializeOwned>(raw: Raw) -> Result<T> {
@@ -104,22 +109,20 @@ impl Client {
         Self::finish(self.agent.get(self.url(path)).header("Authorization", self.auth()).call())
     }
 
+    fn send_json<T: DeserializeOwned>(&self, req: ureq::RequestBuilder<ureq::typestate::WithBody>, body: &impl Serialize) -> Result<T> {
+        Self::decode(Self::finish(req.header("Authorization", self.auth()).send_json(body))?)
+    }
+
     fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
-        Self::decode(Self::finish(
-            self.agent.post(self.url(path)).header("Authorization", self.auth()).send_json(body),
-        )?)
+        self.send_json(self.agent.post(self.url(path)), body)
     }
 
     fn put<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
-        Self::decode(Self::finish(
-            self.agent.put(self.url(path)).header("Authorization", self.auth()).send_json(body),
-        )?)
+        self.send_json(self.agent.put(self.url(path)), body)
     }
 
     fn patch<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
-        Self::decode(Self::finish(
-            self.agent.patch(self.url(path)).header("Authorization", self.auth()).send_json(body),
-        )?)
+        self.send_json(self.agent.patch(self.url(path)), body)
     }
 
     fn delete(&self, path: &str) -> Result<()> {
@@ -130,24 +133,12 @@ impl Client {
         urlencoding::encode(s).into_owned()
     }
 
-    /// Unauthenticated liveness check.
-    pub fn health(&self) -> Result<()> {
-        Self::finish(self.agent.get(self.url("/health")).call()).map(drop)
-    }
-
     pub fn counts(&self) -> Result<Counts> {
         self.get("/api/counts")
     }
 
     pub fn threads(&self, folder: &str, query: Option<&str>, before: Option<i64>, limit: u32) -> Result<Vec<ThreadSummary>> {
-        self.list_threads(&ThreadQuery {
-            folder: folder.to_string(),
-            q: query.map(str::to_string),
-            before,
-            since: None,
-            limit,
-            unread: false,
-        })
+        self.list_threads(&ThreadQuery { folder: folder.to_string(), q: query.map(str::to_string), before, limit, ..Default::default() })
     }
 
     pub fn list_threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>> {
@@ -231,10 +222,6 @@ impl Client {
         self.post("/api/send", req)
     }
 
-    pub fn attachment(&self, id: &str) -> Result<Vec<u8>> {
-        self.download_attachment(id).map(|d| d.bytes)
-    }
-
     pub fn download_attachment(&self, id: &str) -> Result<Download> {
         let raw = self.get_raw(&format!("/api/attachments/{}", Self::enc(id)))?;
         Ok(Download {
@@ -275,24 +262,16 @@ impl Client {
     }
 
     pub fn settings(&self) -> Result<Settings> {
-        #[derive(serde::Deserialize)]
-        struct Wrapped {
-            settings: Settings,
-        }
-        self.get::<Wrapped>("/api/settings").map(|w| w.settings)
+        self.get::<SettingsEnvelope>("/api/settings").map(|w| w.settings)
     }
 
     pub fn update_settings(&self, patch: &serde_json::Value) -> Result<Settings> {
-        #[derive(serde::Deserialize)]
-        struct Wrapped {
-            settings: Settings,
-        }
-        self.patch::<Wrapped>("/api/settings", patch).map(|w| w.settings)
+        self.patch::<SettingsEnvelope>("/api/settings", patch).map(|w| w.settings)
     }
 }
 
 /// Extracts the filename from a Content-Disposition header (RFC 5987 `filename*` preferred).
-pub fn filename_from_disposition(value: &str) -> Option<String> {
+fn filename_from_disposition(value: &str) -> Option<String> {
     let mut plain = None;
     for part in value.split(';').map(str::trim) {
         if let Some(v) = part.strip_prefix("filename*=") {

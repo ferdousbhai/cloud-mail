@@ -15,18 +15,16 @@ struct Req {
     auth: String,
 }
 
-type Handler = dyn Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync;
-
 struct Mock {
     url: String,
     log: Arc<Mutex<Vec<Req>>>,
 }
 
-fn mock(handler: Box<Handler>) -> Mock {
+fn mock(handler: impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + 'static) -> Mock {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let log = Arc::new(Mutex::new(Vec::new()));
-    let handler: Arc<Handler> = Arc::from(handler);
+    let handler = Arc::new(handler);
     let log2 = log.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -60,7 +58,7 @@ fn mock(handler: Box<Handler>) -> Mock {
                     reader.read_exact(&mut body).unwrap();
                     let req = Req { method, path, body: serde_json::from_slice(&body).unwrap_or(Value::Null), auth };
                     log.lock().unwrap().push(req.clone());
-                    let (status, bytes, ctype) = if req.path != "/health" && req.auth != "Bearer test-token" {
+                    let (status, bytes, ctype) = if req.auth != "Bearer test-token" {
                         (401, br#"{"error":"unauthorized"}"#.to_vec(), "application/json")
                     } else {
                         handler(&req)
@@ -110,7 +108,6 @@ fn detail() -> Value {
 fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
     let p = req.path.as_str();
     match (req.method.as_str(), p) {
-        ("GET", "/health") => ok(json!({ "ok": true })),
         ("GET", "/api/counts") => ok(json!({ "screener": 1, "inbox": 2, "inbox_unread": 1 })),
         ("GET", _) if p.starts_with("/api/threads?") => {
             if p.contains("since=2000") {
@@ -148,6 +145,11 @@ fn temp_home(tag: &str) -> PathBuf {
 }
 
 fn cloudmail(m: &Mock, args: &[&str], stdin: Option<&str>) -> Output {
+    cloudmail_env(m, args, stdin, &[])
+}
+
+/// `cloudmail` with environment variables changed (Some) or removed (None) after the defaults.
+fn cloudmail_env(m: &Mock, args: &[&str], stdin: Option<&str>, env: &[(&str, Option<&str>)]) -> Output {
     let home = temp_home("home");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
     cmd.args(args)
@@ -161,6 +163,12 @@ fn cloudmail(m: &Mock, args: &[&str], stdin: Option<&str>) -> Output {
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
     let mut child = cmd.spawn().unwrap();
     if let Some(s) = stdin {
         child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
@@ -178,7 +186,7 @@ fn requests(m: &Mock) -> Vec<Req> {
 
 #[test]
 fn inbox_envelope_and_selectors() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let o = cloudmail(&m, &["inbox"], None);
     assert!(o.status.success());
     let v = json_out(&o);
@@ -196,7 +204,7 @@ fn inbox_envelope_and_selectors() {
 
 #[test]
 fn thread_read_strips_html_and_flags_dmarc() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let v = json_out(&cloudmail(&m, &["thread", "read", "t_1"], None));
     let msg = &v["data"]["messages"][0];
     assert_eq!(msg["text"], "Where is it?");
@@ -215,7 +223,7 @@ fn thread_read_strips_html_and_flags_dmarc() {
 
 #[test]
 fn screener_and_bulk_actions() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let v = json_out(&cloudmail(&m, &["screener"], None));
     assert_eq!(v["data"][0]["email"], "new@y.com");
 
@@ -230,7 +238,7 @@ fn screener_and_bulk_actions() {
     let v = json_out(&o);
     assert_eq!(v["ok"], false);
     assert_eq!(v["error"]["code"], "not_found");
-    assert!(v["error"]["message"].as_str().unwrap().starts_with("1 thread archived, 1 failed"));
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("1 thread archived, 1 failed; t_missing: "), "{v}");
     assert_eq!(v["error"]["hint"], "done: t_1");
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
 
@@ -242,7 +250,7 @@ fn screener_and_bulk_actions() {
 
 #[test]
 fn reply_uses_receiving_mailbox_and_threads() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let v = json_out(&cloudmail(&m, &["reply", "t_1", "--all", "-m", "On its way", "--dry-run"], None));
     let req = &v["data"]["request"];
     assert_eq!(req["from"], "support@example.org");
@@ -263,7 +271,7 @@ fn reply_uses_receiving_mailbox_and_threads() {
 
 #[test]
 fn compose_from_stdin_and_mailbox_settings() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let o = cloudmail(&m, &["compose", "--to", "a@b.com, \"Last, First\" <c@d.com>", "--subject", "Hi"], Some("Body\n"));
     assert!(o.status.success());
     let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
@@ -282,7 +290,7 @@ fn compose_from_stdin_and_mailbox_settings() {
 
 #[test]
 fn watch_streams_jsonl_from_newest_activity() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let o = cloudmail(&m, &["watch", "--interval", "0", "--max-polls", "2"], None);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let lines: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -297,13 +305,10 @@ fn watch_streams_jsonl_from_newest_activity() {
 #[test]
 fn unread_is_filtered_by_the_worker_and_kept_in_the_next_page_hint() {
     // A full page of unread threads, as a worker that honours unread=1 returns it.
-    let m = mock(Box::new(|req: &Req| {
-        let threads: Vec<Value> = (1..=2i64)
-            .map(|i| json!({ "id": format!("t_{i}"), "subject": "s", "folder": "inbox", "snippet": "", "from": { "name": "", "email": "a@b.c" }, "to_address": "hi@x.y", "message_count": 1, "unread": true, "has_attachments": false, "last_at": 100 - i }))
-            .collect();
-        let _ = req;
+    let m = mock(|_: &Req| {
+        let threads: Vec<Value> = (1..=2i64).map(|i| thread_summary(&format!("t_{i}"), "inbox", 100 - i)).collect();
         ok(json!({ "threads": threads }))
-    }));
+    });
     let v = json_out(&cloudmail(&m, &["inbox", "--unread", "--limit", "2", "--since", "5"], None));
     let path = requests(&m).into_iter().map(|r| r.path).find(|p| p.starts_with("/api/threads")).unwrap();
     assert!(path.contains("unread=1") && path.contains("since=5"), "{path}");
@@ -315,7 +320,7 @@ fn unread_is_filtered_by_the_worker_and_kept_in_the_next_page_hint() {
 #[test]
 fn watch_pages_back_through_a_burst_larger_than_one_page() {
     // 250 threads changed after `since`; the worker returns at most `limit` per request, newest first.
-    let m = mock(Box::new(|req: &Req| {
+    let m = mock(|req: &Req| {
         let q = |k: &str| {
             req.path.split(['?', '&']).find_map(|kv| kv.strip_prefix(&format!("{k}="))).and_then(|v| v.parse::<i64>().ok())
         };
@@ -324,10 +329,10 @@ fn watch_pages_back_through_a_burst_larger_than_one_page() {
             .rev()
             .filter(|at| *at > since && *at < before)
             .take(limit as usize)
-            .map(|at| json!({ "id": format!("t_{at}"), "subject": "s", "folder": "inbox", "snippet": "", "from": { "name": "", "email": "a@b.c" }, "to_address": "hi@x.y", "message_count": 1, "unread": true, "has_attachments": false, "last_at": at }))
+            .map(|at| thread_summary(&format!("t_{at}"), "inbox", at))
             .collect();
         ok(json!({ "threads": threads }))
-    }));
+    });
     let o = cloudmail(&m, &["watch", "--since", "0", "--interval", "0", "--max-polls", "1"], None);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let ids: Vec<String> = String::from_utf8_lossy(&o.stdout)
@@ -341,7 +346,7 @@ fn watch_pages_back_through_a_burst_larger_than_one_page() {
 
 #[test]
 fn attachment_save_uses_server_filename() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let dir = temp_home("att");
     let out = format!("{}/", dir.display());
     let v = json_out(&cloudmail(&m, &["attachment", "save", "a_1", "-o", &out], None));
@@ -352,34 +357,16 @@ fn attachment_save_uses_server_filename() {
 
 #[test]
 fn errors_have_codes_and_exit_statuses() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let o = cloudmail(&m, &["thread", "read", "t_nope"], None);
     assert_eq!(o.status.code(), Some(4));
     assert_eq!(json_out(&o)["error"]["message"], "no thread t_nope");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
-    let home = temp_home("bad");
-    let o = cmd
-        .args(["inbox"])
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("CLOUDMAIL_API_URL", &m.url)
-        .env("CLOUDMAIL_API_TOKEN", "wrong")
-        .output()
-        .unwrap();
+    let o = cloudmail_env(&m, &["inbox"], None, &[("CLOUDMAIL_API_TOKEN", Some("wrong"))]);
     assert_eq!(o.status.code(), Some(3));
     assert_eq!(json_out(&o)["error"]["code"], "unauthorized");
 
-    let empty = temp_home("empty");
-    let o = Command::new(env!("CARGO_BIN_EXE_cloudmail"))
-        .args(["status"])
-        .env("XDG_CONFIG_HOME", empty.join("config"))
-        .env("HOME", &empty)
-        .env_remove("CLOUDMAIL_API_URL")
-        .env_remove("CLOUDMAIL_API_TOKEN")
-        .env_remove("CLOUD_MAIL_API_URL")
-        .env_remove("CLOUD_MAIL_API_TOKEN")
-        .output()
-        .unwrap();
+    let o = cloudmail_env(&m, &["status"], None, &[("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)]);
     assert_eq!(o.status.code(), Some(3));
     assert_eq!(json_out(&o)["error"]["code"], "not_configured");
 
@@ -390,7 +377,7 @@ fn errors_have_codes_and_exit_statuses() {
 
 #[test]
 fn self_documentation() {
-    let m = mock(Box::new(default_handler));
+    let m = mock(default_handler);
     let v = json_out(&cloudmail(&m, &["commands"], None));
     let cmds: Vec<&str> = v["data"]["commands"].as_array().unwrap().iter().map(|c| c["command"].as_str().unwrap()).collect();
     for c in ["cloudmail inbox", "cloudmail thread read", "cloudmail screener approve", "cloudmail reply", "cloudmail watch", "cloudmail setup", "cloudmail mailbox add"] {

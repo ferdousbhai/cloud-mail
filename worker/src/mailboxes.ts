@@ -5,11 +5,11 @@ export interface Mailbox extends Address {
   position: number;
 }
 
-export interface Settings {
+interface Settings {
   forward_to: string;
 }
 
-const DEFAULT_SETTINGS: Settings = { forward_to: "" };
+export const DEFAULT_SETTINGS: Settings = { forward_to: "" };
 
 export async function mailboxes(env: Env): Promise<Mailbox[]> {
   const rows = await env.DB.prepare("SELECT email, name, screen, position FROM mailboxes ORDER BY position, created_at")

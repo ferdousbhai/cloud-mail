@@ -95,10 +95,10 @@ cloudmail screener approve alice@example.com
 cloudmail inbox --unread
 cloudmail thread read <id>
 cloudmail reply <id> -m "Sounds good."
-cloudmail watch --folder all  # stream new mail as JSON lines
+cloudmail watch --folder all  # stream new mail (JSON lines when piped)
 ```
 
-Desktop keys: `j`/`k` move, `Enter` open, `e` archive, `r` reply, `a` reply all, `c` compose,
+Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `r` reply, `a` reply all, `c` compose,
 `y`/`n` in the Screener, `/` search, `L` load remote images, `?` all keys. To open `mailto:` links
 in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handler/mailto`.
 

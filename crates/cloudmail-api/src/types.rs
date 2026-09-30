@@ -9,19 +9,17 @@ pub struct Address {
 }
 
 impl Address {
+    fn trimmed_name(&self) -> Option<&str> {
+        self.name.as_deref().map(str::trim).filter(|n| !n.is_empty())
+    }
+
     pub fn display(&self) -> String {
-        match self.name.as_deref().map(str::trim) {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => self.email.clone(),
-        }
+        self.trimmed_name().map_or_else(|| self.email.clone(), str::to_string)
     }
 
     /// "Name <email>" suitable for an address field.
     pub fn formatted(&self) -> String {
-        match self.name.as_deref().map(str::trim) {
-            Some(n) if !n.is_empty() => format!("{n} <{}>", self.email),
-            _ => self.email.clone(),
-        }
+        self.trimmed_name().map_or_else(|| self.email.clone(), |n| format!("{n} <{}>", self.email))
     }
 }
 
@@ -38,6 +36,16 @@ pub struct ThreadSummary {
     pub unread: bool,
     pub has_attachments: bool,
     pub last_at: i64,
+}
+
+impl ThreadSummary {
+    pub fn sender(&self) -> Option<String> {
+        self.from.as_ref().map(Address::display)
+    }
+
+    pub fn is_from(&self, email: &str) -> bool {
+        self.from.as_ref().is_some_and(|a| a.email.eq_ignore_ascii_case(email))
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -71,9 +79,29 @@ pub struct Message {
 }
 
 impl Message {
+    /// Who a reply goes to: the original recipients of your own message, else Reply-To, else From.
+    pub fn reply_recipients(&self) -> &[Address] {
+        if self.outgoing {
+            &self.to
+        } else if !self.reply_to.is_empty() {
+            &self.reply_to
+        } else {
+            std::slice::from_ref(&self.from)
+        }
+    }
+
+    /// The plain-text body, converted from the HTML when there is no text part.
+    pub fn plain_text(&self) -> String {
+        match (&self.text, &self.html) {
+            (Some(t), _) if !t.trim().is_empty() => t.clone(),
+            (_, Some(h)) => crate::text::html_to_text(h),
+            _ => String::new(),
+        }
+    }
+
     /// The From address may be forged: the worker couldn't authenticate it (see
     /// `MessageAuth::verified`). Older stored mail falls back to "DMARC gave anything but pass or none".
-    pub fn dmarc_failed(&self) -> bool {
+    pub fn unverified(&self) -> bool {
         let Some(auth) = self.auth.as_ref() else { return false };
         match auth.verified {
             Some(verified) => !verified,
@@ -105,8 +133,12 @@ pub struct PendingSender {
 }
 
 impl PendingSender {
+    pub fn address(&self) -> Address {
+        Address { name: self.name.clone(), email: self.email.clone() }
+    }
+
     pub fn display(&self) -> String {
-        Address { name: self.name.clone(), email: self.email.clone() }.display()
+        self.address().display()
     }
 }
 
@@ -176,8 +208,8 @@ pub struct SendRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SendResponse {
-    /// When the mail went out but couldn't be saved to Sent (see `warning`): the replied-to
-    /// thread, or absent for a new message.
+    /// The thread the sent message was saved in. If it went out but couldn't be saved (see
+    /// `warning`): the replied-to thread, or absent for a new message.
     #[serde(default)]
     pub thread_id: Option<String>,
     pub message: Option<Message>,
@@ -190,6 +222,13 @@ pub struct SendResponse {
 pub struct ThreadDetail {
     pub thread: ThreadSummary,
     pub messages: Vec<Message>,
+}
+
+impl ThreadDetail {
+    /// The message a reply answers: the latest one you received, else the latest one.
+    pub fn reply_target(&self) -> Option<&Message> {
+        self.messages.iter().rev().find(|m| !m.outgoing).or(self.messages.last())
+    }
 }
 
 /// Downloaded file contents plus the worker's reported type and name.

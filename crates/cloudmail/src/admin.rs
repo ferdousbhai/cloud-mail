@@ -25,7 +25,7 @@ const TOP_COMMANDS: &[(&str, &str)] = &[
     ("cloudmail agent-guide", "How to script cloudmail / use it from an AI agent"),
 ];
 
-pub fn orientation(_ctx: &Ctx) -> Response {
+pub fn orientation() -> Response {
     let cfg = config::load();
     let configured = cfg.is_ok();
     let path = config::path();
@@ -60,7 +60,6 @@ pub fn orientation(_ctx: &Ctx) -> Response {
 
 pub fn status(ctx: &Ctx) -> CliResult {
     let client = ctx.client()?;
-    client.health()?;
     let counts = client.counts()?;
     let mailboxes = client.mailboxes()?;
     let settings = client.settings()?;
@@ -104,7 +103,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
     match cmd {
         MailboxCommand::List => {
             let list = client.mailboxes()?;
-            let summary = format!("{} mailboxes", list.len());
+            let summary = format!("{} mailbox{}", list.len(), if list.len() == 1 { "" } else { "es" });
             let human = if list.is_empty() { "No mailboxes yet; add one with `cloudmail mailbox add <address>`".into() } else { render::mailboxes(&list) };
             let ids = list.iter().map(|m| m.email.clone()).collect();
             Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![
@@ -165,16 +164,13 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
         ConfigCommand::Show { show_token } => {
             let file = config::read_file(&path)?.unwrap_or_default();
             let effective = config::load().ok();
-            let token = effective.as_ref().map(|c| c.api_token.clone()).or(file.api_token.clone());
+            let token = effective.as_ref().map(|c| c.api_token.clone()).or(file.api_token);
             let shown_token = token.as_ref().map(|t| if show_token { t.clone() } else { redact(t) });
-            let env_override = ["CLOUDMAIL_API_URL", "CLOUDMAIL_API_TOKEN", "CLOUD_MAIL_API_URL", "CLOUD_MAIL_API_TOKEN"]
-                .iter()
-                .filter(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
-                .collect::<Vec<_>>();
+            let env_override = config::env_overrides();
             let data = json!({
                 "path": path,
                 "exists": path.exists(),
-                "api_url": effective.as_ref().map(|c| c.api_url.clone()).or(file.api_url.clone()),
+                "api_url": effective.as_ref().map(|c| c.api_url.clone()).or(file.api_url),
                 "api_token": shown_token,
                 "poll_seconds": effective.as_ref().map(|c| c.poll_seconds).or(file.poll_seconds),
                 "env_overrides": env_override,
@@ -184,8 +180,8 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
                 path.display(),
                 data["api_url"].as_str().unwrap_or("(not set)"),
                 data["api_token"].as_str().unwrap_or("(not set)"),
-                data["poll_seconds"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| "(default 60)".into()),
-                if env_override.is_empty() { String::new() } else { format!("\nenv overrides: {}", env_override.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")) }
+                data["poll_seconds"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| format!("(default {})", config::DEFAULT_POLL_SECONDS)),
+                if env_override.is_empty() { String::new() } else { format!("\nenv overrides: {}", env_override.join(", ")) }
             );
             Ok(Response::new(data, format!("Config at {}", path.display())).human(human))
         }

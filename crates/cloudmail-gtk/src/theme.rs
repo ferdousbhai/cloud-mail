@@ -2,6 +2,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
@@ -17,7 +18,6 @@ pub struct Palette {
     pub bright_foreground: String,
     pub red: String,
     pub green: String,
-    pub yellow: String,
 }
 
 impl Default for Palette {
@@ -36,12 +36,11 @@ impl Default for Palette {
             bright_foreground: "#c0caf5".into(),
             red: "#f7768e".into(),
             green: "#9ece6a".into(),
-            yellow: "#e0af68".into(),
         }
     }
 }
 
-pub fn state_dir() -> PathBuf {
+fn state_dir() -> PathBuf {
     dirs::state_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/state"))
         .join("omarchy/current")
@@ -63,7 +62,7 @@ pub fn load() -> Palette {
     if let Some(mode) = get("mode") {
         p.dark = mode != "light";
     }
-    let slots: [(&str, &mut String); 12] = [
+    let slots: [(&str, &mut String); 11] = [
         ("accent", &mut p.accent),
         ("selection", &mut p.selection),
         ("muted", &mut p.muted),
@@ -75,7 +74,6 @@ pub fn load() -> Palette {
         ("bright_foreground", &mut p.bright_foreground),
         ("red", &mut p.red),
         ("green", &mut p.green),
-        ("yellow", &mut p.yellow),
     ];
     for (key, slot) in slots {
         if let Some(v) = get(key).filter(|v| is_color(v)) {
@@ -121,7 +119,6 @@ window.cloudmail, window.compose {{
 .empty {{ color: {dfg}; padding: 40px; }}
 .error {{ color: {red}; }}
 .reader-bar {{ padding: 8px 12px; border-bottom: 1px solid {lbg}; background: {bg}; }}
-.reader-subject {{ font-weight: bold; font-size: 12pt; color: {bfg}; }}
 .placeholder {{ color: {dfg}; }}
 .setup {{ color: {fg}; padding: 30px; }}
 .setup-title {{ color: {accent}; font-weight: bold; font-size: 14pt; }}
@@ -193,12 +190,12 @@ pub fn apply(p: &Palette) {
 /// whenever the palette changes. Omarchy swaps `current/theme` by `mv`, so we
 /// watch `current/` and re-arm the watch on `current/theme` after each change.
 pub fn watch(on_change: impl Fn(Palette) + 'static) {
-    let on_change = std::rc::Rc::new(on_change);
-    let last = std::rc::Rc::new(RefCell::new(load()));
+    let on_change = Rc::new(on_change);
+    let last = Rc::new(RefCell::new(load()));
     arm(on_change, last);
 }
 
-fn arm(on_change: std::rc::Rc<dyn Fn(Palette)>, last: std::rc::Rc<RefCell<Palette>>) {
+fn arm(on_change: Rc<dyn Fn(Palette)>, last: Rc<RefCell<Palette>>) {
     let dir = state_dir();
     let mut monitors = Vec::new();
     for path in [dir.clone(), dir.join("theme")] {

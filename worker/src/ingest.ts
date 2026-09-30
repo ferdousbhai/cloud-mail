@@ -1,7 +1,7 @@
 import PostalMime from "postal-mime";
 import { getDomain } from "tldts";
 import { deleteThread, type Folder, type NewAttachment, type NewMessage, senderStatus, setSenderStatus, storeMessage, type ThreadRef } from "./store";
-import { findMailbox, getSettings, type Mailbox, mailboxes } from "./mailboxes";
+import { DEFAULT_SETTINGS, findMailbox, getSettings, type Mailbox, mailboxes } from "./mailboxes";
 import { flattenAddresses, messageIdList, normalizeEmail, normalizeMessageId, toArrayBuffer } from "./util";
 
 export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
@@ -9,7 +9,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
 
   const [boxes, settings] = await Promise.all([
     mailboxes(env).catch(() => [] as Mailbox[]),
-    getSettings(env).catch(() => ({ forward_to: "" })),
+    getSettings(env).catch(() => ({ ...DEFAULT_SETTINGS })),
   ]);
 
   // Optional copy to another (verified) address, e.g. during migration. Forward before touching raw.
@@ -44,7 +44,7 @@ interface StoredCopy {
   message_count: number;
 }
 
-export interface AuthVerdict {
+interface AuthVerdict {
   dmarc: string | null;
   spf: string | null;
   dkim: string | null;
@@ -133,8 +133,6 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const screened = findMailbox(boxes, envelopeTo)?.screen ?? true;
 
   const auth = authVerdict(parsed.headers);
-  // The From header is only as good as DMARC: a failing message can't ride on an approval.
-  // Anything but a clear pass or none (no policy published) is untrusted: fail, temperror, permerror, junk.
   if (auth) auth.verified = isVerified(auth, from.email, envelopeFrom);
   // Unverified mail (forged, or from a domain with no DMARC policy and no aligned DKIM/SPF) can't
   // ride on an approval, join a thread, or lift one. Without Cloudflare's verdict (local dev) the
@@ -143,7 +141,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
 
   const ownAddress = !!findMailbox(boxes, from.email);
   let status = ownAddress ? "approved" : await senderStatus(env, from.email);
-  // Mail claiming to be from one of your own addresses that fails DMARC is forged: quarantine it
+  // Mail claiming to be from one of your own addresses that isn't verified is forged: quarantine it
   // (the Screener lists senders to decide on, and you are not one to decide on).
   if (ownAddress && spoofable) status = "blocked";
   if (!status && screened) {
@@ -152,22 +150,14 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   }
 
   const newThreadFolder: Folder =
-    status === "blocked"
-      ? "blocked"
-      : !screened
-        ? "inbox"
-        : status === "approved" && !spoofable
-          ? "inbox"
-          : "screener";
+    status === "blocked" ? "blocked" : !screened || (status === "approved" && !spoofable) ? "inbox" : "screener";
   // Already stored. Returns true when this copy should be stored after all.
   const absorbDuplicate = async (stored: StoredCopy): Promise<boolean> => {
     const storedAuth = stored.auth ? (JSON.parse(stored.auth) as AuthVerdict) : null;
-    const storedUntrusted = storedAuth
-      ? storedAuth.verified === undefined
-        ? !!storedAuth.dmarc && !["pass", "none"].includes(storedAuth.dmarc)
-        : !storedAuth.verified
-      : false;
-    // A copy claiming the same sender that failed DMARC got here first (say, forged from a list
+    const storedUntrusted =
+      !!storedAuth &&
+      (storedAuth.verified === undefined ? !!storedAuth.dmarc && !["pass", "none"].includes(storedAuth.dmarc) : !storedAuth.verified);
+    // A copy claiming the same sender that wasn't verified got here first (say, forged from a list
     // copy) and this one passes: the forgery is alone in its thread (untrusted mail never joins
     // one), so replace it. A different sender reusing the Message-ID never replaces anything.
     if (storedUntrusted && !spoofable && stored.from_email === from.email) {
@@ -180,8 +170,8 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
       }
       return true;
     }
-    // The same sender's more trusted copy (to a direct mailbox, or passing DMARC while approved)
-    // lifts the stored one out of the Screener. Neither copy may have failed DMARC.
+    // The same sender's more trusted copy (to a direct mailbox, or verified while approved)
+    // lifts the stored one out of the Screener. Neither copy may be unverified.
     // An approved sender's copy also counts when the stored one came from elsewhere, e.g. a list
     // that rewrote From ("Alice via Group"); a merely unscreened sender can't lift others' mail.
     const liftsIt = stored.from_email === from.email || status === "approved";
@@ -207,12 +197,8 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
     // sender would take it along.
     return own || thread.folder === "inbox" || thread.folder === "archive";
   };
-  const existingThreadFolder = (current: Folder): Folder => {
-    if (status === "blocked") return current;
-    // A reply on an archived conversation brings it back.
-    if (current === "archive") return "inbox";
-    return current;
-  };
+  // A reply on an archived conversation brings it back (unless the sender is blocked).
+  const existingThreadFolder = (current: Folder): Folder => (status !== "blocked" && current === "archive" ? "inbox" : current);
 
   const attachments: NewAttachment[] = parsed.attachments.map((a, i) => {
     const contentId = a.contentId ? a.contentId.replace(/^<|>$/g, "") : null;
@@ -229,7 +215,6 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const now = Date.now();
   const date = Number.isFinite(parsedDate) && parsedDate < now + 86_400_000 ? parsedDate : now;
 
-  let stored: { id: string; threadId: string };
   const message: NewMessage = {
     outgoing: false,
     messageId,
@@ -251,6 +236,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
     existingThreadFolder,
     joinThread: mayJoinThread,
   };
+  let stored: { id: string; threadId: string };
   try {
     stored = await storeMessage(env, message);
   } catch (err) {

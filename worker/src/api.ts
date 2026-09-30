@@ -1,5 +1,5 @@
 import { deleteMailbox, getSettings, mailboxes, updateSettings, upsertMailbox } from "./mailboxes";
-import { deleteThread, type SenderStatus, setSenderStatus, storeMessage } from "./store";
+import { deleteThread, senderStatus, setSenderStatus, storeMessage } from "./store";
 import {
   type Address,
   arrayBufferToBase64,
@@ -132,6 +132,8 @@ async function loadMessages(env: Env, where: string, bind: unknown[]) {
   return Promise.all(messages.results.map((m) => messageView(env, m, atts.results.filter((a) => a.message_id === m.id))));
 }
 
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 function ftsQuery(q: string): string {
   return q
     .split(/\s+/)
@@ -193,19 +195,13 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
       .bind(before, since, limit)
       .all<ThreadRow>();
     return json({ threads: rows.results.map((t) => ({ ...threadSummary(t), last_at: t.last_sent_at })) });
-  } else if (folder === "all") {
+  } else if (folder === "all" || ["inbox", "archive", "screener", "blocked"].includes(folder)) {
+    const [where, binds] = folder === "all" ? ["folder != 'blocked'", []] : ["folder = ?", [folder]];
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ?
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE ${where} AND last_at < ? AND last_at > ?
        ${unread} ORDER BY last_at DESC LIMIT ?`,
     )
-      .bind(before, since, limit)
-      .all<ThreadRow>();
-  } else if (["inbox", "archive", "screener", "blocked"].includes(folder)) {
-    rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder = ? AND last_at < ? AND last_at > ?
-       ${unread} ORDER BY last_at DESC LIMIT ?`,
-    )
-      .bind(folder, before, since, limit)
+      .bind(...binds, before, since, limit)
       .all<ThreadRow>();
   } else {
     return error("unknown folder");
@@ -260,7 +256,7 @@ async function send(env: Env, req: Request): Promise<Response> {
   let result: EmailSendResult;
   try {
     result = await env.EMAIL.send({
-      from: { email: from.email, name: from.name },
+      from,
       to: to.map(asRecipient),
       cc: cc.length ? cc.map(asRecipient) : undefined,
       bcc: bcc.length ? bcc.map(asRecipient) : undefined,
@@ -277,7 +273,36 @@ async function send(env: Env, req: Request): Promise<Response> {
   // The mail has gone out. Anything failing from here must not look like a failed send, or a
   // client would retry and send it twice.
   try {
-    return await recordSent(env, { body, result, original, refs, from, to, cc, bcc, subject, html, ids });
+    const { id, threadId } = await storeMessage(env, {
+      outgoing: true,
+      messageId: normalizeMessageId(result.messageId) ?? `<${result.messageId}>`,
+      inReplyTo: original?.message_id ?? null,
+      refs,
+      from,
+      to,
+      cc,
+      replyTo: [],
+      envelopeTo: null,
+      subject,
+      text: body.text,
+      html,
+      date: Date.now(),
+      raw: null,
+      attachments: [],
+      threadId: original?.thread_id,
+      // A new conversation you start isn't something to act on; replies bring it to the inbox.
+      newThreadFolder: "archive",
+    });
+    await env.DB.prepare("UPDATE threads SET unread = 0 WHERE id = ?").bind(threadId).run();
+
+    // Anyone you write to is screened in.
+    for (const r of [...to, ...cc, ...bcc]) {
+      if (ids.some((i) => i.email === r.email)) continue;
+      if ((await senderStatus(env, r.email)) !== "approved") await setSenderStatus(env, r.email, r.name || null, "approved");
+    }
+
+    const [message] = await loadMessages(env, "id = ?", [id]);
+    return json({ ok: true, thread_id: threadId, message });
   } catch (err) {
     console.error("sent but not stored", err);
     return json({
@@ -287,56 +312,6 @@ async function send(env: Env, req: Request): Promise<Response> {
       warning: "it couldn't be saved to Sent",
     });
   }
-}
-
-async function recordSent(
-  env: Env,
-  s: {
-    body: SendBody;
-    result: EmailSendResult;
-    original: MessageRow | null;
-    refs: string[];
-    from: Address;
-    to: Address[];
-    cc: Address[];
-    bcc: Address[];
-    subject: string;
-    html: string;
-    ids: Address[];
-  },
-): Promise<Response> {
-  const { body, result, original, refs, from, to, cc, bcc, subject, html, ids } = s;
-  const { id, threadId } = await storeMessage(env, {
-    outgoing: true,
-    messageId: normalizeMessageId(result.messageId) ?? `<${result.messageId}>`,
-    inReplyTo: original?.message_id ?? null,
-    refs,
-    from,
-    to,
-    cc,
-    replyTo: [],
-    envelopeTo: null,
-    subject,
-    text: body.text ?? null,
-    html,
-    date: Date.now(),
-    raw: null,
-    attachments: [],
-    threadId: original?.thread_id,
-    // A new conversation you start isn't something to act on; replies bring it to the inbox.
-    newThreadFolder: "archive",
-  });
-  await env.DB.prepare("UPDATE threads SET unread = 0 WHERE id = ?").bind(threadId).run();
-
-  // Anyone you write to is screened in.
-  for (const r of [...to, ...cc, ...bcc]) {
-    if (ids.some((i) => i.email === r.email)) continue;
-    const existing = await env.DB.prepare("SELECT status FROM senders WHERE email = ?").bind(r.email).first<{ status: SenderStatus }>();
-    if (existing?.status !== "approved") await setSenderStatus(env, r.email, r.name || null, "approved");
-  }
-
-  const [message] = await loadMessages(env, "id = ?", [id]);
-  return json({ ok: true, thread_id: threadId, message });
 }
 
 export async function handleApi(req: Request, env: Env): Promise<Response> {
@@ -463,7 +438,7 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     if (method === "PUT") {
       const body = await readJson<{ name?: unknown; screen?: unknown; position?: unknown }>(req);
       if (!body) return error("invalid JSON");
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return error("invalid email address");
+      if (!EMAIL_RE.test(email)) return error("invalid email address");
       // Mail to this address would be forwarded straight back here, forever.
       if ((await getSettings(env)).forward_to === email) return error("this address is the forward_to target; change forward_to first");
       if (body.name !== undefined && typeof body.name !== "string") return error("name must be a string");
@@ -485,14 +460,15 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     if (method === "PATCH") {
       const body = await readJson<Record<string, unknown>>(req);
       if (!body) return error("invalid JSON");
+      let forward_to: string | undefined;
       if (body.forward_to !== undefined) {
         if (typeof body.forward_to !== "string") return error("forward_to must be a string");
-        body.forward_to = normalizeEmail(body.forward_to);
-        if (body.forward_to && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.forward_to as string)) return error("forward_to must be an email address");
+        forward_to = normalizeEmail(body.forward_to);
+        if (forward_to && !EMAIL_RE.test(forward_to)) return error("forward_to must be an email address");
         // Forwarding to one of your own mailboxes would route straight back here, forever.
-        if ((await mailboxes(env)).some((mb) => mb.email === body.forward_to)) return error("forward_to cannot be one of your mailboxes");
+        if ((await mailboxes(env)).some((mb) => mb.email === forward_to)) return error("forward_to cannot be one of your mailboxes");
       }
-      return json({ ok: true, settings: await updateSettings(env, { forward_to: body.forward_to as string | undefined }) });
+      return json({ ok: true, settings: await updateSettings(env, { forward_to }) });
     }
   }
 

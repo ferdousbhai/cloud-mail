@@ -83,13 +83,17 @@ pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
     EXAMPLES.iter().find(|(p, _)| *p == path).map(|(_, e)| *e)
 }
 
+/// "thread read" from "thread" and "read"; a top-level command from "" and its name.
+fn sub_path(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() { name.to_string() } else { format!("{prefix} {name}") }
+}
+
 /// Adds an "Examples:" section to every command's long help.
 pub fn with_examples(cmd: Command) -> Command {
-    fn walk(cmd: Command, prefix: &str) -> Command {
+    fn walk(mut cmd: Command, prefix: &str) -> Command {
         let names: Vec<String> = cmd.get_subcommands().map(|c| c.get_name().to_string()).collect();
-        let mut cmd = cmd;
         for name in names {
-            let path = if prefix.is_empty() { name.clone() } else { format!("{prefix} {name}") };
+            let path = sub_path(prefix, &name);
             cmd = cmd.mut_subcommand(&name, |sub| {
                 let sub = match examples_for(&path) {
                     Some(ex) => {
@@ -136,7 +140,7 @@ fn visible_args(cmd: &Command) -> impl Iterator<Item = &clap::Arg> {
 pub fn commands_json(root: &Command) -> Value {
     fn walk(cmd: &Command, path: &str, out: &mut Vec<Value>) {
         for sub in cmd.get_subcommands() {
-            let p = if path.is_empty() { sub.get_name().to_string() } else { format!("{path} {}", sub.get_name()) };
+            let p = sub_path(path, sub.get_name());
             let usage = format!(
                 "cloudmail {p}{}",
                 visible_args(sub)
@@ -163,13 +167,8 @@ pub fn commands_json(root: &Command) -> Value {
     }
     let mut commands = Vec::new();
     walk(root, "", &mut commands);
-    let globals: Vec<Value> = root
-        .get_arguments()
-        .filter(|a| a.is_global_set())
-        .map(arg_json)
-        .collect();
     json!({
-        "global_flags": globals,
+        "global_flags": root.get_arguments().filter(|a| a.is_global_set()).map(arg_json).collect::<Vec<_>>(),
         "commands": commands,
         "exit_codes": exit::TABLE.iter().map(|(c, d)| json!({ "code": c, "meaning": d })).collect::<Vec<_>>(),
     })
@@ -183,14 +182,15 @@ pub fn commands_text(tree: &Value) -> String {
             out.push_str(&format!("    $ {}\n", e.as_str().unwrap_or_default()));
         }
     }
-    out.push_str("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n");
+    let globals = tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
+    out.push_str(&format!("\nGlobal flags: {}\n\nExit codes:\n", globals.join("  ")));
     for (code, meaning) in exit::TABLE {
         out.push_str(&format!("  {code}  {meaning}\n"));
     }
     out.trim_end().to_string()
 }
 
-pub const AGENT_GUIDE: &str = r#"# cloudmail for agents
+const AGENT_GUIDE: &str = r#"# cloudmail for agents
 
 cloudmail is a CLI for a personal email service running on Cloudflare (a "worker"). It reads, screens
 and sends mail. Everything is non-interactive when stdout is not a terminal.
@@ -287,7 +287,7 @@ mod tests {
 
     fn paths(cmd: &Command, prefix: &str, out: &mut Vec<String>) {
         for sub in cmd.get_subcommands() {
-            let p = if prefix.is_empty() { sub.get_name().to_string() } else { format!("{prefix} {}", sub.get_name()) };
+            let p = sub_path(prefix, sub.get_name());
             out.push(p.clone());
             paths(sub, &p, out);
         }
@@ -359,6 +359,7 @@ mod tests {
         assert!(!compose["examples"].as_array().unwrap().is_empty());
         assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
         assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
+        assert!(commands_text(&tree).contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n"));
     }
 
     #[test]

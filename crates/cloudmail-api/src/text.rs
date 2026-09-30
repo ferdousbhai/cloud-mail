@@ -1,4 +1,7 @@
 use chrono::{Datelike, Local, TimeZone};
+use std::path::PathBuf;
+
+use crate::Address;
 
 pub fn short_time(ms: i64) -> String {
     let Some(t) = Local.timestamp_millis_opt(ms).single() else {
@@ -37,12 +40,11 @@ pub fn split_addresses(input: &str) -> Vec<String> {
             '"' => in_quotes = !in_quotes,
             '<' => in_angle = true,
             '>' => in_angle = false,
-            ',' | ';' if !in_quotes && !in_angle
-                && current.contains('@') => {
-                    out.push(current.trim().to_string());
-                    current.clear();
-                    continue;
-                }
+            ',' | ';' if !in_quotes && !in_angle && current.contains('@') => {
+                out.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
             _ => {}
         }
         current.push(ch);
@@ -50,8 +52,12 @@ pub fn split_addresses(input: &str) -> Vec<String> {
     if !current.trim().is_empty() {
         out.push(current.trim().to_string());
     }
-    out.retain(|a| !a.is_empty());
     out
+}
+
+/// "Name <email>, other@x.com" for an address field.
+pub fn format_addresses(list: &[Address]) -> String {
+    list.iter().map(Address::formatted).collect::<Vec<_>>().join(", ")
 }
 
 pub fn reply_subject(subject: &str) -> String {
@@ -67,13 +73,8 @@ pub fn reply_subject(subject: &str) -> String {
 pub fn quote(text: &str, who: &str, date_ms: i64) -> String {
     let mut out = format!("\n\nOn {}, {who} wrote:\n", long_time(date_ms));
     for line in text.trim_end().lines() {
-        if line.starts_with('>') {
-            out.push_str(&format!(">{line}\n"));
-        } else if line.is_empty() {
-            out.push_str(">\n");
-        } else {
-            out.push_str(&format!("> {line}\n"));
-        }
+        let sep = if line.is_empty() || line.starts_with('>') { "" } else { " " };
+        out.push_str(&format!(">{sep}{line}\n"));
     }
     out
 }
@@ -90,7 +91,7 @@ pub fn html_to_text(html: &str) -> String {
                 in_tag = false;
                 let t = tag.trim().to_ascii_lowercase();
                 let name: String = t.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-                if name == "style" || name == "script" || name == "head" {
+                if matches!(name.as_str(), "style" | "script" | "head") {
                     skip = !t.starts_with('/');
                 }
                 if matches!(name.as_str(), "br" | "p" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "table") {
@@ -127,6 +128,19 @@ pub fn human_size(bytes: i64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// `path`, or `name (1).ext`, `name (2).ext`, … when something is already there.
+pub fn unused_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (1..)
+        .map(|i| path.with_file_name(format!("{stem} ({i}){ext}")))
+        .find(|p| !p.exists())
+        .expect("an unused name exists")
 }
 
 /// Lowercased bare address from "Name <a@b.com>" or "a@b.com".

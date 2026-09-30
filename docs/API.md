@@ -68,7 +68,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
   "text": "plain text body or null",
   "html": "html body or null (cid: images already inlined as data: URIs). Untrusted: render without scripts or remote loads.",
   "message_id": "<abc@example.com>",
-  // Cloudflare MX verdicts for incoming mail, null for sent mail (and absent without Cloudflare's
+  // Cloudflare MX verdicts for incoming mail, null for sent mail (and without Cloudflare's
   // headers). `verified` is false when the From domain didn't authenticate the message: then it never
   // joins an existing thread; on a screened mailbox an approval doesn't apply and it goes to the
   // Screener; on a direct mailbox it still reaches the Inbox (clients show a warning); mail claiming one
@@ -90,15 +90,15 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/api/counts` | | `{ "screener": 3, "inbox": 12, "inbox_unread": 2 }` (screener = pending sender count) |
-| GET | `/api/threads` | `?folder=inbox\|archive\|screener\|sent\|blocked\|all&limit=50&before=<last_at>&since=<last_at>&unread=1&q=<search>` | `{ "threads": [ThreadSummary] }` newest first. `all` = every non-blocked folder. `since` returns only threads with activity after that time (use it to poll for new mail); `unread=1` only unread threads. `q` does full-text search across all non-blocked folders (folder ignored). |
+| GET | `/api/counts` | | `{ "screener": 3, "inbox": 12, "inbox_unread": 2 }` (screener = number of senders in `/api/screener`) |
+| GET | `/api/threads` | `?folder=inbox\|archive\|screener\|sent\|blocked\|all&limit=50&before=<last_at>&since=<last_at>&unread=1&q=<search>` | `{ "threads": [ThreadSummary] }` newest first. `all` = every non-blocked folder. `since` returns only threads with activity after that time (use it to poll for new mail); `unread=1` only unread threads. For `sent`, `last_at`, `before` and `since` use the time you last wrote in the thread. `q` does full-text search across all non-blocked folders (folder ignored). |
 | GET | `/api/threads/:id` | | `{ "thread": ThreadSummary, "messages": [Message] }` oldest first. Does not mark read. |
 | POST | `/api/threads/:id/move` | `{ "folder": "inbox"\|"archive" }` | `{ "ok": true }`; only moves a thread already in inbox/archive, otherwise 409 (a Screener or Blocked thread moves when its sender is approved or blocked) |
 | POST | `/api/threads/:id/read` | `{ "unread": false }` | `{ "ok": true }` |
 | DELETE | `/api/threads/:id` | | `{ "ok": true }` – deletes thread, messages, R2 objects |
 | GET | `/api/screener` | | `{ "senders": [PendingSender] }` |
 | POST | `/api/senders/:email` | `{ "status": "approved"\|"blocked" }` | `{ "ok": true, "moved": 2 }` – approved moves their screener and blocked threads to inbox (mail back from blocked comes back unread); blocked moves their screener threads to blocked |
-| GET | `/api/senders` | `?status=approved\|blocked` | `{ "senders": [{ "email", "name", "status", "decided_at" }] }` |
+| GET | `/api/senders` | `?status=approved\|pending\|blocked` (default `approved`) | `{ "senders": [{ "email", "name", "status", "decided_at" }] }` |
 | POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }`; if the mail was sent but couldn't be saved: `{ "ok": true, "thread_id": <the replied-to thread, or null>, "message": null, "warning": "…" }` (don't retry) |
 | GET | `/api/attachments/:id` | | raw bytes with `Content-Type` and `Content-Disposition` |
 | GET | `/api/messages/:id/raw` | | original `.eml` (`message/rfc822`) |

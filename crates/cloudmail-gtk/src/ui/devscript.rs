@@ -35,10 +35,10 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                     b.emit_clicked();
                 }
             }
-            s if s.starts_with("shot:") => shot(ui_rc.window.upcast_ref(), &s[5..]),
-            s if s.starts_with("shotcompose:") => {
+            s if let Some(path) = s.strip_prefix("shot:") => shot(ui_rc.window.upcast_ref(), path),
+            s if let Some(path) = s.strip_prefix("shotcompose:") => {
                 if let Some(w) = compose_window() {
-                    shot(w.upcast_ref(), &s[12..]);
+                    shot(w.upcast_ref(), path);
                 }
             }
             s => {

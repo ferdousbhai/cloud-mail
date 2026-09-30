@@ -39,4 +39,4 @@ fi
 
 echo "Installed to $BIN: cloudmail$([[ "${CLOUDMAIL_NO_GTK:-}" != 1 ]] && echo ', cloudmail-gtk')"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "Note: $BIN is not on your PATH." ;; esac
-"$BIN/cloudmail" --styled >/dev/null 2>&1 && "$BIN/cloudmail" status --styled 2>/dev/null || echo "Next: run \`cloudmail setup\` (see README) or \`cloudmail config set api-url …\`."
+"$BIN/cloudmail" status --styled 2>/dev/null || echo "Next: run \`cloudmail setup\` (see README) or \`cloudmail config set api-url …\`."

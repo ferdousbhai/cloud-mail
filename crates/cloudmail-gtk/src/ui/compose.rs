@@ -1,4 +1,5 @@
 use gtk::{gdk, gio, glib, glib::clone, prelude::*};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::Ui;
@@ -8,7 +9,7 @@ use crate::util::{self, Draft};
 struct Compose {
     window: gtk::Window,
     from: gtk::DropDown,
-    from_emails: std::cell::RefCell<Vec<String>>,
+    from_emails: RefCell<Vec<String>>,
     to: gtk::Entry,
     cc: gtk::Entry,
     subject: gtk::Entry,
@@ -16,7 +17,7 @@ struct Compose {
     error: gtk::Label,
     send: gtk::Button,
     /// To, Cc, Subject and body as the window opened, to tell whether anything was edited.
-    initial: std::cell::RefCell<[String; 4]>,
+    initial: RefCell<[String; 4]>,
     reply_to_message_id: Option<String>,
 }
 
@@ -85,7 +86,7 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         error,
         send,
         initial: Default::default(),
-        reply_to_message_id: draft.reply_to_message_id.clone(),
+        reply_to_message_id: draft.reply_to_message_id,
     });
 
     *c.initial.borrow_mut() = fields(&c);
@@ -100,13 +101,13 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     }));
 
     // Signal handlers only hold weak refs; the window owns the compose state.
-    let keep = std::cell::RefCell::new(Some(c.clone()));
+    let keep = RefCell::new(Some(c.clone()));
     c.window.connect_destroy(move |_| drop(keep.take()));
 
     fill_from(&c, ui, draft.from.as_deref());
     if ui.identities.borrow().is_none() {
         let client = ui.client.clone().unwrap();
-        let wanted = draft.from.clone();
+        let wanted = draft.from;
         util::run(
             move || client.identities(),
             clone!(#[weak] ui, #[strong] c, move |result| {
@@ -164,10 +165,7 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
     let ids = ui.identities.borrow();
     let mut options: Vec<Address> = Vec::new();
     if let Some(ids) = ids.as_ref() {
-        if let Some(d) = &ids.default {
-            options.push(d.clone());
-        }
-        for a in &ids.identities {
+        for a in ids.default.iter().chain(&ids.identities) {
             if !options.iter().any(|o| o.email.eq_ignore_ascii_case(&a.email)) {
                 options.push(a.clone());
             }

@@ -1,7 +1,7 @@
 use gtk::{pango, prelude::*};
 
 use crate::api::{PendingSender, ThreadSummary};
-use crate::util::short_time;
+use crate::util::{short_time, subject_or_placeholder};
 
 fn label(text: &str, class: &str) -> gtk::Label {
     let l = gtk::Label::builder()
@@ -19,7 +19,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let dot = label(if t.unread { "●" } else { " " }, "unread-dot");
     top.append(&dot);
-    let who = t.from.as_ref().map(|a| a.display()).unwrap_or_else(|| "(unknown)".into());
+    let who = t.sender().unwrap_or_else(|| "(unknown)".into());
     let who = if t.message_count > 1 { format!("{who} ({})", t.message_count) } else { who };
     let sender = label(&who, "sender");
     sender.set_hexpand(true);
@@ -29,7 +29,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     }
     top.append(&label(&short_time(t.last_at), "time"));
 
-    let subject = if t.subject.trim().is_empty() { "(no subject)" } else { t.subject.as_str() };
+    let subject = subject_or_placeholder(&t.subject);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 2);
     body.append(&top);
     let subject = label(subject, "subject");
