@@ -219,7 +219,8 @@ Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "
 {EXIT_ROWS}
 
 Error codes: usage, not_configured, unauthorized, not_found, bad_request, api_error, network_error,
-bad_response, confirmation_required, cancelled, not_logged_in, error.
+bad_response, confirmation_required, cancelled, not_logged_in, not_installed, account_unauthorized,
+account_unavailable, error.
 
 ## Concepts
 
@@ -270,6 +271,37 @@ Watch for new mail (JSONL, one object per new or updated thread):
 
     cloudmail watch --folder all --interval 30
     # {"event":"thread","thread":{"id":"t_…","folder":"screener","from":{…},"subject":"…",…}}
+
+## Linked accounts (HEY)
+
+Optional. `cloudmail account add hey` links a HEY account through the official `hey` CLI (it must be
+installed and signed in; on a terminal, add runs `hey auth login` for you, otherwise it fails with
+`not_logged_in` and the hint). `cloudmail account list --json` shows each account and whether it works.
+
+Once linked, HEY mail appears next to yours with `"account": "hey"` on threads and Screener senders
+(your worker's own mail has no `account` key). IDs from HEY are prefixed and go back to HEY:
+
+    hey:<topic>:<box-item>   a thread in a box (read, reply, archive, markread/unread)
+    hey:<topic>              a thread outside any box (read and reply only)
+    hey:<topic>/<entry>      a message        hey:<id>   an attachment or a Screener sender
+
+Folders: `inbox` = your Inbox + HEY's Imbox; `archive` = your Archive + HEY's Paper Trail (archiving a
+HEY thread moves it to Paper Trail, unarchive moves it to the Imbox); `screener` = both Screeners (a
+sender waiting in both shows once); `sent` and `blocked` are yours only. HEY's other boxes are extra
+folders: `threads list --folder feed|paper-trail|set-aside|reply-later`. Search covers both.
+
+    cloudmail inbox --json                           # merged by time
+    cloudmail thread read hey:9001:7001 --json
+    cloudmail reply hey:9001:7001 -m "Thanks"        # sent by `hey reply`, from your HEY address
+    cloudmail compose --from you@hey.com --to a@b.com --subject Hi -m "Hello"   # sent through HEY
+    cloudmail screener approve alice@example.com     # decides her everywhere she waits
+    cloudmail screener approve hey:5001              # only in HEY
+
+If your worker forwards to your HEY address, HEY's copy of each message is hidden (`meta.duplicates_hidden`).
+A HEY failure never fails a command about your own mail: the rest is returned and `meta.warnings` lists
+`{account, code, message}`. A command about a HEY ID fails with `account_unauthorized` (exit 3: run
+`hey auth login`), `account_unavailable` (exit 5: hey missing or failing), or `not_found`.
+HEY can't delete threads or give out raw .eml from here, and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
 `cloudmail commands --json` lists every command, flag and example.
