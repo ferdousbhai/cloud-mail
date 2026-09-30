@@ -381,8 +381,14 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   if (method === "POST" && (m = path.match(/^\/api\/threads\/([\w-]+)\/move$/))) {
     const body = await readJson<{ folder?: string }>(req);
     if (body?.folder !== "inbox" && body?.folder !== "archive") return error("folder must be inbox or archive");
-    const res = await env.DB.prepare("UPDATE threads SET folder = ? WHERE id = ?").bind(body.folder, m[1]).run();
-    return res.meta.changes ? json({ ok: true }) : error("not found", 404);
+    // Only between Inbox and Archive: a Screener or Blocked thread leaves by deciding on its sender.
+    const res = await env.DB.prepare("UPDATE threads SET folder = ? WHERE id = ? AND folder IN ('inbox', 'archive')")
+      .bind(body.folder, m[1])
+      .run();
+    if (res.meta.changes) return json({ ok: true });
+    const t = await env.DB.prepare("SELECT folder FROM threads WHERE id = ?").bind(m[1]).first<{ folder: string }>();
+    if (!t) return error("not found", 404);
+    return error(`this thread is in ${t.folder}; approve or block its sender instead (POST /api/senders/:email)`, 409);
   }
 
   if (method === "POST" && (m = path.match(/^\/api\/threads\/([\w-]+)\/read$/))) {

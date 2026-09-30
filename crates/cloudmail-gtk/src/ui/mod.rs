@@ -898,7 +898,10 @@ impl Ui {
                 None => return,
             },
         };
-        if self.threads.borrow()[idx].folder == folder {
+        // Only between Inbox and Archive, like the toolbar buttons: a Screener thread (reachable
+        // from Search) is moved by screening its sender, never by archiving it.
+        let current_folder = self.threads.borrow()[idx].folder.clone();
+        if current_folder == folder || !matches!(current_folder.as_str(), "inbox" | "archive") {
             return;
         }
         let leaves_view = matches!((view, folder), (View::Inbox, "archive") | (View::Archive, "inbox"));

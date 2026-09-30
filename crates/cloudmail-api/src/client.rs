@@ -86,7 +86,7 @@ impl Client {
         let kind = match status.as_u16() {
             401 | 403 => ErrorKind::Unauthorized,
             404 => ErrorKind::NotFound,
-            400 | 422 => ErrorKind::BadRequest,
+            400 | 409 | 422 => ErrorKind::BadRequest,
             _ => ErrorKind::Api,
         };
         Err(Error { kind, message, status: Some(status.as_u16()) })

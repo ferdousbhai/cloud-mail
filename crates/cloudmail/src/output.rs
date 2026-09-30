@@ -143,7 +143,8 @@ impl Response {
             Mode::Quiet => pretty(&self.data),
             Mode::Count => self.count().to_string(),
             Mode::Ids => match &self.ids {
-                Some(ids) => ids.join("\n"),
+                // IDs can be addresses a sender chose, so they get the same terminal treatment.
+                Some(ids) => ids.iter().map(|id| terminal_safe(id).replace(['\n', '\t'], " ")).collect::<Vec<_>>().join("\n"),
                 // The command has already run (it may have changed something), so say so rather than fail.
                 None => {
                     eprintln!("note: this command has no IDs to list; printing its result instead");
