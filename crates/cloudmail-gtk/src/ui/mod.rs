@@ -698,12 +698,14 @@ impl Ui {
     }
 
     fn open_thread(self: &Rc<Self>, id: &str, force: bool) {
+        // Every open supersedes any load still in flight, including a quick j-then-k back to the
+        // thread already shown; otherwise the late response would replace it under the highlight.
+        let generation = self.open_gen.get() + 1;
+        self.open_gen.set(generation);
         if !force && self.current.borrow().as_ref().is_some_and(|d| d.thread.id == id) {
             return;
         }
         let Some(client) = self.client.clone() else { return };
-        let generation = self.open_gen.get() + 1;
-        self.open_gen.set(generation);
         if !force {
             self.remote_images.set(false);
         }
@@ -779,12 +781,16 @@ impl Ui {
 
     fn download_attachment(self: &Rc<Self>, id: &str) {
         let Some(client) = self.client.clone() else { return };
-        let filename = self
+        // Only this thread's own attachments: a link in a message body can't fetch and open
+        // some other file by naming its id.
+        let Some(filename) = self
             .current
             .borrow()
             .as_ref()
-            .and_then(|d| d.messages.iter().flat_map(|m| &m.attachments).find(|a| a.id == id).map(|a| a.filename.clone()))
-            .unwrap_or_else(|| format!("attachment-{id}"));
+            .and_then(|d| d.messages.iter().flat_map(|m| &m.attachments).find(|a| a.id == id && !a.inline).map(|a| a.filename.clone()))
+        else {
+            return;
+        };
         let id = id.to_string();
         self.toast(&format!("Downloading {filename}…"));
         util::run(

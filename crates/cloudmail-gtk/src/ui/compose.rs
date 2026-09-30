@@ -15,8 +15,13 @@ struct Compose {
     body: gtk::TextView,
     error: gtk::Label,
     send: gtk::Button,
-    initial: String,
+    /// To, Cc, Subject and body as the window opened, to tell whether anything was edited.
+    initial: std::cell::RefCell<[String; 4]>,
     reply_to_message_id: Option<String>,
+}
+
+fn fields(c: &Compose) -> [String; 4] {
+    [c.to.text().to_string(), c.cc.text().to_string(), c.subject.text().to_string(), body_text(c)]
 }
 
 pub fn open(ui: &Rc<Ui>, draft: Draft) {
@@ -69,7 +74,6 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     window.set_child(Some(&grid));
     window.set_default_widget(Some(&send));
 
-    let initial = draft.body.clone();
     let c = Rc::new(Compose {
         window,
         from,
@@ -80,9 +84,20 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         body,
         error,
         send,
-        initial,
+        initial: Default::default(),
         reply_to_message_id: draft.reply_to_message_id.clone(),
     });
+
+    *c.initial.borrow_mut() = fields(&c);
+    // The title-bar close button and the compositor's close (Super+W) ask first, like Esc.
+    c.window.connect_close_request(clone!(#[weak] c, #[upgrade_or] glib::Propagation::Proceed, move |_| {
+        if is_dirty(&c) {
+            close(&c);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    }));
 
     // Signal handlers only hold weak refs; the window owns the compose state.
     let keep = std::cell::RefCell::new(Some(c.clone()));
@@ -119,6 +134,12 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
                 return glib::Propagation::Stop;
             }
             if key == gdk::Key::Escape {
+                // Esc in an open dropdown (From) closes the dropdown, not the draft.
+                let in_popover = gtk::prelude::GtkWindowExt::focus(&c.window)
+                    .is_some_and(|w| w.ancestor(gtk::Popover::static_type()).is_some());
+                if in_popover {
+                    return glib::Propagation::Proceed;
+                }
                 close(&c);
                 return glib::Propagation::Stop;
             }
@@ -216,9 +237,14 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
     );
 }
 
+fn is_dirty(c: &Compose) -> bool {
+    let now = fields(c);
+    let initial = c.initial.borrow();
+    now.iter().zip(initial.iter()).any(|(a, b)| a.trim() != b.trim()) && now.iter().any(|f| !f.trim().is_empty())
+}
+
 fn close(c: &Rc<Compose>) {
-    let dirty = body_text(c).trim() != c.initial.trim() && !body_text(c).trim().is_empty();
-    if !dirty {
+    if !is_dirty(c) {
         c.window.destroy();
         return;
     }

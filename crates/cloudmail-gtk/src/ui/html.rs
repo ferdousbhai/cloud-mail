@@ -45,6 +45,10 @@ details[open] .preview {{ display: none; }}
 .plain {{ white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: {fg}; }}
 .quoted summary {{ color: {dfg}; display: inline-block; border: 1px solid {muted}; border-radius: 4px; padding: 0 6px; line-height: 1.2; margin: 4px 0; }}
 .quoted .plain {{ color: {dfg}; }}
+/* The frame is outside the message's reach (it can style its own host, not this parent):
+   paint containment makes it the containing block for fixed-position content and clips it,
+   so a message can't draw over the headers or the sender warning. */
+.frame {{ position: relative; contain: paint; isolation: isolate; border-radius: 8px; }}
 .paper {{ background: #ffffff; color: #1f2328; border-radius: 8px; padding: 18px 20px; overflow-x: auto;
   font: 11pt -apple-system, "Inter", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }}
 .atts {{ margin-top: 10px; }}
@@ -108,7 +112,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     // better as text in the theme's colours.
     let text = m.text.as_deref().filter(|t| !t.trim().is_empty());
     let use_html = match (&m.html, text) {
-        (Some(html), Some(_)) => !html.trim().is_empty() && !m.outgoing && is_designed(html),
+        (Some(html), Some(text)) => !html.trim().is_empty() && !m.outgoing && (is_designed(html) || is_stub(text, html)),
         (Some(html), None) => !html.trim().is_empty(),
         _ => false,
     };
@@ -118,7 +122,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
                 *blocked_remote = true;
             }
             format!(
-                r#"<div class="paper"><template shadowrootmode="open"><style>:host {{ display: block; }} img {{ max-width: 100%; height: auto; }} table {{ max-width: 100%; }}</style>{}</template></div>"#,
+                r#"<div class="frame"><div class="paper"><template shadowrootmode="open"><style>:host {{ display: block; }} img {{ max-width: 100%; height: auto; }} table {{ max-width: 100%; }}</style>{}</template></div></div>"#,
                 sanitize(html)
             )
         }
@@ -147,6 +151,14 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     )
 }
 
+/// A text part that only points elsewhere ("view this email in your browser") while the
+/// HTML carries the message.
+fn is_stub(text: &str, html: &str) -> bool {
+    let text_len = text.trim().chars().count();
+    let html_len = cloudmail_api::text::html_to_text(html).trim().chars().count();
+    html_len > 200 && html_len > text_len * 2
+}
+
 /// Whether an HTML part has real layout or imagery, as opposed to text in a few divs.
 fn is_designed(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
@@ -165,7 +177,14 @@ fn has_remote_images(html: &str) -> bool {
 /// JavaScript is disabled, so this only needs to keep the markup from escaping
 /// its shadow root and from loading anything behind the CSP's back.
 fn sanitize(html: &str) -> String {
-    let mut out = strip_element(html, "script");
+    // Parse and re-serialise first: an unclosed comment, <textarea>, <style>, attribute
+    // quote or <plaintext> in one message would otherwise swallow the rest of the page,
+    // hiding later messages and their warnings. After this every element is balanced.
+    // <plaintext> is the one element nothing can close, even after re-serialising, so it
+    // becomes <pre> before parsing and its contents are parsed (and escaped) like any others.
+    let html = replace_ci(html, "<plaintext", "<pre");
+    let balanced = scraper::Html::parse_document(&html).root_element().html();
+    let mut out = strip_element(&balanced, "script");
     out = strip_element(&out, "iframe");
     out = strip_element(&out, "object");
     replace_ci(&out, "</template", "&lt;/template")
@@ -281,7 +300,9 @@ mod tests {
     #[test]
     fn strips_scripts_and_template_breakouts() {
         let s = sanitize("<p>a</p><SCRIPT>x()</script><b>b</b></TEMPLATE>");
-        assert_eq!(s, "<p>a</p><b>b</b>&lt;/template>");
+        assert_eq!(s, "<html><head></head><body><p>a</p><b>b</b></body></html>");
+        // Text that spells a closing tag stays text.
+        assert!(!sanitize("<p>&lt;/template&gt;</p>").contains("</template"));
     }
 
     #[test]
@@ -290,6 +311,30 @@ mod tests {
         assert!(is_designed("<style>.btn{}</style><p>hi</p>"));
         assert!(!is_designed(r#"<div style="font-family: sans-serif; white-space: pre-wrap;">Shipped!</div>"#));
         assert!(!is_designed(r#"<div dir="ltr">7 works!</div><blockquote class="gmail_quote">x</blockquote>"#));
+    }
+
+    #[test]
+    fn a_stub_text_part_does_not_hide_the_html() {
+        let body = "<p>".to_string() + &"Here is the whole newsletter, in plain paragraphs. ".repeat(10) + "</p>";
+        let m = Message { text: Some("View this email in your browser.".into()), html: Some(body), ..Default::default() };
+        assert!(message(&m, true, &mut false).contains("paper"));
+        let m = Message { text: Some("Thanks!".into()), html: Some("<div>Thanks!</div>".into()), ..Default::default() };
+        assert!(!message(&m, true, &mut false).contains("paper"));
+    }
+
+    #[test]
+    fn unclosed_markup_is_balanced() {
+        // Whatever a message leaves open is closed before the next message starts.
+        let comment = sanitize("<p>hi<!-- never closed <textarea>");
+        assert!(comment.contains("<p>hi") && comment.contains("-->") && comment.ends_with("</html>"));
+        for open in ["<textarea>", "<title>", "<style>", "<xmp>", "<plaintext>", "<a href=\"x"] {
+            let out = sanitize(&format!("<p>hi</p>{open}rest"));
+            assert!(out.ends_with("</html>"), "{open}: {out}");
+        }
+        assert!(sanitize("<p>x<textarea>y").contains("</textarea>"));
+        let plain = sanitize("<p>hi</p><PlainText>rest <!-- <b>x");
+        assert!(!plain.to_ascii_lowercase().contains("<plaintext"), "{plain}");
+        assert!(plain.ends_with("--></pre></body></html>"), "{plain}");
     }
 
     #[test]

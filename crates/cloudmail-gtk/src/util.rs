@@ -58,13 +58,19 @@ pub fn parse_mailto(uri: &str) -> Draft {
 }
 
 pub fn notify(title: &str, body: &str) {
+    // Notification daemons read the body as Pango markup; `--` keeps a subject like "-20% off"
+    // from being taken for an option.
     let title = title.to_string();
-    let body = body.to_string();
+    let body = escape_markup(body);
     std::thread::spawn(move || {
         let _ = std::process::Command::new("notify-send")
-            .args(["-a", "Cloudmail", "-i", "com.ferdousbhai.Cloudmail", &title, &body])
+            .args(["-a", "Cloudmail", "-i", "com.ferdousbhai.Cloudmail", "--", &title, &body])
             .status();
     });
+}
+
+fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 pub fn open_uri(uri: &str) {
