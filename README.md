@@ -30,58 +30,60 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 | `crates/cloudmail-api` | Rust API client shared by both |
 | `docs/API.md` | HTTP API reference |
 
-## Requirements
+## Get started
 
-- A Cloudflare account on the Workers Paid plan (needed to send to arbitrary recipients; about
-  $5/month, with 3,000 emails/month included), with your domains' DNS on Cloudflare.
-- Node.js (for `wrangler`) and Rust. The desktop app also needs GTK 4 and WebKitGTK 6.0
-  (Arch: `pacman -S gtk4 webkitgtk-6.0`).
+You need a domain whose DNS is on Cloudflare and a Cloudflare account on the Workers Paid plan
+(about $5/month, with 3,000 emails/month included; needed to send to anyone).
 
-## Install
-
-On Omarchy or any Arch Linux, from the signed package repository (updates then arrive with
-`omarchy update`):
+On Omarchy or any Arch Linux:
 
 ```sh
 curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
+cloudmail setup you@yourdomain.com
 ```
 
-It installs `cloudmail` (alias `cmail`), `cloudmail-gtk`, and the worker used by `cloudmail setup`.
+That's it. `setup` logs you in to Cloudflare in your browser, deploys your mail service to your
+account (a Worker, a D1 database and an R2 bucket), turns on receiving and sending for your domain,
+and connects the app. Open **Cloudmail** from the app launcher.
+
+- Several addresses and domains: `cloudmail setup you@a.com support@a.com:direct hello@b.com`.
+  `:direct` skips the Screener (good for `support@`, `legal@`, …).
+- If a domain already receives mail somewhere else (Google Workspace, Fastmail, …), setup tells you
+  where and asks before moving it, because that replaces the domain's MX records.
+- `--forward-to me@gmail.com` keeps a copy of everything going to your old inbox while you switch.
+  Cloudflare emails that address a link to confirm it. Turn it off later with
+  `cloudmail settings set forward-to ""`.
+- `--dry-run` shows every step first. Running setup again is safe, and is how you update the
+  worker after an upgrade.
+- Sending adds SPF/DKIM records and a `p=reject` DMARC record to the domain. If another service
+  sends mail as that domain, set it up with SPF/DKIM first.
+
+Add addresses later with `cloudmail mailbox add sales@yourdomain.com --route`.
+
+**For agents and scripts**, setup never prompts when output is piped. Give it a Cloudflare API token
+instead of the browser login, and `--yes` to allow moving a domain's mail:
+
+```sh
+CLOUDFLARE_API_TOKEN=… cloudmail setup you@yourdomain.com --yes
+```
+
+With several Cloudflare accounts, add `--account <id>`.
+
 Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu
 ([omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724),
 [omarchy#13763](https://github.com/omacom/omarchy/pull/13763)).
 
-From source:
+### From source
+
+Needs Node.js and Rust; the desktop app also needs GTK 4 and WebKitGTK 6.0
+(Arch: `pacman -S gtk4 webkitgtk-6.0`).
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
 ./install.sh                    # installs cloudmail (alias: cmail) + cloudmail-gtk to ~/.local/bin
 # CLOUDMAIL_NO_GTK=1 ./install.sh   # CLI only
-npx wrangler login
+cloudmail setup you@yourdomain.com
 ```
-
-## Set up your instance
-
-`cloudmail setup` creates the D1 database and R2 bucket, deploys the Worker, sets the API token, writes
-`~/.config/cloudmail/config.toml`, and for each mailbox enables sending on its domain and adds an Email
-Routing rule. Every step is idempotent. Start with a dry run:
-
-```sh
-cloudmail setup --dry-run --mailbox hi@example.com --mailbox support@example.com:direct
-cloudmail setup           --mailbox hi@example.com --mailbox support@example.com:direct
-```
-
-- `:direct` skips the Screener for that address (good for `support@`, `legal@`, …).
-- `--forward-to me@gmail.com` keeps a copy of everything going to your old inbox while you switch
-  (it must be a verified Email Routing destination). Turn it off later with
-  `cloudmail settings set forward-to ""`.
-- Existing routing rules that send an address elsewhere are left alone unless you pass
-  `--take-over-routes`. Domains without Email Routing are skipped unless you pass
-  `--enable-routing`, because that replaces their MX records.
-- Enabling sending adds SPF/DKIM records and a `p=reject` DMARC record to the domain. If another
-  service sends mail as that domain, set it up with SPF/DKIM first.
-
-Add addresses later with `cloudmail mailbox add sales@example.com --direct --route`.
 
 ## Use it
 

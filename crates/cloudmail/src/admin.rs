@@ -119,7 +119,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             let mut data = json!({ "mailbox": mailbox });
             let mut summary = format!("Added {addr} ({})", if direct { "direct" } else { "screened" });
             if route.route {
-                let r = setup::route_for_mailbox(&addr, &route)?;
+                let r = setup::route_for_mailbox(&addr, &route, ctx.interactive())?;
                 summary.push_str(&format!("; routing: {}", r["status"].as_str().unwrap_or("")));
                 data["route"] = r;
             }

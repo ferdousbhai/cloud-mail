@@ -19,6 +19,11 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// Someone is at the terminal to answer questions.
+    pub fn interactive(&self) -> bool {
+        self.mode == Mode::Human && output::stdin_is_tty() && output::stdout_is_tty()
+    }
+
     pub fn client(&self) -> CliResult<&Client> {
         if let Some(c) = self.client.get() {
             return Ok(c);
@@ -126,7 +131,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Mailbox(m) => admin::mailbox(ctx, m),
         Command::Settings(s) => admin::settings(ctx, s),
         Command::Config(c) => admin::config_cmd(c),
-        Command::Setup(a) => setup::run(&a),
+        Command::Setup(a) => setup::run(&a, ctx.interactive()),
         Command::Commands => Ok(admin::commands()),
         Command::AgentGuide => Ok(Response::new(docs::agent_guide(), "cloudmail agent guide").human(docs::agent_guide())),
     }

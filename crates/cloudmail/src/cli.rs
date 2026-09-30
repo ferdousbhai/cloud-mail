@@ -89,7 +89,7 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
-    /// Deploy a new cloudmail worker to your Cloudflare account and connect mailboxes
+    /// Set up (or update) your mail service on Cloudflare: `cloudmail setup you@yourdomain.com`
     Setup(SetupArgs),
 
     /// List every command with its arguments, flags and examples
@@ -358,17 +358,18 @@ pub struct RouteArgs {
     /// Also point this address's Cloudflare Email Routing rule at the worker (runs wrangler)
     #[arg(long)]
     pub route: bool,
-    /// Replace an existing routing rule that sends this address elsewhere (with --route)
-    #[arg(long, requires = "route")]
-    pub take_over_route: bool,
-    /// Worker directory holding wrangler.jsonc (with --route; default: ./worker in a clone, else the packaged worker copied to ~/.local/share/cloudmail/worker)
-    #[arg(long)]
+    /// Don't ask before moving the domain's mail (MX) to Cloudflare or replacing a rule that sends
+    /// this address elsewhere (with --route)
+    #[arg(long, short = 'y', alias = "take-over-route", requires = "route")]
+    pub yes: bool,
+    /// Worker directory holding wrangler.jsonc (with --route)
+    #[arg(long, hide = true)]
     pub worker_dir: Option<PathBuf>,
     /// Worker name (with --route; default: "name" from wrangler.jsonc)
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub worker_name: Option<String>,
     /// Command used to run wrangler
-    #[arg(long, default_value = "npx wrangler")]
+    #[arg(long, default_value = "npx wrangler", hide = true)]
     pub wrangler: String,
 }
 
@@ -454,31 +455,35 @@ pub enum ConfigKey {
 
 #[derive(Args, Debug)]
 pub struct SetupArgs {
-    /// Worker directory (contains wrangler.template.jsonc); default: ./worker in a clone, else the packaged worker copied to ~/.local/share/cloudmail/worker
-    #[arg(long)]
-    pub worker_dir: Option<PathBuf>,
-    /// Name for the worker, D1 database and R2 bucket
-    #[arg(long, default_value = "cloudmail")]
-    pub name: String,
-    /// Mailbox to create and route, as address or address:direct (repeatable)
-    #[arg(long = "mailbox", value_name = "ADDRESS[:direct]")]
+    /// Addresses to receive mail at; add `:direct` to skip the Screener (e.g. support@example.com:direct)
+    #[arg(value_name = "ADDRESS[:direct]")]
     pub mailboxes: Vec<String>,
-    /// Replace existing routing rules that send these addresses elsewhere
-    #[arg(long)]
-    pub take_over_routes: bool,
-    /// Turn on Email Routing for domains that don't have it (changes their MX records!)
-    #[arg(long)]
-    pub enable_routing: bool,
-    /// Verified address to receive a copy of every message
-    #[arg(long)]
+    /// Also forward a copy of everything here (Cloudflare emails it a verification link)
+    #[arg(long, value_name = "ADDRESS")]
     pub forward_to: Option<String>,
-    /// Overwrite an existing wrangler.jsonc and config file and rotate the API token
-    #[arg(long)]
-    pub force: bool,
-    /// Print the plan without running anything
+    /// Don't ask: move domains that receive mail elsewhere to Cloudflare (replaces their MX records)
+    /// and replace routing rules that send these addresses elsewhere
+    #[arg(long, short = 'y', alias = "take-over-routes", alias = "enable-routing")]
+    pub yes: bool,
+    /// Cloudflare account ID, when your login has more than one
+    #[arg(long, env = "CLOUDFLARE_ACCOUNT_ID", value_name = "ID")]
+    pub account: Option<String>,
+    /// Show what would happen without changing anything
     #[arg(long)]
     pub dry_run: bool,
+    /// Regenerate wrangler.jsonc and the local config, rotating the API token
+    #[arg(long)]
+    pub force: bool,
+    /// Same as the ADDRESS arguments (older spelling)
+    #[arg(long = "mailbox", value_name = "ADDRESS[:direct]", hide = true)]
+    pub mailbox_flags: Vec<String>,
+    /// Name for the worker, D1 database and R2 bucket
+    #[arg(long, default_value = "cloudmail", hide = true)]
+    pub name: String,
+    /// Worker directory (contains wrangler.template.jsonc)
+    #[arg(long, hide = true)]
+    pub worker_dir: Option<PathBuf>,
     /// Command used to run wrangler
-    #[arg(long, default_value = "npx wrangler")]
+    #[arg(long, default_value = "npx wrangler", hide = true)]
     pub wrangler: String,
 }

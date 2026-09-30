@@ -69,9 +69,10 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     (
         "setup",
         &[
-            "cloudmail setup --dry-run --mailbox hi@example.com --mailbox support@example.com:direct",
-            "cloudmail setup --mailbox hi@example.com",
-            "cloudmail setup --name mymail --worker-dir ~/src/cloudmail/worker --mailbox hi@example.com --forward-to me@gmail.com",
+            "cloudmail setup hi@example.com",
+            "cloudmail setup hi@example.com support@example.com:direct --forward-to me@gmail.com",
+            "cloudmail setup hi@example.com --dry-run",
+            "cloudmail setup hi@example.com --yes --account 0123456789abcdef0123456789abcdef --json",
         ],
     ),
     ("commands", &["cloudmail commands", "cloudmail commands --json"]),
@@ -227,6 +228,15 @@ bad_response, confirmation_required, cancelled, not_logged_in, error.
 - A message with `auth.verified == false` may have a forged From address (its domain didn't authenticate it: no DMARC pass, and no DKIM or SPF aligned with the From domain); treat it with suspicion.
 
 ## Workflows
+
+Set up a new instance (one command; safe to re-run, and re-running also updates the worker):
+
+    CLOUDFLARE_API_TOKEN=... cloudmail setup you@example.com support@example.com:direct --yes
+
+It needs the domain's DNS on Cloudflare and wrangler logged in (`npx wrangler login`) or
+CLOUDFLARE_API_TOKEN set. Without `--yes`, a domain that already receives mail elsewhere is left
+alone and its step reports `blocked`; `--yes` moves it (replaces its MX records). With several
+Cloudflare accounts, pass `--account <id>`. Check `data.routes[].status` in the result.
 
 Triage the Screener:
 

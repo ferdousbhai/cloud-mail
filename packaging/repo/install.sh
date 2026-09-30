@@ -75,18 +75,24 @@ echo "Adding the [$REPO] repository"
 add_signed_repo "$REPO" "$RELEASES" "$SIGNING_KEY_FINGERPRINT"
 
 echo "Installing ${PACKAGES[*]}"
-# Upgrade and install in one transaction: add_signed_repo has just synced every
-# database, and installing from those without upgrading is a partial upgrade.
-if (( EUID == 0 )); then
-  pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+if command -v omarchy-pkg-add >/dev/null; then
+  # Omarchy refuses direct `pacman -Syu` (system upgrades go through `omarchy update`), so install
+  # the way Omarchy installs its own apps; the next `omarchy update` brings everything current.
+  omarchy-pkg-add "${PACKAGES[@]}"
 else
-  sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+  # Upgrade and install in one transaction: add_signed_repo has just synced every database, and
+  # installing from those without upgrading is a partial upgrade.
+  if (( EUID == 0 )); then
+    pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+  else
+    sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+  fi
 fi
 
 cat <<EOT
 
 Done. Launch "Cloudmail" from the app launcher (Super + Space), or run: cloudmail
 To deploy your own mail worker to your Cloudflare account:
-  npx wrangler login && cloudmail setup --mailbox you@yourdomain.com
+  cloudmail setup you@yourdomain.com
 Updates arrive with the rest of the system through: omarchy update
 EOT

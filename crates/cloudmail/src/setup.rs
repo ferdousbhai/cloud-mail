@@ -33,7 +33,12 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-pub fn render_template(template: &str, worker: &str, database: &str, database_id: &str, bucket: &str) -> String {
+/// Fills in wrangler.template.jsonc; without an account the `account_id` line is dropped.
+pub fn render_template(template: &str, worker: &str, account: Option<&str>, database: &str, database_id: &str, bucket: &str) -> String {
+    let template = match account {
+        Some(id) => template.replace("__ACCOUNT_ID__", id),
+        None => template.split_inclusive('\n').filter(|l| !l.contains("__ACCOUNT_ID__")).collect(),
+    };
     template
         .replace("__WORKER_NAME__", worker)
         .replace("__DATABASE_NAME__", database)
@@ -133,6 +138,42 @@ pub fn parse_rules(output: &str) -> Vec<Rule> {
     rules
 }
 
+/// (name, id) of each account in `wrangler whoami`'s table.
+pub fn parse_accounts(output: &str) -> Vec<(String, String)> {
+    parse_table(output)
+        .into_iter()
+        .filter(|row| row.len() == 2 && row[1].len() == 32 && row[1].chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|row| (row[0].clone(), row[1].clone()))
+        .collect()
+}
+
+/// Destination addresses in `wrangler email routing addresses list`, with whether each is verified.
+pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
+    parse_table(output)
+        .into_iter()
+        .filter(|row| row.len() >= 3 && row[1].contains('@'))
+        .map(|row| (row[1].to_ascii_lowercase(), row.len() >= 4))
+        .collect()
+}
+
+/// A domain's public MX hosts (DNS over HTTPS); None when the lookup itself failed.
+fn mx_hosts(domain: &str) -> Option<Vec<String>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(5))).build().into();
+    let url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX");
+    let body: Value = agent.get(&url).header("accept", "application/dns-json").call().ok()?.body_mut().read_json().ok()?;
+    Some(parse_mx_answer(&body))
+}
+
+pub fn parse_mx_answer(body: &Value) -> Vec<String> {
+    body["Answer"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["type"] == 15)
+        .filter_map(|a| a["data"].as_str()?.split_whitespace().nth(1).map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+        .collect()
+}
+
 pub fn domain_of(email: &str) -> Option<&str> {
     email.rsplit_once('@').map(|(_, d)| d).filter(|d| d.contains('.'))
 }
@@ -178,13 +219,42 @@ pub struct Step {
 pub struct Wrangler {
     program: Vec<String>,
     dir: PathBuf,
+    envs: Vec<(String, String)>,
     pub dry_run: bool,
+    /// Someone is at a terminal: questions may be asked and steps are shown as they happen.
+    pub interactive: bool,
     pub steps: Vec<Step>,
 }
 
 impl Wrangler {
-    pub fn new(program: &str, dir: PathBuf, dry_run: bool) -> Self {
-        Self { program: program.split_whitespace().map(str::to_string).collect(), dir, dry_run, steps: Vec::new() }
+    pub fn new(program: &str, dir: PathBuf, dry_run: bool, interactive: bool) -> Self {
+        let program = program.split_whitespace().map(str::to_string).collect();
+        Self { program, dir, envs: Vec::new(), dry_run, interactive, steps: Vec::new() }
+    }
+
+    /// Runs every later wrangler command against this Cloudflare account.
+    pub fn use_account(&mut self, id: &str) {
+        self.envs.retain(|(k, _)| k != "CLOUDFLARE_ACCOUNT_ID");
+        self.envs.push(("CLOUDFLARE_ACCOUNT_ID".into(), id.into()));
+    }
+
+    /// Asks a yes/no question at the terminal; None when nobody is there to answer.
+    pub fn ask(&self, question: &str) -> Option<bool> {
+        if !self.interactive || self.dry_run {
+            return None;
+        }
+        eprint!("{question} [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).ok()?;
+        Some(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    }
+
+    fn announce(&self, step: &str) {
+        if self.interactive {
+            eprint!("[    ...] {step}\r");
+            let _ = std::io::stderr().flush();
+        }
     }
 
     fn render(&self, args: &[&str]) -> String {
@@ -194,6 +264,12 @@ impl Wrangler {
     }
 
     pub fn record(&mut self, step: &str, status: &str, command: Option<String>, detail: Option<String>) {
+        if self.interactive {
+            eprintln!("[{status:>7}] {step}\x1b[K");
+            if let Some(d) = detail.as_ref().filter(|_| matches!(status, "blocked" | "skipped" | "pending")) {
+                eprintln!("          {d}");
+            }
+        }
         self.steps.push(Step { step: step.into(), status: status.into(), command, detail });
     }
 
@@ -217,6 +293,7 @@ impl Wrangler {
             self.record(step, "planned", Some(command), None);
             return Ok(String::new());
         }
+        self.announce(step);
         let out = self.exec(&self.program, args, stdin)?;
         self.record(step, "done", Some(command), None);
         Ok(out)
@@ -229,15 +306,29 @@ impl Wrangler {
             self.record(step, "planned", Some(command), None);
             return Ok(());
         }
+        self.announce(step);
         self.exec(&prog[..1], &program[1..], None)?;
         self.record(step, "done", Some(command), None);
         Ok(())
     }
 
+    /// Runs wrangler attached to the terminal (for `wrangler login`, which opens a browser).
+    pub fn attached(&self, args: &[&str]) -> CliResult<()> {
+        let (bin, pre) = self.program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
+        let status = Command::new(bin)
+            .args(pre)
+            .args(args)
+            .current_dir(&self.dir)
+            .envs(self.envs.iter().map(|(k, v)| (k, v)))
+            .status()
+            .map_err(|e| CliError::generic(format!("could not run `{bin}`: {e}")).hint("install Node.js (npm)"))?;
+        if status.success() { Ok(()) } else { Err(CliError::generic(format!("`{}` failed", self.render(args)))) }
+    }
+
     fn exec(&self, program: &[String], args: &[&str], stdin: Option<&str>) -> CliResult<String> {
         let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
         let mut cmd = Command::new(bin);
-        cmd.args(pre).args(args).current_dir(&self.dir).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(pre).args(args).current_dir(&self.dir).envs(self.envs.iter().map(|(k, v)| (k, v))).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
         let mut child = cmd
             .spawn()
@@ -340,13 +431,29 @@ pub struct RouteOutcome {
     pub detail: String,
 }
 
-/// Makes sure sending is enabled for the address's domain and its routing rule points at the worker.
+/// Asks for the go-ahead on a change that moves existing mail: `--yes`, else the person at the terminal.
+fn consent(w: &Wrangler, yes: bool, question: &str) -> bool {
+    yes || w.ask(question).unwrap_or(false)
+}
+
+fn blocked(w: &mut Wrangler, address: &str, detail: String) -> RouteOutcome {
+    let detail = match (w.interactive, w.dry_run) {
+        (true, false) => detail,
+        (true, true) => format!("{detail}; setup will ask first"),
+        _ => format!("{detail}; re-run with --yes to do it"),
+    };
+    w.record(&format!("route {address}"), "blocked", None, Some(detail.clone()));
+    RouteOutcome { address: address.into(), status: "blocked".into(), detail }
+}
+
+/// Makes sure the address's domain receives mail through Email Routing and can send, and that the
+/// address's routing rule points at the worker. Anything that would take mail away from somewhere
+/// else needs `yes` or a yes at the terminal.
 pub fn route_address(
     w: &mut Wrangler,
     address: &str,
     worker: &str,
-    take_over: bool,
-    enable_routing: bool,
+    yes: bool,
     sending_zones: &mut Option<Vec<String>>,
     routing_zones: &mut Option<Vec<String>>,
 ) -> CliResult<RouteOutcome> {
@@ -356,14 +463,19 @@ pub fn route_address(
         *routing_zones = Some(enabled_zones(&w.probe(&["email", "routing", "list"])?));
     }
     if !routing_zones.as_ref().is_some_and(|z| z.contains(&domain)) {
-        if !enable_routing {
-            let detail = format!(
-                "Email Routing is not enabled for {domain}; enabling it replaces the domain's MX records. Re-run with --enable-routing if that's intended, or enable it in the Cloudflare dashboard"
-            );
-            w.record(&format!("route {address}"), "blocked", None, Some(detail.clone()));
-            return Ok(RouteOutcome { address: address.into(), status: "blocked".into(), detail });
+        // Enabling Email Routing replaces the domain's MX records: free to do when nothing receives
+        // mail there yet, a question when something else does.
+        let mx = if yes { None } else { mx_hosts(&domain) };
+        let elsewhere: Vec<String> = mx.clone().unwrap_or_default().into_iter().filter(|h| !h.ends_with(".mx.cloudflare.net")).collect();
+        let safe = mx.is_some() && elsewhere.is_empty();
+        if !safe {
+            let current = if elsewhere.is_empty() { "somewhere we couldn't look up".to_string() } else { elsewhere.join(", ") };
+            let question = format!("{domain} receives mail at {current}. Move all of {domain}'s mail to Cloudflare (replaces its MX records)?");
+            if !consent(w, yes, &question) {
+                return Ok(blocked(w, address, format!("{domain} receives mail at {current}; moving it to Cloudflare replaces its MX records")));
+            }
         }
-        w.mutate(&format!("enable routing for {domain}"), &["email", "routing", "enable", &domain], None)?;
+        w.mutate(&format!("enable Email Routing for {domain}"), &["email", "routing", "enable", &domain], None)?;
         routing_zones.get_or_insert_with(Vec::new).push(domain.clone());
     }
 
@@ -397,10 +509,8 @@ pub fn route_address(
             w.record(&step, "exists", None, Some(target.clone()));
             Ok(outcome("exists", target))
         }
-        Some(r) if !take_over => {
-            let detail = format!("existing rule {} sends it to {}; left alone (use --take-over-route(s) to replace)", r.id, r.action);
-            w.record(&step, "skipped", None, Some(detail.clone()));
-            Ok(outcome("skipped", detail))
+        Some(r) if !consent(w, yes, &format!("{address} is routed to {}. Send it to Cloudmail instead?", r.action)) => {
+            Ok(blocked(w, address, format!("an existing rule sends {address} to {}", r.action)))
         }
         Some(r) => {
             let args = set_args("update", Some(&r.id));
@@ -415,17 +525,21 @@ pub fn route_address(
     }
 }
 
-pub fn route_for_mailbox(address: &str, args: &RouteArgs) -> CliResult<Value> {
+pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> CliResult<Value> {
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
+    let generated = std::fs::read_to_string(dir.join("wrangler.jsonc")).ok();
     let worker = match &args.worker_name {
         Some(n) => n.clone(),
-        None => std::fs::read_to_string(dir.join("wrangler.jsonc"))
-            .ok()
-            .and_then(|t| parse_worker_name(&t))
-            .ok_or_else(|| CliError::usage("could not read the worker name from wrangler.jsonc").hint("pass --worker-name"))?,
+        None => generated
+            .as_deref()
+            .and_then(parse_worker_name)
+            .ok_or_else(|| CliError::usage("could not read the worker name from wrangler.jsonc").hint("run `cloudmail setup` first"))?,
     };
-    let mut w = Wrangler::new(&args.wrangler, dir, false);
-    let outcome = route_address(&mut w, address, &worker, args.take_over_route, false, &mut None, &mut None)?;
+    let mut w = Wrangler::new(&args.wrangler, dir, false, interactive);
+    if let Some(account) = generated.as_deref().and_then(|t| jsonc_field(t, "account_id")) {
+        w.use_account(&account);
+    }
+    let outcome = route_address(&mut w, address, &worker, args.yes, &mut None, &mut None)?;
     Ok(json!({ "status": outcome.status, "detail": outcome.detail, "worker": worker, "steps": w.steps }))
 }
 
@@ -435,37 +549,109 @@ fn plural_steps(n: usize) -> String {
     if n == 1 { "1 step".into() } else { format!("{n} steps") }
 }
 
-pub fn run(args: &SetupArgs) -> CliResult {
+/// Reads a line from the terminal after a prompt.
+fn prompt(question: &str) -> CliResult<String> {
+    eprint!("{question} ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(answer.trim().to_string())
+}
+
+/// Makes sure wrangler can reach Cloudflare, logging in through the browser when someone is there
+/// to do it, and returns `wrangler whoami`'s output.
+fn login(w: &mut Wrangler, wrangler: &str) -> CliResult<String> {
+    let whoami = |w: &Wrangler| w.query(&["whoami"]).ok().filter(|o| strip_ansi(o).contains("You are logged in"));
+    if let Some(out) = whoami(w) {
+        w.record("Cloudflare login", "ok", None, None);
+        return Ok(out);
+    }
+    if w.dry_run {
+        w.record("Cloudflare login", "planned", Some(format!("{wrangler} login")), Some("opens your browser".into()));
+        return Ok(String::new());
+    }
+    if w.interactive {
+        eprintln!("Log in to Cloudflare in the browser window that opens (create a free account there if you need one).");
+        w.attached(&["login"])?;
+        if let Some(out) = whoami(w) {
+            w.record("Cloudflare login", "done", None, None);
+            return Ok(out);
+        }
+    }
+    Err(CliError::new("not_logged_in", exit::AUTH, "not logged in to Cloudflare").hint(format!(
+        "run `{wrangler} login`, or set CLOUDFLARE_API_TOKEN to a token that can edit Workers Scripts, D1, Workers R2 Storage, Email Routing Rules, Email Sending and Zone Settings"
+    )))
+}
+
+/// The Cloudflare account to use: --account / CLOUDFLARE_ACCOUNT_ID, the one setup used before,
+/// the only one the login can see, or the person's pick.
+fn choose_account(w: &Wrangler, flag: Option<&str>, previous: Option<String>, whoami: &str) -> CliResult<Option<String>> {
+    if let Some(id) = flag.map(str::to_string).or(previous) {
+        return Ok(Some(id));
+    }
+    let accounts = parse_accounts(whoami);
+    match accounts.len() {
+        0 => Ok(None),
+        1 => Ok(Some(accounts[0].1.clone())),
+        _ if w.interactive && !w.dry_run => {
+            eprintln!("Your Cloudflare login can use several accounts:");
+            for (i, (name, id)) in accounts.iter().enumerate() {
+                eprintln!("  {}. {name} ({id})", i + 1);
+            }
+            let pick = prompt(&format!("Which one holds your domains? [1-{}]", accounts.len()))?;
+            let i = pick.parse::<usize>().ok().filter(|i| (1..=accounts.len()).contains(i)).ok_or_else(|| CliError::new("cancelled", exit::GENERIC, "no account chosen"))?;
+            Ok(Some(accounts[i - 1].1.clone()))
+        }
+        _ => {
+            let list = accounts.iter().map(|(n, id)| format!("{id} ({n})")).collect::<Vec<_>>().join(", ");
+            Err(CliError::usage(format!("your Cloudflare login can use several accounts: {list}")).hint("pass --account <ID> for the one that holds your domains"))
+        }
+    }
+}
+
+pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
+    let mut specs: Vec<String> = args.mailboxes.iter().chain(&args.mailbox_flags).cloned().collect();
+    let existing_cfg = config::read_file(&config::path()).ok().flatten();
+    let first_time = existing_cfg.as_ref().and_then(|c| c.api_url.as_ref()).is_none();
+    if specs.is_empty() && first_time {
+        if !interactive || args.dry_run {
+            return Err(CliError::usage("which address should receive mail?").hint("cloudmail setup you@yourdomain.com"));
+        }
+        let addr = prompt("Email address to set up (e.g. you@yourdomain.com):")?;
+        if addr.is_empty() {
+            return Err(CliError::new("cancelled", exit::GENERIC, "cancelled"));
+        }
+        specs.push(addr);
+    }
+    let mailboxes = specs.iter().map(|m| parse_mailbox_spec(m)).collect::<CliResult<Vec<_>>>()?;
+
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
     let template_path = dir.join("wrangler.template.jsonc");
     let template = std::fs::read_to_string(&template_path)
         .map_err(|e| CliError::generic(format!("could not read {}: {e}", template_path.display())))?;
-    let mailboxes = args.mailboxes.iter().map(|m| parse_mailbox_spec(m)).collect::<CliResult<Vec<_>>>()?;
     let config_path = dir.join("wrangler.jsonc");
     let current = std::fs::read_to_string(&config_path).ok();
-    // An existing wrangler.jsonc wins unless --force: reuse its worker, database and bucket.
+    // An existing wrangler.jsonc wins unless --force: reuse its worker, database, bucket and account.
     let keep = current.is_some() && !args.force;
     let field = |k: &str| current.as_deref().filter(|_| keep).and_then(|c| jsonc_field(c, k));
     let worker_name = field("name").unwrap_or_else(|| args.name.clone());
     let db_name = field("database_name").unwrap_or_else(|| args.name.clone());
     let bucket_name = field("bucket_name").unwrap_or_else(|| args.name.clone());
-    let mut w = Wrangler::new(&args.wrangler, dir.clone(), args.dry_run);
+    let mut w = Wrangler::new(&args.wrangler, dir.clone(), args.dry_run, interactive);
 
     // 1. dependencies
     if deps_current(&dir) {
         w.record("install worker dependencies", "exists", None, None);
     } else {
-        w.run_program("install worker dependencies", &["npm", "install"])?;
+        w.run_program("install worker dependencies", &["npm", "install", "--no-audit", "--no-fund"])?;
     }
 
-    // 2. login
-    match w.query(&["whoami"]) {
-        Ok(out) if strip_ansi(&out).contains("You are logged in") => w.record("wrangler login", "ok", None, None),
-        Ok(_) | Err(_) if args.dry_run => w.record("wrangler login", "unknown", None, Some("run `npx wrangler login` if not logged in".into())),
-        _ => {
-            return Err(CliError::new("not_logged_in", exit::AUTH, "wrangler is not logged in to Cloudflare")
-                .hint(format!("run `{} login` in {}", args.wrangler, dir.display())));
-        }
+    // 2. login and account
+    let whoami = login(&mut w, &args.wrangler)?;
+    let account = choose_account(&w, args.account.as_deref(), field("account_id"), &whoami)?;
+    if let Some(id) = &account {
+        w.use_account(id);
+        w.record("Cloudflare account", "ok", None, Some(id.clone()));
     }
 
     // 3. D1 + R2
@@ -493,7 +679,7 @@ pub fn run(args: &SetupArgs) -> CliResult {
     }
 
     // 4. wrangler.jsonc
-    let rendered = render_template(&template, &worker_name, &db_name, &database_id, &bucket_name);
+    let rendered = render_template(&template, &worker_name, account.as_deref(), &db_name, &database_id, &bucket_name);
     if keep {
         let status = if current.as_deref() == Some(rendered.as_str()) { "exists" } else { "kept" };
         w.record("write wrangler.jsonc", status, None, Some(format!("using the existing file (worker \"{worker_name}\"); --force regenerates it")));
@@ -506,7 +692,13 @@ pub fn run(args: &SetupArgs) -> CliResult {
 
     // 5. schema + deploy
     w.mutate("apply database migrations", &["d1", "migrations", "apply", &db_name, "--remote"], None)?;
-    let deploy_out = w.mutate("deploy worker", &["deploy"], None)?;
+    let deploy_out = w.mutate("deploy worker", &["deploy"], None).map_err(|e| {
+        if e.message.contains("workers.dev subdomain") {
+            e.hint("pick a workers.dev subdomain at https://dash.cloudflare.com/?to=/:account/workers/onboarding, then run the same command again")
+        } else {
+            e
+        }
+    })?;
     let url = if args.dry_run {
         format!("https://{worker_name}.<your-subdomain>.workers.dev")
     } else {
@@ -515,7 +707,6 @@ pub fn run(args: &SetupArgs) -> CliResult {
 
     // 6. token + local config
     let cfg_path = config::path();
-    let existing_cfg = config::read_file(&cfg_path).ok().flatten();
     let same_worker = |configured: &str| {
         if args.dry_run {
             configured.starts_with(&format!("https://{worker_name}.")) && configured.ends_with(".workers.dev")
@@ -528,10 +719,10 @@ pub fn run(args: &SetupArgs) -> CliResult {
     let token = if reuse {
         w.record("API token", "exists", None, Some(cfg_path.display().to_string()));
         existing_cfg.as_ref().and_then(|c| c.api_token.clone()).unwrap_or_default()
-    } else if existing_cfg.is_some() && !args.force && args.dry_run {
+    } else if !first_time && !args.force && args.dry_run {
         w.record("API token", "blocked", None, Some(format!("{} points at another worker; setup would stop here without --force", cfg_path.display())));
         String::new()
-    } else if existing_cfg.is_some() && !args.force {
+    } else if !first_time && !args.force {
         return Err(CliError::generic(format!("{} already points at another worker", cfg_path.display()))
             .hint("re-run with --force to rotate the token and overwrite the config"));
     } else {
@@ -556,6 +747,7 @@ pub fn run(args: &SetupArgs) -> CliResult {
     if args.dry_run {
         w.record("wait for the worker", "planned", None, Some(url.clone()));
     } else {
+        w.announce("wait for the worker");
         wait_until_live(&client)?;
         w.record("wait for the worker", "done", None, Some(url.clone()));
     }
@@ -564,53 +756,77 @@ pub fn run(args: &SetupArgs) -> CliResult {
     let mut routes = Vec::new();
     let (mut sending, mut routing) = (None, None);
     for (addr, screen) in &mailboxes {
+        let kind = if *screen { "screened" } else { "direct" };
         if args.dry_run {
-            w.record(&format!("mailbox {addr}"), "planned", None, Some(if *screen { "screened" } else { "direct" }.into()));
+            w.record(&format!("mailbox {addr}"), "planned", None, Some(kind.into()));
         } else {
             client.put_mailbox(addr, &MailboxUpdate { screen: Some(*screen), ..Default::default() })?;
-            w.record(&format!("mailbox {addr}"), "done", None, Some(if *screen { "screened" } else { "direct" }.into()));
+            w.record(&format!("mailbox {addr}"), "done", None, Some(kind.into()));
         }
-        let r = route_address(&mut w, addr, &worker_name, args.take_over_routes, args.enable_routing, &mut sending, &mut routing)?;
+        let r = route_address(&mut w, addr, &worker_name, args.yes, &mut sending, &mut routing)?;
         routes.push(json!({ "address": r.address, "status": r.status, "detail": r.detail }));
     }
-    if let Some(fwd) = &args.forward_to {
+
+    // 9. forwarding: Email Routing only forwards to verified destinations, and Cloudflare verifies
+    // one by emailing it a link
+    if let Some(fwd) = args.forward_to.as_deref().map(str::to_ascii_lowercase).filter(|f| !f.is_empty()) {
+        let known = parse_destinations(&w.probe(&["email", "routing", "addresses", "list"])?).into_iter().find(|(a, _)| *a == fwd);
+        let pending = format!("Cloudflare emailed {fwd} a verification link; forwarding starts once it's clicked");
+        match known {
+            Some((_, true)) => {}
+            Some((_, false)) => w.record(&format!("verify {fwd}"), "pending", None, Some(pending)),
+            None => {
+                w.mutate(&format!("add forwarding destination {fwd}"), &["email", "routing", "addresses", "create", &fwd], None)?;
+                w.record(&format!("verify {fwd}"), "pending", None, Some(pending));
+            }
+        }
         if args.dry_run {
-            w.record("forward_to", "planned", None, Some(fwd.clone()));
+            w.record("forward a copy", "planned", None, Some(fwd.clone()));
         } else {
             client.update_settings(&json!({ "forward_to": fwd }))?;
-            w.record("forward_to", "done", None, Some(fwd.clone()));
+            w.record("forward a copy", "done", None, Some(fwd.clone()));
         }
     }
 
-    let blocked = w.steps.iter().filter(|s| s.status == "blocked").count();
+    let attention: Vec<&Step> = w.steps.iter().filter(|s| matches!(s.status.as_str(), "blocked" | "pending")).collect();
     let mut summary = if args.dry_run {
         format!("Planned {} steps (dry run, nothing changed)", w.steps.iter().filter(|s| s.status == "planned").count())
     } else {
-        format!("cloudmail is deployed at {url}")
+        format!("Cloudmail is running at {url}")
     };
-    if blocked > 0 {
-        summary.push_str(&format!("; {} need attention", plural_steps(blocked)));
+    if !attention.is_empty() {
+        summary.push_str(&format!("; {} need attention", plural_steps(attention.len())));
     }
-    let human = w
-        .steps
-        .iter()
-        .map(|s| {
-            let mut line = format!("[{:>7}] {}", s.status, s.step);
-            if let Some(c) = &s.command {
-                line.push_str(&format!("\n          $ {c}"));
-            }
-            if let Some(d) = &s.detail {
-                line.push_str(&format!("\n          {d}"));
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let details = |steps: &[&Step]| {
+        steps
+            .iter()
+            .map(|s| {
+                let mut line = format!("[{:>7}] {}", s.status, s.step);
+                if let Some(c) = &s.command {
+                    line.push_str(&format!("\n          $ {c}"));
+                }
+                if let Some(d) = &s.detail {
+                    line.push_str(&format!("\n          {d}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // At a terminal the steps were shown as they ran; repeat only what still needs the person.
+    let mut human = if interactive && !args.dry_run { details(&attention) } else { details(&w.steps.iter().collect::<Vec<_>>()) };
+    if !human.is_empty() {
+        human.push_str("\n\n");
+    }
+    human.push_str(&summary);
+    if !args.dry_run {
+        human.push_str("\nOpen Cloudmail from your app launcher, or run `cloudmail inbox`.");
+    }
     Ok(Response::new(
-        json!({ "dry_run": args.dry_run, "worker": worker_name, "url": url, "steps": w.steps, "routes": routes }),
+        json!({ "dry_run": args.dry_run, "worker": worker_name, "account": account, "url": url, "steps": w.steps, "routes": routes }),
         summary.clone(),
     )
-    .human(format!("{human}\n\n{summary}"))
+    .human(human)
     .crumbs(vec![
         crumb("status", "cloudmail status", "Check the worker and counts"),
         crumb("mailbox", "cloudmail mailbox add <address> --route", "Add another address"),
@@ -689,9 +905,12 @@ mod tests {
     #[test]
     fn renders_template() {
         let t = "{ \"name\": \"__WORKER_NAME__\", \"database_name\": \"__DATABASE_NAME__\", \"database_id\": \"__DATABASE_ID__\", \"bucket_name\": \"__BUCKET_NAME__\" }";
-        let r = render_template(t, "cloudmail", "cloudmail-db", "abc-123", "cloudmail-bucket");
+        let r = render_template(t, "cloudmail", None, "cloudmail-db", "abc-123", "cloudmail-bucket");
         assert_eq!(r, "{ \"name\": \"cloudmail\", \"database_name\": \"cloudmail-db\", \"database_id\": \"abc-123\", \"bucket_name\": \"cloudmail-bucket\" }");
         assert!(!r.contains("__"));
+        let t = "{\n  \"name\": \"__WORKER_NAME__\",\n  \"account_id\": \"__ACCOUNT_ID__\",\n  \"main\": \"src/index.ts\"\n}";
+        assert_eq!(render_template(t, "cm", Some("0af9"), "", "", ""), "{\n  \"name\": \"cm\",\n  \"account_id\": \"0af9\",\n  \"main\": \"src/index.ts\"\n}");
+        assert_eq!(render_template(t, "cm", None, "", "", ""), "{\n  \"name\": \"cm\",\n  \"main\": \"src/index.ts\"\n}");
     }
 
     #[test]
@@ -713,6 +932,17 @@ mod tests {
     fn parses_worker_name() {
         let j = "{\n  \"$schema\": \"x\",\n  \"name\": \"cloud-mail\",\n  \"main\": \"src/index.ts\",";
         assert_eq!(parse_worker_name(j).as_deref(), Some("cloud-mail"));
+    }
+
+    #[test]
+    fn parses_accounts_destinations_and_mx() {
+        let whoami = "┌──┐\n│ Account Name │ Account ID │\n├──┤\n│ Me's Account │ 0123456789abcdef0123456789abcdef │\n│ Team │ 11111111111111111111111111111111 │\n└──┘\n";
+        assert_eq!(parse_accounts(whoami), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into()), ("Team".into(), "11111111111111111111111111111111".into())]);
+        let dests = "│ id │ email │ verified │ created │\n│ b51d │ Me@Hey.com │ 2025-12-26T05:50:19Z │ 2025-12-26T04:33:43Z │\n│ 87be │ new@gmail.com │  │ 2026-01-01T00:00:00Z │\n";
+        assert_eq!(parse_destinations(dests), vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]);
+        let mx = json!({"Answer": [{"type": 15, "data": "10 ASPMX.L.Google.com."}, {"type": 5, "data": "x."}, {"type": 15, "data": "20 route2.mx.cloudflare.net."}]});
+        assert_eq!(parse_mx_answer(&mx), vec!["aspmx.l.google.com", "route2.mx.cloudflare.net"]);
+        assert!(parse_mx_answer(&json!({"Status": 3})).is_empty());
     }
 
     #[test]
@@ -744,21 +974,25 @@ mod tests {
         let args = SetupArgs {
             worker_dir: Some(dir.clone()),
             name: "cloudmail".into(),
-            mailboxes: vec!["hi@example.com".into(), "support@example.com:direct".into()],
-            take_over_routes: false,
-            enable_routing: true,
+            mailboxes: vec!["hi@example.com".into()],
+            mailbox_flags: vec!["support@example.com:direct".into()],
+            yes: true,
+            account: None,
             forward_to: Some("me@elsewhere.com".into()),
             force: true,
             dry_run: true,
             wrangler: "false".into(),
         };
-        let resp = run(&args).unwrap();
+        let resp = run(&args, false).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
         let planned: Vec<&str> = steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
         assert!(planned.contains(&"false d1 create cloudmail"));
         assert!(planned.contains(&"false deploy"));
         assert!(planned.iter().any(|c| c.contains("routing rules create example.com") && c.contains("--match-value hi@example.com")));
         assert!(planned.iter().any(|c| c.contains("email sending enable example.com")));
+        assert!(planned.iter().any(|c| c.contains("email routing enable example.com")));
+        assert!(planned.contains(&"false email routing addresses create me@elsewhere.com"));
+        assert!(planned.contains(&"false login"));
         assert!(!dir.join("wrangler.jsonc").exists());
         assert_eq!(resp.data["dry_run"], true);
         std::fs::remove_dir_all(dir).ok();
