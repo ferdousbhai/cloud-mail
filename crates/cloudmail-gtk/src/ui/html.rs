@@ -100,7 +100,7 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         name = escape_html(&m.from.display()),
         email = escape_html(&m.from.email),
         warn = if m.dmarc_failed() {
-            r#" <span class="warn" title="The sender's domain did not authorize this message (DMARC fail); the From address may be forged.">⚠ sender not verified</span>"#
+            r#" <span class="warn" title="The sender's domain didn't authenticate this message (no DMARC pass, and no aligned DKIM or SPF): the From address may be forged.">⚠ sender not verified</span>"#
         } else {
             ""
         },

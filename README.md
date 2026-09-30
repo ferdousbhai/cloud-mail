@@ -10,7 +10,8 @@ special setup.
   attachments in R2.
 - **The Screener**: the first email from someone new waits for a yes or no. Yes, and their mail goes
   to your Inbox from then on. No, and you never hear from them again. People you email are screened
-  in automatically. Senders whose DMARC check fails can't ride on an approval.
+  in automatically. A message its sender's domain didn't authenticate (DMARC, or aligned DKIM/SPF
+  when the domain has no DMARC policy) can't ride on an approval.
 - **Several domains, one inbox.** Personal addresses are screened; role addresses like `support@`
   deliver straight to the Inbox. Replies go out from the address the mail was sent to.
 - **Inbox and Archive**, that's it. A reply on an archived thread brings it back.
@@ -139,8 +140,9 @@ under `failed/`.
 - The API is protected by a single bearer token: treat `~/.config/cloudmail/config.toml` like a password.
 - Message HTML is untrusted. The desktop app renders it with JavaScript disabled, remote loads
   blocked and links opened in your browser.
-- Screening trusts the `From` address only as far as DMARC does: senders on domains without a DMARC
-  policy can be impersonated.
+- Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,
+  for domains without a DMARC policy, DKIM or SPF aligned with the From domain (the same test DMARC
+  applies). Mail from a domain with no working SPF or DKIM therefore waits in the Screener each time.
 
 ## License
 

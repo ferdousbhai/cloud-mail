@@ -71,13 +71,14 @@ pub struct Message {
 }
 
 impl Message {
-    /// The From address may be forged: DMARC gave anything but pass or none (fail, temperror,
-    /// permerror, …), matching the worker's rule for trusting a sender.
+    /// The From address may be forged: the worker couldn't authenticate it (see
+    /// `MessageAuth::verified`). Older stored mail falls back to "DMARC gave anything but pass or none".
     pub fn dmarc_failed(&self) -> bool {
-        self.auth
-            .as_ref()
-            .and_then(|a| a.dmarc.as_deref())
-            .is_some_and(|d| !d.eq_ignore_ascii_case("pass") && !d.eq_ignore_ascii_case("none"))
+        let Some(auth) = self.auth.as_ref() else { return false };
+        match auth.verified {
+            Some(verified) => !verified,
+            None => auth.dmarc.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("pass") && !d.eq_ignore_ascii_case("none")),
+        }
     }
 }
 
@@ -88,6 +89,9 @@ pub struct MessageAuth {
     pub spf: Option<String>,
     pub dkim: Option<String>,
     pub spam_score: Option<f64>,
+    /// The worker's verdict on the From address: DMARC pass, or (no DMARC policy) aligned DKIM/SPF.
+    /// Absent on mail stored by older workers.
+    pub verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

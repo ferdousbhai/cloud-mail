@@ -1,4 +1,5 @@
 import PostalMime from "postal-mime";
+import { getDomain } from "tldts";
 import { deleteThread, type Folder, type NewAttachment, type NewMessage, senderStatus, setSenderStatus, storeMessage, type ThreadRef } from "./store";
 import { findMailbox, getSettings, type Mailbox, mailboxes } from "./mailboxes";
 import { flattenAddresses, messageIdList, normalizeEmail, normalizeMessageId, toArrayBuffer } from "./util";
@@ -35,6 +36,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
 }
 
 interface StoredCopy {
+  message_id: string;
   thread_id: string;
   folder: Folder;
   from_email: string;
@@ -47,24 +49,66 @@ export interface AuthVerdict {
   spf: string | null;
   dkim: string | null;
   spam_score: number | null;
+  /** Domains whose DKIM signatures Cloudflare verified. */
+  dkim_domains: string[];
+  /** Cloudflare's SPF result for the envelope sender (topmost Received-SPF). */
+  spf_envelope: string | null;
+  /** Whether the From address is authenticated: DMARC pass, or (no DMARC policy) aligned DKIM or SPF. */
+  verified?: boolean;
 }
 
 /**
- * Reads the verdicts Cloudflare's MX recorded. Its Authentication-Results header is prepended above any
- * the sender supplied, so only the first one from mx.cloudflare.net is trusted.
+ * Reads the verdicts Cloudflare's MX recorded. Its Authentication-Results and Received-SPF headers
+ * are prepended above any the sender supplied, so only the first ones from mx.cloudflare.net count.
  */
 export function authVerdict(headers: { key: string; value: string }[]): AuthVerdict | null {
-  const ar = headers.find((h) => h.key === "authentication-results" && /^\s*mx\.cloudflare\.net\s*;/i.test(h.value));
+  const arIndex = headers.findIndex((h) => h.key === "authentication-results" && /^\s*mx\.cloudflare\.net\s*;/i.test(h.value));
+  const ar = arIndex >= 0 ? headers[arIndex] : undefined;
+  // Cloudflare writes Received-SPF just above its Authentication-Results; anything the sender wrote
+  // comes below both, so only a Received-SPF above that line is Cloudflare's.
+  const rspf = headers.slice(0, Math.max(arIndex, 0)).find((h) => h.key === "received-spf");
   const spam = headers.find((h) => h.key === "x-cf-spamh-score");
   if (!ar && !spam) return null;
-  // "mx.cloudflare.net; dkim=pass header.b=…; dmarc=pass …; spf=pass …": each result is its own
+  // "mx.cloudflare.net; dkim=pass header.d=…; dmarc=pass …; spf=pass …": each result is its own
   // ;-separated clause and starts with method=. Values the sender controls (header.b, header.s)
   // sit inside clauses, so a match anywhere else in the line could be forged.
   const clauses = (ar?.value ?? "").split(";").slice(1).map((c) => c.trim());
   const pick = (method: string) =>
     clauses.map((c) => c.match(new RegExp(`^${method}=([a-z]+)\\b`, "i"))?.[1].toLowerCase()).find((v) => v) ?? null;
+  const dkimDomains = clauses
+    .filter((c) => /^dkim=pass\b/i.test(c))
+    .map((c) => c.match(/\bheader\.d=([^\s;]+)/i)?.[1].toLowerCase())
+    .filter((d): d is string => !!d);
+  const spfEnvelope = rspf && /\breceiver=mx\.cloudflare\.net\b/i.test(rspf.value) ? (rspf.value.match(/^\s*([a-z]+)/i)?.[1].toLowerCase() ?? null) : null;
   const score = spam ? Number.parseFloat(spam.value) : NaN;
-  return { dmarc: pick("dmarc"), spf: pick("spf"), dkim: pick("dkim"), spam_score: Number.isFinite(score) ? score : null };
+  return {
+    dmarc: pick("dmarc"),
+    spf: pick("spf"),
+    dkim: pick("dkim"),
+    spam_score: Number.isFinite(score) ? score : null,
+    dkim_domains: dkimDomains,
+    spf_envelope: spfEnvelope,
+  };
+}
+
+function orgDomain(emailOrDomain: string): string | null {
+  const host = emailOrDomain.includes("@") ? emailOrDomain.split("@").pop()! : emailOrDomain;
+  return getDomain(host, { allowPrivateDomains: true });
+}
+
+/**
+ * DMARC's own test, applied even when the From domain publishes no policy: the message is from
+ * that domain if DMARC passed, or if DKIM passed for it or SPF passed for an envelope sender on
+ * it (organizational-domain alignment). A DMARC result other than pass or none is never verified.
+ */
+export function isVerified(auth: AuthVerdict, fromEmail: string, envelopeFrom: string): boolean {
+  if (auth.dmarc === "pass") return true;
+  if (auth.dmarc && auth.dmarc !== "none") return false;
+  const org = orgDomain(fromEmail);
+  if (!org) return false;
+  const dkimAligned = auth.dkim_domains.some((d) => orgDomain(d) === org);
+  const spfAligned = auth.spf_envelope === "pass" && orgDomain(envelopeFrom) === org;
+  return dkimAligned || spfAligned;
 }
 
 async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string, boxes: Mailbox[], env: Env): Promise<void> {
@@ -76,7 +120,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const findEarlier = () =>
     messageId
       ? env.DB.prepare(
-          `SELECT m.thread_id, t.folder, m.from_email, m.auth, t.message_count FROM messages m
+          `SELECT m.id AS message_id, m.thread_id, t.folder, m.from_email, m.auth, t.message_count FROM messages m
            JOIN threads t ON t.id = m.thread_id WHERE m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
         )
           .bind(messageId)
@@ -91,7 +135,11 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const auth = authVerdict(parsed.headers);
   // The From header is only as good as DMARC: a failing message can't ride on an approval.
   // Anything but a clear pass or none (no policy published) is untrusted: fail, temperror, permerror, junk.
-  const spoofable = !!auth?.dmarc && !["pass", "none"].includes(auth.dmarc);
+  if (auth) auth.verified = isVerified(auth, from.email, envelopeFrom);
+  // Unverified mail (forged, or from a domain with no DMARC policy and no aligned DKIM/SPF) can't
+  // ride on an approval, join a thread, or lift one. Without Cloudflare's verdict (local dev) the
+  // message is taken as it comes.
+  const spoofable = !!auth && !auth.verified;
 
   const ownAddress = !!findMailbox(boxes, from.email);
   let status = ownAddress ? "approved" : await senderStatus(env, from.email);
@@ -113,13 +161,23 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
           : "screener";
   // Already stored. Returns true when this copy should be stored after all.
   const absorbDuplicate = async (stored: StoredCopy): Promise<boolean> => {
-    const storedDmarc = stored.auth ? (JSON.parse(stored.auth) as AuthVerdict).dmarc : null;
-    const storedUntrusted = !!storedDmarc && !["pass", "none"].includes(storedDmarc);
+    const storedAuth = stored.auth ? (JSON.parse(stored.auth) as AuthVerdict) : null;
+    const storedUntrusted = storedAuth
+      ? storedAuth.verified === undefined
+        ? !!storedAuth.dmarc && !["pass", "none"].includes(storedAuth.dmarc)
+        : !storedAuth.verified
+      : false;
     // A copy claiming the same sender that failed DMARC got here first (say, forged from a list
     // copy) and this one passes: the forgery is alone in its thread (untrusted mail never joins
     // one), so replace it. A different sender reusing the Message-ID never replaces anything.
-    if (storedUntrusted && !spoofable && stored.message_count === 1 && stored.from_email === from.email) {
-      await deleteThread(env, stored.thread_id);
+    if (storedUntrusted && !spoofable && stored.from_email === from.email) {
+      if (stored.message_count === 1) {
+        await deleteThread(env, stored.thread_id);
+      } else {
+        // The forgery already has replies: keep it (flagged) where it is, but it stops claiming
+        // the Message-ID, so the genuine copy is stored and threads normally.
+        await env.DB.prepare("UPDATE messages SET message_id = NULL WHERE id = ?").bind(stored.message_id).run();
+      }
       return true;
     }
     // The same sender's more trusted copy (to a direct mailbox, or passing DMARC while approved)
@@ -211,7 +269,11 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
       .bind(stored.threadId)
       .run();
   } else if (nowStatus === "approved" && !spoofable) {
-    await env.DB.prepare("UPDATE threads SET folder = 'inbox' WHERE id = ? AND folder = 'screener' AND sender_email = ?")
+    // Never carries unverified mail along: a thread holding a forged copy stays for you to judge.
+    await env.DB.prepare(
+      `UPDATE threads SET folder = 'inbox' WHERE id = ? AND folder = 'screener' AND sender_email = ?
+         AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = threads.id AND json_extract(auth, '$.verified') = 0)`,
+    )
       .bind(stored.threadId, from.email)
       .run();
   }

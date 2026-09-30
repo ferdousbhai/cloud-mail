@@ -87,7 +87,7 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
             if m.outgoing { dim("  (sent)") } else { String::new() }
         ));
         if m.dmarc_failed() {
-            out.push_str("⚠ sender not verified (DMARC did not pass): the From address may be forged\n");
+            out.push_str("⚠ sender not verified (its domain didn't authenticate this message): the From address may be forged\n");
         }
         let to = m.to.iter().map(|a| a.formatted()).collect::<Vec<_>>().join(", ");
         out.push_str(&dim(&clean_line(&format!("to {to}"))));

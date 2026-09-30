@@ -20,15 +20,19 @@ you start is created in `archive` until someone replies).
 
 Senders are screened by lowercase address, only on mailboxes configured with `screen: true`; mail to
 direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight to `inbox`.
+A message is **verified** when its From domain authenticated it: DMARC passed, or (the domain publishes no
+DMARC policy) DKIM passed for that organizational domain or SPF passed for an envelope sender on it. A
+DMARC result other than pass or none is never verified. Unverified mail can't use an approval.
 A reply only joins an existing thread (by In-Reply-To/References) when its sender is trusted (approved,
-or anyone not blocked on a direct mailbox, and not failing DMARC) and the thread is either their own or
+or anyone not blocked on a direct mailbox, and verified) and the thread is either their own or
 already in your Inbox/Archive. A sender still in the Screener keeps adding to their own Screener thread.
 Anything else starts a new thread, so no mail hides inside another sender's Screener or Blocked thread.
 A message that arrives more than once (one copy per recipient mailbox, or directly and via a list) is
 stored once. If a later copy would have gone to the Inbox while the stored one waits in the Screener,
-the thread moves to the Inbox, provided neither copy failed DMARC and the later copy is from the same
-sender or from an approved one (a list that rewrote From). A later copy from the same sender that passes
-DMARC replaces a stored copy that failed it; a different sender reusing a Message-ID never replaces one. Blocked
+the thread moves to the Inbox, provided both copies are verified and the later copy is from the same
+sender or from an approved one (a list that rewrote From). A later verified copy from the same sender
+replaces a stored unverified one (if the unverified copy already has replies, it stays in its thread,
+flagged, and gives up the Message-ID); a different sender reusing a Message-ID never replaces one. Blocked
 senders are blocked everywhere. Replying to / emailing someone approves them.
 
 ## Types
@@ -64,11 +68,13 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
   "text": "plain text body or null",
   "html": "html body or null (cid: images already inlined as data: URIs). Untrusted: render without scripts or remote loads.",
   "message_id": "<abc@example.com>",
-  // Cloudflare MX verdicts for incoming mail, null for sent mail. When dmarc is anything but "pass" or
-  // "none", the From header can't be trusted: the message never joins an existing thread; on a screened
-  // mailbox an approval doesn't apply and it goes to the Screener; on a direct mailbox it still reaches
-  // the Inbox (clients show a warning); mail forged as one of your own addresses goes to `blocked`.
-  "auth": { "dmarc": "pass", "spf": "pass", "dkim": "pass", "spam_score": 0 },
+  // Cloudflare MX verdicts for incoming mail, null for sent mail (and absent without Cloudflare's
+  // headers). `verified` is false when the From domain didn't authenticate the message: then it never
+  // joins an existing thread; on a screened mailbox an approval doesn't apply and it goes to the
+  // Screener; on a direct mailbox it still reaches the Inbox (clients show a warning); mail claiming one
+  // of your own addresses goes to `blocked`.
+  "auth": { "dmarc": "none", "spf": "pass", "dkim": "pass", "spam_score": 0,
+            "dkim_domains": ["example.com"], "spf_envelope": "pass", "verified": true },
   "attachments": [{ "id": "a_…", "filename": "invoice.pdf", "mime_type": "application/pdf", "size": 12345, "inline": false }]
 }
 
