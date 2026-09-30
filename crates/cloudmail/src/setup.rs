@@ -68,12 +68,15 @@ pub fn parse_worker_name(jsonc: &str) -> Option<String> {
 }
 
 pub fn parse_d1_list(json_text: &str, name: &str) -> Option<String> {
-    let start = json_text.find('[')?;
-    let v: Value = serde_json::from_str(&json_text[start..]).ok()?;
-    v.as_array()?
-        .iter()
-        .find(|d| d["name"] == name)
-        .and_then(|d| d["uuid"].as_str().map(str::to_string))
+    // Wrangler may print warnings around the JSON, and they contain brackets too
+    // ("▲ [WARNING] …"), so take the first `[` that starts a whole JSON array.
+    let list = json_text.match_indices('[').find_map(|(i, _)| {
+        match serde_json::Deserializer::from_str(&json_text[i..]).into_iter::<Value>().next() {
+            Some(Ok(Value::Array(items))) => Some(items),
+            _ => None,
+        }
+    })?;
+    list.iter().find(|d| d["name"] == name).and_then(|d| d["uuid"].as_str().map(str::to_string))
 }
 
 pub fn parse_r2_buckets(output: &str) -> Vec<String> {
@@ -289,6 +292,17 @@ fn resolve_worker_dir_in(flag: Option<&Path>, local: &Path, packaged: &[&Path], 
         .hint("install the cloudmail package, run from a clone (git clone https://github.com/ferdousbhai/cloud-mail), or pass --worker-dir"))
 }
 
+/// Whether node_modules was installed after package.json last changed (a package upgrade
+/// refreshes package.json in the copied worker, so its dependencies must follow).
+fn deps_current(dir: &Path) -> bool {
+    let modified = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(dir.join("node_modules/.package-lock.json")), modified(dir.join("package.json"))) {
+        (Some(installed), Some(manifest)) => installed >= manifest,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 fn copy_tree(from: &Path, to: &Path) -> CliResult<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -296,7 +310,8 @@ fn copy_tree(from: &Path, to: &Path) -> CliResult<()> {
         let target = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
             copy_tree(&entry.path(), &target)?;
-        } else {
+        } else if std::fs::read(&target).ok() != Some(std::fs::read(entry.path())?) {
+            // Unchanged files keep their timestamps, so an upgrade is what triggers a reinstall.
             std::fs::copy(entry.path(), &target)?;
         }
     }
@@ -437,7 +452,7 @@ pub fn run(args: &SetupArgs) -> CliResult {
     let mut w = Wrangler::new(&args.wrangler, dir.clone(), args.dry_run);
 
     // 1. dependencies
-    if dir.join("node_modules").exists() {
+    if deps_current(&dir) {
         w.record("install worker dependencies", "exists", None, None);
     } else {
         w.run_program("install worker dependencies", &["npm", "install"])?;
@@ -608,6 +623,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dependencies_reinstall_when_package_json_is_newer() {
+        let dir = std::env::temp_dir().join(format!("cloudmail-deps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        assert!(!deps_current(&dir), "no install record yet");
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("node_modules/.package-lock.json"), "{}").unwrap();
+        assert!(deps_current(&dir));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("package.json"), "{\"v\":2}").unwrap();
+        assert!(!deps_current(&dir), "an upgraded package.json needs a reinstall");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn d1_list_survives_wrangler_warnings_around_the_json() {
+        let out = "\u{1b}[33m▲ [WARNING]\u{1b}[0m update available\n[{\"uuid\":\"abc\",\"name\":\"cloudmail\"}]\n▲ [WARNING] trailing note\n";
+        assert_eq!(parse_d1_list(out, "cloudmail").as_deref(), Some("abc"));
+        assert_eq!(parse_d1_list(out, "other"), None);
+    }
+
+    #[test]
     fn packaged_worker_is_copied_somewhere_writable_and_refreshed() {
         let tmp = std::env::temp_dir().join(format!("cloudmail-pkg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -700,6 +738,7 @@ mod tests {
     fn dry_run_setup_plans_without_running() {
         let dir = std::env::temp_dir().join(format!("cloudmail-setup-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(dir.join("wrangler.template.jsonc"), "{ \"name\": \"__WORKER_NAME__\" }").unwrap();
         // A fake wrangler that fails every command proves nothing mutating runs in --dry-run.
         let args = SetupArgs {

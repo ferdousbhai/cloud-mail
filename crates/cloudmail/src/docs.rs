@@ -238,7 +238,7 @@ Triage the Screener:
 Read and reply:
 
     cloudmail inbox --unread --json
-    cloudmail thread read <thread-id> --json        # data: {thread, messages: [{id, from, to, text, html, auth, attachments}]}
+    cloudmail thread read <thread-id> --json        # data: {thread, messages: [{id, from, to, text, has_html, auth, attachments}]}; add --html for the HTML
     cloudmail reply <thread-id> -m "Thanks, that works." --dry-run --json   # preview the request
     cloudmail reply <thread-id> -m "Thanks, that works."
     cloudmail thread archive <thread-id>

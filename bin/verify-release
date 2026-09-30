@@ -19,6 +19,8 @@ docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "
   cloudmail --version
   cmail --version >/dev/null
   test -x /usr/bin/cloudmail-gtk
-  test -f /usr/share/cloudmail/worker/wrangler.template.jsonc
+  for f in wrangler.template.jsonc package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
+    test -f /usr/share/cloudmail/worker/\$f || { echo \"the package is missing worker/\$f\" >&2; exit 1; }
+  done
   echo \"verified: cloudmail \$installed from the signed repository\"
 "

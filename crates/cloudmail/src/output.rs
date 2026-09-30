@@ -144,7 +144,11 @@ impl Response {
             Mode::Count => self.count().to_string(),
             Mode::Ids => match &self.ids {
                 Some(ids) => ids.join("\n"),
-                None => return Err(CliError::usage("--ids-only is not supported by this command")),
+                // The command has already run (it may have changed something), so say so rather than fail.
+                None => {
+                    eprintln!("note: this command has no IDs to list; printing its result instead");
+                    pretty(&self.data)
+                }
             },
             Mode::Human => {
                 let mut out = if self.human.trim().is_empty() { self.summary.clone() } else { self.human.clone() };

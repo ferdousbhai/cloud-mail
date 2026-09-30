@@ -150,6 +150,13 @@ fn each(_ctx: &Ctx, ids: &[String], verb: &str, f: impl Fn(&str) -> cloudmail_ap
         .chain(failed.iter().map(|(id, e)| format!("  {id}: {e}")))
         .collect::<Vec<_>>()
         .join("\n");
+    // A partial failure exits with the first failure's code; the message says what did succeed.
+    if let Some((_, e)) = failed.first() {
+        let mut err = CliError::from(e.clone());
+        err.message = human.replace('\n', "; ");
+        err.hint = Some(format!("done: {}", if done.is_empty() { "none".to_string() } else { done.join(", ") }));
+        return Err(err);
+    }
     Ok(Response::new(json!({ "done": done, "failed": failures }), summary).human(human).ids(done.clone()))
 }
 
@@ -421,19 +428,43 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
         }
         AttachmentCommand::Save { id, output } => {
             let dl = client.download_attachment(&id).map_err(missing("attachment", &id, "list them with `cloudmail attachment list <thread-id>`"))?;
-            let name = dl.filename.clone().unwrap_or_else(|| format!("{id}.bin"));
-            let name = Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
+            let name = safe_attachment_name(dl.filename.as_deref(), &id);
             let size = dl.bytes.len();
             if output.as_deref().is_some_and(|p| p.as_os_str() == "-") {
                 std::io::stdout().write_all(&dl.bytes)?;
                 return Ok(Response::silent());
             }
+            // A name chosen by the sender never replaces an existing file; an explicit -o path may.
+            let explicit_file = output.as_ref().is_some_and(|p| !(p.is_dir() || p.to_string_lossy().ends_with('/')));
             let path = target_path(output, &name);
+            let path = if explicit_file { path } else { unused_path(path) };
             std::fs::write(&path, &dl.bytes).map_err(|e| CliError::generic(format!("could not write {}: {e}", path.display())))?;
             let summary = format!("Saved {} ({})", path.display(), cloudmail_api::text::human_size(size as i64));
             Ok(Response::new(json!({ "id": id, "path": path, "size": size, "content_type": dl.content_type }), summary))
         }
     }
+}
+
+/// The sender's filename, reduced to a plain, visible file name.
+fn safe_attachment_name(filename: Option<&str>, id: &str) -> String {
+    let base = filename
+        .and_then(|n| Path::new(n).file_name())
+        .map(|n| n.to_string_lossy().trim_start_matches('.').trim().to_string())
+        .unwrap_or_default();
+    if base.is_empty() { format!("{id}.bin") } else { base }
+}
+
+/// `path`, or `name (1).ext`, `name (2).ext`, … when something is already there.
+fn unused_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (1..)
+        .map(|i| path.with_file_name(format!("{stem} ({i}){ext}")))
+        .find(|p| !p.exists())
+        .expect("an unused name exists")
 }
 
 fn target_path(output: Option<PathBuf>, name: &str) -> PathBuf {
@@ -464,13 +495,34 @@ pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
 pub fn watch(ctx: &Ctx, a: &WatchArgs) -> CliResult {
     let client = ctx.client()?;
     let folder = a.folder.as_str();
-    let fetch = |since: Option<i64>, limit: u32| {
-        client.list_threads(&ThreadQuery { folder: folder.into(), since, limit, ..Default::default() })
+    let fetch = |since: Option<i64>, before: Option<i64>, limit: u32| {
+        client.list_threads(&ThreadQuery { folder: folder.into(), since, before, limit, ..Default::default() })
+    };
+    // Everything that changed after `since`, paging back so a burst larger than one page isn't lost.
+    let changes_since = |since: i64| -> cloudmail_api::Result<Vec<ThreadSummary>> {
+        const PAGE: u32 = 100;
+        let mut all: Vec<ThreadSummary> = Vec::new();
+        let mut before: Option<i64> = None;
+        loop {
+            let page = fetch(Some(since), before, PAGE)?;
+            let full = page.len() == PAGE as usize;
+            // `before` is exclusive, so step back to just past the oldest one seen; ids dedupe the overlap.
+            let next = page.iter().map(|t| t.last_at).min().map(|oldest| oldest + 1);
+            for t in page {
+                if !all.iter().any(|x| x.id == t.id) {
+                    all.push(t);
+                }
+            }
+            match next {
+                Some(n) if full && before.is_none_or(|b| n < b) => before = Some(n),
+                _ => return Ok(all),
+            }
+        }
     };
     // Start from the newest activity the worker knows about, so clock skew can't drop or repeat mail.
     let mut since = match a.since {
         Some(s) => s,
-        None => fetch(None, 1)?.first().map(|t| t.last_at).unwrap_or(0),
+        None => fetch(None, None, 1)?.first().map(|t| t.last_at).unwrap_or(0),
     };
     let machine = ctx.mode.is_machine();
     if !machine {
@@ -479,7 +531,7 @@ pub fn watch(ctx: &Ctx, a: &WatchArgs) -> CliResult {
     let mut polls = 0u64;
     let mut failures = 0u32;
     loop {
-        match fetch(Some(since), 100) {
+        match changes_since(since) {
             Ok(mut threads) => {
                 failures = 0;
                 threads.sort_by_key(|t| t.last_at);
@@ -523,6 +575,20 @@ fn emit(t: &ThreadSummary, machine: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_names_are_plain_and_never_clobber() {
+        assert_eq!(safe_attachment_name(Some(".bashrc"), "a1"), "bashrc");
+        assert_eq!(safe_attachment_name(Some("../../etc/passwd"), "a1"), "passwd");
+        assert_eq!(safe_attachment_name(Some(".."), "a1"), "a1.bin");
+        assert_eq!(safe_attachment_name(None, "a1"), "a1.bin");
+        let dir = std::env::temp_dir().join(format!("cm-att-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("invoice.pdf"), "old").unwrap();
+        assert_eq!(unused_path(dir.join("invoice.pdf")), dir.join("invoice (1).pdf"));
+        assert_eq!(unused_path(dir.join("new.pdf")), dir.join("new.pdf"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use cloudmail_api::{Address, MessageAuth};
 
     fn addr(name: &str, email: &str) -> Address {

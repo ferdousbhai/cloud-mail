@@ -224,12 +224,15 @@ fn screener_and_bulk_actions() {
     let r = requests(&m).into_iter().find(|r| r.path == "/api/senders/new%40y.com").unwrap();
     assert_eq!(r.body["status"], "approved");
 
+    // A partial failure still archives what it can, but exits with the failure's code.
     let o = cloudmail(&m, &["thread", "archive", "t_1", "t_missing"], None);
-    assert!(o.status.success());
+    assert_eq!(o.status.code(), Some(4));
     let v = json_out(&o);
-    assert_eq!(v["data"]["done"], json!(["t_1"]));
-    assert_eq!(v["data"]["failed"][0]["code"], "not_found");
-    assert_eq!(v["summary"], "1 thread archived, 1 failed");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["error"]["code"], "not_found");
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("1 thread archived, 1 failed"));
+    assert_eq!(v["error"]["hint"], "done: t_1");
+    assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
 
     let o = cloudmail(&m, &["thread", "delete", "t_1"], None);
     assert_eq!(o.status.code(), Some(2));
@@ -289,6 +292,33 @@ fn watch_streams_jsonl_from_newest_activity() {
     let paths: Vec<String> = requests(&m).into_iter().map(|r| r.path).collect();
     assert!(paths.iter().any(|p| p.contains("since=2000")));
     assert!(paths.iter().any(|p| p.contains("since=3000")));
+}
+
+#[test]
+fn watch_pages_back_through_a_burst_larger_than_one_page() {
+    // 250 threads changed after `since`; the worker returns at most `limit` per request, newest first.
+    let m = mock(Box::new(|req: &Req| {
+        let q = |k: &str| {
+            req.path.split(['?', '&']).find_map(|kv| kv.strip_prefix(&format!("{k}="))).and_then(|v| v.parse::<i64>().ok())
+        };
+        let (since, before, limit) = (q("since").unwrap_or(0), q("before").unwrap_or(i64::MAX), q("limit").unwrap_or(50));
+        let threads: Vec<Value> = (1..=250i64)
+            .rev()
+            .filter(|at| *at > since && *at < before)
+            .take(limit as usize)
+            .map(|at| json!({ "id": format!("t_{at}"), "subject": "s", "folder": "inbox", "snippet": "", "from": { "name": "", "email": "a@b.c" }, "to_address": "hi@x.y", "message_count": 1, "unread": true, "has_attachments": false, "last_at": at }))
+            .collect();
+        ok(json!({ "threads": threads }))
+    }));
+    let o = cloudmail(&m, &["watch", "--since", "0", "--interval", "0", "--max-polls", "1"], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let ids: Vec<String> = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["thread"]["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 250);
+    assert_eq!(ids.first().map(String::as_str), Some("t_1"));
+    assert_eq!(ids.last().map(String::as_str), Some("t_250"));
 }
 
 #[test]

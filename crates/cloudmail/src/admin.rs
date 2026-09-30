@@ -113,7 +113,8 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             ]))
         }
         MailboxCommand::Add { email, name, direct, route } => {
-            let (addr, _) = setup::parse_mailbox_spec(&email)?;
+            let (addr, spec_screen) = setup::parse_mailbox_spec(&email)?;
+            let direct = direct || !spec_screen;
             let mailbox = client.put_mailbox(&addr, &MailboxUpdate { name, screen: Some(!direct), position: None })?;
             let mut data = json!({ "mailbox": mailbox });
             let mut summary = format!("Added {addr} ({})", if direct { "direct" } else { "screened" });
@@ -210,7 +211,13 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
 }
 
 fn redact(t: &str) -> String {
-    if t.len() <= 8 { "********".into() } else { format!("{}…{}", &t[..4], &t[t.len() - 4..]) }
+    let chars: Vec<char> = t.chars().collect();
+    if chars.len() <= 8 {
+        return "********".into();
+    }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 pub fn commands() -> Response {
@@ -234,5 +241,6 @@ mod tests {
     fn redacts_tokens() {
         assert_eq!(redact("0123456789abcdef"), "0123…cdef");
         assert_eq!(redact("short"), "********");
+        assert_eq!(redact("aéééééééééz"), "aééé…éééz");
     }
 }
