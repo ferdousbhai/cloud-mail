@@ -81,7 +81,9 @@ pub struct Ui {
     senders: RefCell<Vec<PendingSender>>,
     screener_threads: RefCell<Vec<ThreadSummary>>,
     current: RefCell<Option<ThreadDetail>>,
-    remote_images: Cell<bool>,
+    /// The thread the user allowed remote images for (L). Tied to one thread, so a press while
+    /// another thread is still loading can't unblock that one's trackers.
+    images_for: RefCell<Option<String>>,
     list_gen: Cell<u64>,
     open_gen: Cell<u64>,
     loading_more: Cell<bool>,
@@ -295,7 +297,7 @@ impl Ui {
             senders: RefCell::new(Vec::new()),
             screener_threads: RefCell::new(Vec::new()),
             current: RefCell::new(None),
-            remote_images: Cell::new(false),
+            images_for: RefCell::new(None),
             list_gen: Cell::new(0),
             open_gen: Cell::new(0),
             loading_more: Cell::new(false),
@@ -706,9 +708,6 @@ impl Ui {
             return;
         }
         let Some(client) = self.client.clone() else { return };
-        if !force {
-            self.remote_images.set(false);
-        }
         let id = id.to_string();
         util::run(
             move || client.thread(&id),
@@ -742,14 +741,17 @@ impl Ui {
         let folder = detail.thread.folder.as_str();
         self.archive_btn.set_visible(folder == "inbox");
         self.inbox_btn.set_visible(folder == "archive");
-        let html = html::thread(detail, &self.palette.borrow(), self.remote_images.get());
+        let images = self.images_for.borrow().as_deref() == Some(detail.thread.id.as_str());
+        let html = html::thread(detail, &self.palette.borrow(), images);
         self.webview.load_html(&html, Some("about:blank"));
         self.reader_stack.set_visible_child_name("thread");
     }
 
     fn load_images(&self) {
-        if self.current.borrow().is_some() && !self.remote_images.get() {
-            self.remote_images.set(true);
+        // For the thread on screen, which is the one the user is looking at when they press L.
+        let Some(id) = self.current.borrow().as_ref().map(|d| d.thread.id.clone()) else { return };
+        if self.images_for.borrow().as_deref() != Some(id.as_str()) {
+            *self.images_for.borrow_mut() = Some(id);
             self.render_current();
         }
     }

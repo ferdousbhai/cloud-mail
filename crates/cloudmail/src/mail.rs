@@ -87,7 +87,7 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             }
             let t = &detail.thread;
             let from = t.from.as_ref().map(|a| a.display()).unwrap_or_default();
-            let summary = format!("{} · {} · {}", t.subject, from, plural(detail.messages.len(), "message", "messages"));
+            let summary = render::clean(&format!("{} · {} · {}", t.subject, from, plural(detail.messages.len(), "message", "messages")));
             let mut crumbs = vec![
                 crumb("reply", &format!("cloudmail reply {id} -m <text>"), "Reply to the latest message"),
                 crumb("archive", &format!("cloudmail thread archive {id}"), "Archive this thread"),
@@ -421,11 +421,11 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
                 .messages
                 .iter()
                 .flat_map(|m| m.attachments.iter().filter(|a| !a.inline))
-                .map(|a| format!("{}  {}  {}  {}", a.id, a.filename, a.mime_type, cloudmail_api::text::human_size(a.size)))
+                .map(|a| render::clean(&format!("{}  {}  {}  {}", a.id, a.filename, a.mime_type, cloudmail_api::text::human_size(a.size))).replace(['\n', '\t'], " "))
                 .collect::<Vec<_>>()
                 .join("\n");
             let ids = atts.iter().filter_map(|a| a["attachment"]["id"].as_str().map(str::to_string)).collect::<Vec<_>>();
-            let summary = format!("{} in {}", plural(ids.len(), "attachment", "attachments"), detail.thread.subject);
+            let summary = render::clean(&format!("{} in {}", plural(ids.len(), "attachment", "attachments"), detail.thread.subject));
             Ok(Response::new(atts, summary.clone())
                 .human(if human.is_empty() { summary } else { human })
                 .ids(ids)
@@ -568,8 +568,9 @@ fn emit(t: &ThreadSummary, machine: bool) {
     let line = if machine {
         json!({ "event": "thread", "thread": t }).to_string()
     } else {
-        let from = t.from.as_ref().map(|a| a.display()).unwrap_or_default();
-        format!("{}  {:<8}  {}  {}  {}", cloudmail_api::text::short_time(t.last_at), t.folder, render::truncate(&from, 24), t.subject, output::dim(&t.id))
+        let from = render::clean(&t.from.as_ref().map(|a| a.display()).unwrap_or_default());
+        let line = format!("{}  {:<8}  {}  {}  ", cloudmail_api::text::short_time(t.last_at), t.folder, render::truncate(&from, 24), t.subject);
+        format!("{}{}", render::clean(&line).replace(['\n', '\t'], " "), output::dim(&render::clean(&t.id)))
     };
     let mut out = std::io::stdout().lock();
     if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {

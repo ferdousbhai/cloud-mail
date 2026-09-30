@@ -250,7 +250,7 @@ impl CliError {
 impl From<ApiError> for CliError {
     fn from(e: ApiError) -> Self {
         let (exit, hint) = match e.kind {
-            ErrorKind::Config => (exit::AUTH, Some("run `cloudmail setup`, or `cloudmail config set api_url …` and `cloudmail config set api_token …`")),
+            ErrorKind::Config => (exit::AUTH, Some("run `cloudmail setup`, or `cloudmail config set api-url …` and `cloudmail config set api-token …`")),
             ErrorKind::Unauthorized => (exit::AUTH, Some("the api_token doesn't match the worker's API_TOKEN secret; check `cloudmail config show`")),
             ErrorKind::NotFound => (exit::NOT_FOUND, None),
             ErrorKind::BadRequest => (exit::USAGE, None),

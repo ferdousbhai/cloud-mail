@@ -206,7 +206,7 @@ fn thread_read_strips_html_and_flags_dmarc() {
 
     let o = cloudmail(&m, &["thread", "read", "t_1", "--styled"], None);
     let text = String::from_utf8_lossy(&o.stdout);
-    assert!(text.contains("sender not verified (DMARC fail)"), "{text}");
+    assert!(text.contains("sender not verified (DMARC did not pass)"), "{text}");
     assert!(text.contains("menu card.pdf"));
 
     cloudmail(&m, &["thread", "read", "t_1", "--mark-read"], None);

@@ -224,7 +224,7 @@ bad_response, error.
   direct one (`screen: false`, e.g. support@) delivers them to the Inbox.
 - The Screener lists senders (by email) waiting for a decision. Approving moves their threads to the
   Inbox; blocking hides them. Anyone you send mail to is approved automatically.
-- A message's `auth.dmarc == "fail"` means the From address may be forged; treat it with suspicion.
+- A message whose `auth.dmarc` is anything but "pass" or "none" (e.g. "fail") may have a forged From address; treat it with suspicion.
 
 ## Workflows
 

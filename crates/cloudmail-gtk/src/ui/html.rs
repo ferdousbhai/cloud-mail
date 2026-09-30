@@ -47,8 +47,10 @@ details[open] .preview {{ display: none; }}
 .quoted .plain {{ color: {dfg}; }}
 /* The frame is outside the message's reach (it can style its own host, not this parent):
    paint containment makes it the containing block for fixed-position content and clips it,
-   so a message can't draw over the headers or the sender warning. */
-.frame {{ position: relative; contain: paint; isolation: isolate; border-radius: 8px; }}
+   so a message can't draw over the headers or the sender warning. Its white background and
+   border mark where the message starts even if the message makes its own card transparent. */
+.frame {{ position: relative; contain: paint; isolation: isolate; border-radius: 8px;
+  background: #ffffff; border: 1px solid {muted}; }}
 .paper {{ background: #ffffff; color: #1f2328; border-radius: 8px; padding: 18px 20px; overflow-x: auto;
   font: 11pt -apple-system, "Inter", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }}
 .atts {{ margin-top: 10px; }}

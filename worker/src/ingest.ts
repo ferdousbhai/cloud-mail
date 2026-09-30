@@ -95,9 +95,12 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   // Message-ID would carry a blocked, unscreened or forged sender past the Screener.
   const mayJoinThread = (thread: ThreadRef): boolean => {
     if (status === "blocked" || spoofable) return false;
-    if (!screened || status === "approved") return true;
-    // A sender still waiting in the Screener keeps adding to their own Screener thread.
-    return thread.folder === "screener" && thread.sender_email === from.email;
+    // Your own conversation with them, wherever it is (a pending sender's Screener thread included).
+    if (thread.sender_email === from.email) return true;
+    // Someone else's conversation only once it's yours to read: joining a thread still in the
+    // Screener or in Blocked would hide this mail there, and blocking that sender would take it along.
+    const readable = thread.folder === "inbox" || thread.folder === "archive";
+    return readable && (!screened || status === "approved");
   };
   const existingThreadFolder = (current: Folder): Folder => {
     if (status === "blocked") return current;

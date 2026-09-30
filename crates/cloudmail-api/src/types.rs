@@ -172,7 +172,8 @@ pub struct SendRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SendResponse {
-    /// Absent when the mail went out but couldn't be saved to Sent (see `warning`).
+    /// When the mail went out but couldn't be saved to Sent (see `warning`): the replied-to
+    /// thread, or absent for a new message.
     #[serde(default)]
     pub thread_id: Option<String>,
     pub message: Option<Message>,

@@ -19,9 +19,10 @@ thread moves it back to `inbox`.
 
 Senders are screened by lowercase address, only on mailboxes configured with `screen: true`; mail to
 direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight to `inbox`.
-A reply only joins an existing thread (by In-Reply-To/References) when its sender is trusted: approved
-(or anyone not blocked, on a direct mailbox) and not failing DMARC. A sender still in the Screener keeps
-adding to their own Screener thread. Anyone else starts a new thread. Blocked
+A reply only joins an existing thread (by In-Reply-To/References) when its sender is trusted (approved,
+or anyone not blocked on a direct mailbox, and not failing DMARC) and the thread is either their own or
+already in your Inbox/Archive. A sender still in the Screener keeps adding to their own Screener thread.
+Anything else starts a new thread, so no mail hides inside another sender's Screener or Blocked thread. Blocked
 senders are blocked everywhere. Replying to / emailing someone approves them.
 
 ## Types
@@ -86,7 +87,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | GET | `/api/screener` | | `{ "senders": [PendingSender] }` |
 | POST | `/api/senders/:email` | `{ "status": "approved"\|"blocked" }` | `{ "ok": true, "moved": 2 }` – approved moves their screener threads to inbox; blocked moves them to blocked |
 | GET | `/api/senders` | `?status=approved\|blocked` | `{ "senders": [{ "email", "name", "status", "decided_at" }] }` |
-| POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }`; if the mail was sent but couldn't be saved: `{ "ok": true, "thread_id": null, "message": null, "warning": "…" }` (don't retry) |
+| POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }`; if the mail was sent but couldn't be saved: `{ "ok": true, "thread_id": <the replied-to thread, or null>, "message": null, "warning": "…" }` (don't retry) |
 | GET | `/api/attachments/:id` | | raw bytes with `Content-Type` and `Content-Disposition` |
 | GET | `/api/messages/:id/raw` | | original `.eml` (`message/rfc822`) |
 | GET | `/api/identities` | | `{ "identities": [Address], "default": Address }` – addresses you can send from (= mailboxes) |
