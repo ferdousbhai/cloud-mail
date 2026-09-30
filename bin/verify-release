@@ -16,7 +16,7 @@ docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "
   curl -fsSL '$url' | bash
   installed=\$(pacman -Q cloudmail | cut -d' ' -f2)
   [[ \$installed == $version-* ]] || { echo \"expected cloudmail $version, found \$installed\" >&2; exit 1; }
-  cloudmail --version
+  [[ \$(cloudmail --version) == \"cloudmail $version\" ]] || { echo \"cloudmail --version says \$(cloudmail --version), expected $version\" >&2; exit 1; }
   cmail --version >/dev/null
   test -x /usr/bin/cloudmail-gtk
   for f in wrangler.template.jsonc package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do

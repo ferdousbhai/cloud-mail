@@ -67,7 +67,11 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   // The From header is only as good as DMARC: a failing message can't ride on an approval.
   const spoofable = auth?.dmarc === "fail";
 
-  let status = findMailbox(boxes, from.email) ? "approved" : await senderStatus(env, from.email);
+  const ownAddress = !!findMailbox(boxes, from.email);
+  let status = ownAddress ? "approved" : await senderStatus(env, from.email);
+  // Mail claiming to be from one of your own addresses that fails DMARC is forged: quarantine it
+  // (the Screener lists senders to decide on, and you are not one to decide on).
+  if (ownAddress && spoofable) status = "blocked";
   if (!status && screened) {
     await setSenderStatus(env, from.email, from.name || null, "pending");
     status = "pending";

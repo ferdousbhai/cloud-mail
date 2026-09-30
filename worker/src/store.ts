@@ -98,7 +98,14 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
     puts.push(env.BUCKET.put(key, a.content, { httpMetadata: { contentType: a.mimeType } }));
     return { id: attId, key, a, size: a.content.byteLength };
   });
-  await Promise.all(puts);
+  // If any upload fails, remove the ones that landed: nothing will reference them.
+  const settled = await Promise.allSettled(puts);
+  const rejected = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (rejected) {
+    const written = [rawKey, htmlKey, textKey, ...attachmentRows.map((r) => r.key)].filter((k): k is string => !!k);
+    await env.BUCKET.delete(written).catch(() => {});
+    throw rejected.reason;
+  }
 
   const bodyText = msg.text ?? (msg.html ? htmlToText(msg.html) : "");
   const snippet = makeSnippet(bodyText);

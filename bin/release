@@ -24,7 +24,10 @@ step "Checking the signing key and the $tag release"
 gpg --batch --list-secret-keys "$fingerprint" >/dev/null 2>&1 \
   || { echo "The package-signing key $fingerprint is not in this keyring." >&2; exit 1; }
 gh release view "$tag" --repo "$gh_repo" >/dev/null \
-  || { echo "No GitHub release $tag; tag and publish it first." >&2; exit 1; }
+  || { echo "No GitHub release $tag. Push the tag, then create it as a draft: gh release create $tag --draft --verify-tag" >&2; exit 1; }
+cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+[[ $cargo_version == "$version" ]] \
+  || { echo "Cargo.toml says $cargo_version, not $version; bump it (and the PKGBUILD pkgver) before tagging." >&2; exit 1; }
 bash packaging/repo/test.sh
 
 step "Building cloudmail $version (gpg will ask for the signing key's passphrase)"
