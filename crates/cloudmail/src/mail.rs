@@ -196,14 +196,15 @@ pub fn screener(ctx: &Ctx, cmd: Option<ScreenerCommand>) -> CliResult {
 }
 
 fn decide(client: &cloudmail_api::Client, emails: &[String], status: &str) -> CliResult {
+    // Check every address before deciding any, so a typo late in the list changes nothing.
+    if let Some(bad) = emails.iter().find(|e| !bare_email(e).contains('@')) {
+        return Err(CliError::usage(format!("not an email address: {bad}")));
+    }
     let mut results = Vec::new();
     let mut done = Vec::new();
     let mut moved_total = 0;
     for e in emails {
         let email = bare_email(e);
-        if !email.contains('@') {
-            return Err(CliError::usage(format!("not an email address: {e}")));
-        }
         let moved = client.decide_sender(&email, status)?;
         moved_total += moved;
         results.push(json!({ "email": email, "status": status, "moved": moved }));

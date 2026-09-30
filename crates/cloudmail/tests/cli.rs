@@ -232,6 +232,11 @@ fn screener_and_bulk_actions() {
     let r = requests(&m).into_iter().find(|r| r.path == "/api/senders/new%40y.com").unwrap();
     assert_eq!(r.body["status"], "approved");
 
+    // A bad address anywhere in the list decides nobody.
+    let o = cloudmail(&m, &["screener", "block", "other@y.com", "not-an-address"], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/senders/other%40y.com"));
+
     // A partial failure still archives what it can, but exits with the failure's code.
     let o = cloudmail(&m, &["thread", "archive", "t_1", "t_missing"], None);
     assert_eq!(o.status.code(), Some(4));

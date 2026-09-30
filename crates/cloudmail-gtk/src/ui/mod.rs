@@ -935,7 +935,9 @@ impl Ui {
 
     fn set_unread(self: &Rc<Self>, id: &str, unread: bool) {
         let Some(client) = self.client.clone() else { return };
-        if let Some(i) = self.threads.borrow().iter().position(|t| t.id == id)
+        // The Screener's rows are senders, so only a thread list has a row to restyle.
+        if self.view.get() != View::Screener
+            && let Some(i) = self.threads.borrow().iter().position(|t| t.id == id)
             && let Some(row) = self.list.row_at_index(i as i32) {
                 rows::set_row_unread(&row, unread);
             }
@@ -1018,11 +1020,15 @@ impl Ui {
         ids.default.as_ref().or(ids.identities.first()).map(|a| a.email.clone())
     }
 
+    /// Your mailboxes (lowercased): the addresses the worker lets you send from.
+    fn mailboxes(&self) -> HashSet<String> {
+        let ids = self.identities.borrow();
+        ids.iter().flat_map(|ids| ids.identities.iter().chain(&ids.default)).map(|a| a.email.to_ascii_lowercase()).collect()
+    }
+
+    /// Your mailboxes plus any address this conversation shows as yours.
     fn my_addresses(&self) -> HashSet<String> {
-        let mut mine: HashSet<String> = HashSet::new();
-        if let Some(ids) = self.identities.borrow().as_ref() {
-            mine.extend(ids.identities.iter().chain(&ids.default).map(|a| a.email.to_ascii_lowercase()));
-        }
+        let mut mine = self.mailboxes();
         if let Some(d) = self.current.borrow().as_ref() {
             if let Some(a) = &d.thread.to_address {
                 mine.insert(a.to_ascii_lowercase());
@@ -1052,11 +1058,16 @@ impl Ui {
                 Vec::new()
             };
             let text = msg.plain_text();
+            // Reply from the mailbox the thread came to; an address routed here without a mailbox
+            // can't send, so fall back to one of yours the message was sent to, else the default.
+            let mailboxes = self.mailboxes();
             let from = detail
                 .thread
                 .to_address
-                .clone()
-                .or_else(|| msg.to.iter().map(|a| a.email.clone()).find(|e| mine.contains(&e.to_ascii_lowercase())));
+                .iter()
+                .chain(msg.to.iter().chain(&msg.cc).map(|a| &a.email))
+                .find(|e| mailboxes.contains(&e.to_ascii_lowercase()))
+                .cloned();
             Draft {
                 to: to.join(", "),
                 cc: cc.join(", "),

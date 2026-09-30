@@ -154,8 +154,16 @@ pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
 /// A domain's public MX hosts (DNS over HTTPS); None when the lookup itself failed.
 fn mx_hosts(domain: &str) -> Option<Vec<String>> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(5))).build().into();
-    let url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX");
-    let body: Value = agent.get(&url).header("accept", "application/dns-json").call().ok()?.body_mut().read_json().ok()?;
+    let body: Value = agent
+        .get("https://cloudflare-dns.com/dns-query")
+        .query("name", domain)
+        .query("type", "MX")
+        .header("accept", "application/dns-json")
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
     Some(parse_mx_answer(&body))
 }
 

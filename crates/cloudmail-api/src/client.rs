@@ -272,8 +272,16 @@ impl Client {
 
 /// Extracts the filename from a Content-Disposition header (RFC 5987 `filename*` preferred).
 fn filename_from_disposition(value: &str) -> Option<String> {
+    // Parameters are separated by `;`, except inside a quoted value (`filename="a;b.pdf"`).
+    let mut quoted = false;
+    let parts = value.split(|c| {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        c == ';' && !quoted
+    });
     let mut plain = None;
-    for part in value.split(';').map(str::trim) {
+    for part in parts.map(str::trim) {
         if let Some(v) = part.strip_prefix("filename*=") {
             let encoded = v.split_once("''").map(|(_, rest)| rest).unwrap_or(v);
             if let Ok(decoded) = urlencoding::decode(encoded.trim_matches('"')) {
@@ -297,6 +305,7 @@ mod tests {
             Some("menu 2.pdf")
         );
         assert_eq!(filename_from_disposition("attachment; filename=\"m_1.eml\"").as_deref(), Some("m_1.eml"));
+        assert_eq!(filename_from_disposition("attachment; filename=\"a; b.pdf\"").as_deref(), Some("a; b.pdf"));
         assert_eq!(filename_from_disposition("inline"), None);
     }
 }

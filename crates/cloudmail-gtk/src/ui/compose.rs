@@ -171,8 +171,9 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
             }
         }
     }
-    if let Some(w) = wanted
-        && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w)) {
+    // Before your mailboxes load, show the wanted address alone; after, only mailboxes can send.
+    if let Some(w) = wanted.filter(|w| !w.is_empty())
+        && options.is_empty() {
             let name = ids.as_ref().and_then(|i| i.default.as_ref()).and_then(|d| d.name.clone());
             options.push(Address { name, email: w.to_string() });
         }

@@ -1,4 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn empty_as_none<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.is_empty()))
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct Address {
@@ -31,6 +35,8 @@ pub struct ThreadSummary {
     pub folder: String,
     pub snippet: String,
     pub from: Option<Address>,
+    /// The mailbox the thread came to; the worker sends "" when it doesn't know, read as None.
+    #[serde(deserialize_with = "empty_as_none")]
     pub to_address: Option<String>,
     pub message_count: i64,
     pub unread: bool,
@@ -237,4 +243,19 @@ pub struct Download {
     pub bytes: Vec<u8>,
     pub content_type: Option<String>,
     pub filename: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_to_address_reads_as_none() {
+        let t: ThreadSummary = serde_json::from_str(r#"{"id":"t_1","to_address":""}"#).unwrap();
+        assert_eq!(t.to_address, None);
+        let t: ThreadSummary = serde_json::from_str(r#"{"id":"t_1","to_address":"hi@example.com"}"#).unwrap();
+        assert_eq!(t.to_address.as_deref(), Some("hi@example.com"));
+        let t: ThreadSummary = serde_json::from_str(r#"{"id":"t_1"}"#).unwrap();
+        assert_eq!(t.to_address, None);
+    }
 }

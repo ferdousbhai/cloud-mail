@@ -85,12 +85,8 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         rcpt.push_str(&format!(" · cc {}", addr_list(&m.cc)));
         rcpt_full.push_str(&format!("\nCc: {}", format_addresses(&m.cc)));
     }
-    let preview = m
-        .text
-        .as_deref()
-        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-        .unwrap_or_default();
-    let preview: String = preview.chars().take(160).collect();
+    // HTML-only mail (most newsletters) previews its text rendering.
+    let preview: String = m.plain_text().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
     let header = format!(
         r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
         name = escape_html(&m.from.display()),
