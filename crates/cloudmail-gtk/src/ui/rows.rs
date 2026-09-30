@@ -3,10 +3,9 @@ use gtk::{pango, prelude::*};
 use crate::api::{PendingSender, ThreadSummary};
 use crate::util::{short_time, subject_or_placeholder};
 
-/// A small tag naming the linked account a row came from ("HEY"); nothing for your worker's mail.
+/// A small tag naming the linked account a row came from ("HEY", "Gmail"); nothing for your worker's mail.
 fn account_badge(account: Option<&str>) -> Option<gtk::Label> {
-    let account = account?;
-    let text = if account == "hey" { "HEY".to_string() } else { account.to_string() };
+    let text = crate::api::provider::account_label(account?);
     let l = gtk::Label::new(Some(&text));
     l.add_css_class("account-badge");
     l.set_tooltip_text(Some(&format!("In your linked {text} account")));

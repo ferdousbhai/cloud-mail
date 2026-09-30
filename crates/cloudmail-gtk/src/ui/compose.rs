@@ -176,7 +176,7 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
     for (account, a) in ui.account_identities.borrow().iter() {
         if !options.iter().any(|o| o.email.eq_ignore_ascii_case(&a.email)) {
             options.push(a.clone());
-            via.push(Some(if account == "hey" { "HEY".into() } else { account.clone() }));
+            via.push(Some(crate::api::provider::account_label(account)));
         }
     }
     // A reply in a linked account always goes out through it, from its address, even before
@@ -185,7 +185,7 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
     if let (Some(account), Some(w)) = (account_reply, wanted.filter(|w| !w.is_empty()))
         && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w)) {
             options.push(Address { name: None, email: w.to_string() });
-            via.push(Some(if account == "hey" { "HEY".into() } else { account }));
+            via.push(Some(crate::api::provider::account_label(&account)));
         }
     // Before your mailboxes load, show the wanted address alone; after, only mailboxes can send.
     if let Some(w) = wanted.filter(|w| !w.is_empty())

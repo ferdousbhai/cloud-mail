@@ -13,9 +13,8 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         let open = i == last || (i + 1 == last && detail.messages.len() <= 3);
         body.push_str(&message(m, open, &mut blocked_remote));
     }
-    let badge = match detail.thread.account.as_deref() {
-        Some("hey") => r#" <span class="acct" title="In your linked HEY account">HEY</span>"#.to_string(),
-        Some(other) => format!(r#" <span class="acct">{}</span>"#, escape_html(other)),
+    let badge = match detail.thread.account.as_deref().map(crate::api::provider::account_label) {
+        Some(label) => format!(r#" <span class="acct" title="In your linked {0} account">{0}</span>"#, escape_html(&label)),
         None => String::new(),
     };
     let heading = format!(r#"<h1 class="subject">{}{badge}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));

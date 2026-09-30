@@ -126,7 +126,7 @@ pub struct Ui {
     parts: RefCell<Parts>,
     /// The accounts' part of each view as last seen, shown at once while it refreshes.
     account_cache: RefCell<HashMap<View, Part>>,
-    /// Waiting HEY senders and unread HEY Imbox threads, for the sidebar badges.
+    /// Waiting senders in the accounts' Screeners and unread threads in their Inboxes, for the sidebar badges.
     account_counts: Cell<(i64, i64)>,
     warning: gtk::Label,
     /// Open compose windows, so closing the main window goes through their discard prompts.
@@ -217,12 +217,14 @@ impl Ui {
         let mut wide_only: Vec<gtk::Widget> = Vec::new();
         let mail = config.as_ref().ok().map(Mail::from_config);
         let mut nav_views = View::NAV.to_vec();
-        if mail.as_ref().is_some_and(|m| m.has_accounts()) {
+        // HEY's other boxes, under their own small heading; an account without extra folders
+        // (Gmail) just merges into the four above.
+        let boxes_from = mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.has_folder(View::Feed.folder())).map(|p| p.label().to_string()));
+        if let Some(heading) = boxes_from {
             nav_views.extend(View::ACCOUNT_NAV);
-            // The HEY boxes sit under their own small heading.
-            nav.set_header_func(|row, _| {
+            nav.set_header_func(move |row, _| {
                 if row.index() == View::NAV.len() as i32 {
-                    let heading = gtk::Label::builder().label("HEY").xalign(0.0).build();
+                    let heading = gtk::Label::builder().label(&heading).xalign(0.0).build();
                     heading.add_css_class("nav-heading");
                     row.set_header(Some(&heading));
                 } else {
@@ -680,8 +682,6 @@ impl Ui {
                             let (threads, warnings, _) = mail.accounts_search(&query, PAGE);
                             (threads, Vec::new(), warnings)
                         }
-                        // HEY has no Sent box.
-                        View::Sent => (Vec::new(), Vec::new(), Vec::new()),
                         _ => {
                             let (threads, warnings, _) = mail.accounts_list(&q);
                             (threads, Vec::new(), warnings)
@@ -1087,14 +1087,15 @@ impl Ui {
             let Some(idx) = idx else { return };
             (idx, threads[idx].id.clone(), threads[idx].folder.clone())
         };
-        // Only between Inbox and Archive (for HEY: its boxes and Paper Trail), like the toolbar
+        // Only between Inbox and Archive (for HEY: its boxes and Paper Trail; Gmail's are labels), like the toolbar
         // buttons: a Screener thread (reachable from Search) is moved by screening its sender.
         let already = if folder == "archive" { is_archived(&current_folder) } else { current_folder == folder };
         if already || !is_movable(&current_folder) {
             return;
         }
         let leaves_view = matches!((view, folder), (View::Inbox, "archive") | (View::Archive, "inbox")) || view.account_only();
-        let new_folder = if folder == "archive" && mail.account_for(&id).is_some() { "paper_trail" } else { folder };
+        let new_folder = if folder == "archive" { mail.provider(&id).archive_folder().to_string() } else { folder.to_string() };
+        let new_folder = new_folder.as_str();
         if leaves_view {
             self.threads.borrow_mut().remove(idx);
             // So a late answer from the other source can't put it back.
@@ -1133,7 +1134,7 @@ impl Ui {
 
     fn set_unread(self: &Rc<Self>, id: &str, unread: bool) {
         let Some(mail) = self.mail.clone() else { return };
-        // HEY's Imbox unread count (in the Inbox badge) otherwise only catches up at the next poll.
+        // A linked Inbox's unread count (in the Inbox badge) otherwise only catches up at the next poll.
         let before = self.threads.borrow().iter().find(|t| t.id == id).map(|t| (t.unread, t.folder == "inbox"));
         if mail.account_for(id).is_some() && before.is_some_and(|(was, imbox)| imbox && was != unread) {
             let (screener, n) = self.account_counts.get();
@@ -1373,9 +1374,9 @@ impl Ui {
                     ui.badges[i].set_label(&n.to_string());
                     ui.badges[i].set_visible(n > 0);
                 };
-                let (hey_screener, hey_unread) = ui.account_counts.get();
-                let unread = c.inbox_unread + hey_unread;
-                set(0, c.screener + hey_screener);
+                let (account_screener, account_unread) = ui.account_counts.get();
+                let unread = c.inbox_unread + account_unread;
+                set(0, c.screener + account_screener);
                 set(1, unread);
                 let title = if unread > 0 { format!("Cloudmail ({unread})") } else { "Cloudmail".into() };
                 ui.window.set_title(Some(&title));
