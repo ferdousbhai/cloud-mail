@@ -73,6 +73,8 @@ pub struct Ui {
     pub window: gtk::ApplicationWindow,
     pub client: Option<Client>,
     pub identities: RefCell<Option<Identities>>,
+    /// Open compose windows, so closing the main window goes through their discard prompts.
+    pub composes: RefCell<Vec<glib::WeakRef<gtk::Window>>>,
     palette: RefCell<Palette>,
     view: Cell<View>,
     before_search: Cell<View>,
@@ -289,6 +291,7 @@ impl Ui {
             window,
             client: config.as_ref().ok().map(Client::new),
             identities: RefCell::new(None),
+            composes: RefCell::new(Vec::new()),
             palette: RefCell::new(palette),
             view: Cell::new(View::Inbox),
             before_search: Cell::new(View::Inbox),
@@ -368,6 +371,16 @@ impl Ui {
             }
         }));
 
+        // Quitting would take open drafts with it. Close each through its own close-request:
+        // untouched ones just close, edited ones ask, and the main window waits for them.
+        ui.window.connect_close_request(clone!(#[weak] ui, #[upgrade_or] glib::Propagation::Proceed, move |_| {
+            let open: Vec<gtk::Window> = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).collect();
+            for w in &open {
+                w.close();
+            }
+            let still_open = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).any(|w| w.is_visible());
+            if still_open { glib::Propagation::Stop } else { glib::Propagation::Proceed }
+        }));
         compose_btn.connect_clicked(clone!(#[weak] ui, move |_| compose::open(&ui, Draft::default())));
         reply_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(false)));
         reply_all_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(true)));
@@ -1233,7 +1246,7 @@ fn latest_thread_for<'a>(threads: &'a [ThreadSummary], email: &str) -> Option<&'
 }
 
 fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
-    let clean: String = filename.chars().map(|c| if c == '/' || c == '\0' { '_' } else { c }).collect();
+    let clean: String = filename.chars().map(|c| if c == '/' || c.is_control() { '_' } else { c }).collect();
     let clean = if clean.trim().is_empty() || clean == "." || clean == ".." { "attachment".to_string() } else { clean };
     let candidate = dir.join(&clean);
     if !candidate.exists() {

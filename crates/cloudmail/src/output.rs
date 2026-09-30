@@ -152,11 +152,12 @@ impl Response {
             },
             Mode::Human => {
                 let mut out = if self.human.trim().is_empty() { self.summary.clone() } else { self.human.clone() };
+                out = terminal_safe(&out);
                 if !self.breadcrumbs.is_empty() && stdout_is_tty() {
                     out.push_str("\n\n");
                     out.push_str(&dim("Next:"));
                     for b in &self.breadcrumbs {
-                        out.push_str(&format!("\n  {}  {}", b.command, dim(&b.description)));
+                        out.push_str(&format!("\n  {}  {}", terminal_safe(&b.command), dim(&terminal_safe(&b.description))));
                     }
                 }
                 out
@@ -165,6 +166,26 @@ impl Response {
         write_line(&text);
         Ok(())
     }
+}
+
+/// Text for a terminal. Anything from the server (subjects, names, filenames, error messages)
+/// can contain escape sequences that move the cursor, rewrite earlier lines such as the sender
+/// warning, set the clipboard or the title. Only this program's own styling (dim, bold, reset)
+/// survives; every other control character except newline and tab becomes `?`.
+pub fn terminal_safe(s: &str) -> String {
+    const STYLE: [&str; 3] = ["\x1b[2m", "\x1b[1m", "\x1b[0m"];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
+        if let Some(code) = STYLE.iter().find(|code| rest.starts_with(**code)) {
+            out.push_str(code);
+            rest = &rest[code.len()..];
+            continue;
+        }
+        out.push(if c.is_control() && c != '\n' && c != '\t' { '?' } else { c });
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 pub fn pretty(v: &Value) -> String {
@@ -242,7 +263,7 @@ impl CliError {
             if let Some(h) = &self.hint {
                 msg.push_str(&format!("\nhint: {h}"));
             }
-            eprintln!("{msg}");
+            eprintln!("{}", terminal_safe(&msg));
         }
     }
 }
@@ -274,6 +295,16 @@ pub type CliResult<T = Response> = Result<T, CliError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_safe_keeps_our_styling_only() {
+        let styled = format!("{} and {}", dim("d"), bold("b"));
+        let evil = "x\x1b]0;PWNED\x07\x1b[2A\x1b[2K\u{9b}31m\nnext";
+        let out = terminal_safe(&format!("{styled} {evil}"));
+        assert!(out.starts_with(&styled), "{out:?}");
+        assert!(!out.contains("\x1b]") && !out.contains("\x1b[2A") && !out.contains('\x07') && !out.contains('\u{9b}'), "{out:?}");
+        assert!(out.ends_with("\nnext"));
+    }
 
     #[test]
     fn envelope_shape() {

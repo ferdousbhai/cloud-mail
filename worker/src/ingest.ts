@@ -26,7 +26,11 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   } catch (err) {
     // Never bounce mail because of a storage bug; keep the original for reprocessing.
     console.error("ingest failed", err);
-    await env.BUCKET.put(`failed/${Date.now()}-${crypto.randomUUID()}.eml`, raw);
+    try {
+      await env.BUCKET.put(`failed/${Date.now()}-${crypto.randomUUID()}.eml`, raw);
+    } catch (putErr) {
+      console.error("could not keep the failed message either", putErr);
+    }
   }
 }
 
@@ -59,10 +63,15 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const parsed = await PostalMime.parse(raw, { attachmentEncoding: "arraybuffer" });
   const messageId = normalizeMessageId(parsed.messageId);
 
-  if (messageId) {
-    const dup = await env.DB.prepare("SELECT 1 FROM messages WHERE message_id = ? AND outgoing = 0").bind(messageId).first();
-    if (dup) return;
-  }
+  // One message can arrive several times: once per recipient mailbox, or directly and through a list.
+  const earlier = messageId
+    ? await env.DB.prepare(
+        `SELECT m.thread_id, t.folder FROM messages m JOIN threads t ON t.id = m.thread_id
+         WHERE m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
+      )
+        .bind(messageId)
+        .first<{ thread_id: string; folder: Folder }>()
+    : null;
 
   const from = flattenAddresses(parsed.from)[0] ?? { name: "", email: envelopeFrom };
   // Unknown recipients (e.g. a routing rule added without a mailbox entry) are screened.
@@ -91,6 +100,15 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
         : status === "approved" && !spoofable
           ? "inbox"
           : "screener";
+  if (earlier) {
+    // Already stored. A copy that is more trusted than the one that got here first (sent to a
+    // direct mailbox, or passing DMARC from an approved sender) lifts it out of the Screener.
+    if (earlier.folder === "screener" && newThreadFolder === "inbox") {
+      await env.DB.prepare("UPDATE threads SET folder = 'inbox', unread = 1 WHERE id = ?").bind(earlier.thread_id).run();
+    }
+    return;
+  }
+
   // Only a sender you'd let in anyway may join an existing conversation. Otherwise quoting a known
   // Message-ID would carry a blocked, unscreened or forged sender past the Screener.
   const mayJoinThread = (thread: ThreadRef): boolean => {

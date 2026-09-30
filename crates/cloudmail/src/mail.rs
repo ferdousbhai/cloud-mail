@@ -454,7 +454,8 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
 fn safe_attachment_name(filename: Option<&str>, id: &str) -> String {
     let base = filename
         .and_then(|n| Path::new(n).file_name())
-        .map(|n| n.to_string_lossy().trim_start_matches('.').trim().to_string())
+        .map(|n| n.to_string_lossy().chars().map(|c| if c.is_control() { '_' } else { c }).collect::<String>())
+        .map(|n| n.trim_start_matches('.').trim().to_string())
         .unwrap_or_default();
     if base.is_empty() { format!("{id}.bin") } else { base }
 }
@@ -551,7 +552,7 @@ pub fn watch(ctx: &Ctx, a: &WatchArgs) -> CliResult {
                 if machine {
                     println!("{}", json!({ "event": "error", "code": e.kind.code(), "message": e.message }));
                 } else {
-                    eprintln!("warning: {e} (retrying)");
+                    eprintln!("{}", output::terminal_safe(&format!("warning: {e} (retrying)")));
                 }
             }
         }
@@ -588,6 +589,7 @@ mod tests {
         assert_eq!(safe_attachment_name(Some("../../etc/passwd"), "a1"), "passwd");
         assert_eq!(safe_attachment_name(Some(".."), "a1"), "a1.bin");
         assert_eq!(safe_attachment_name(None, "a1"), "a1.bin");
+        assert_eq!(safe_attachment_name(Some("x\x1b]0;T\x07.pdf"), "a1"), "x_]0;T_.pdf");
         let dir = std::env::temp_dir().join(format!("cm-att-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("invoice.pdf"), "old").unwrap();

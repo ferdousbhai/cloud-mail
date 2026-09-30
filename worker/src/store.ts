@@ -211,13 +211,22 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
 export async function setSenderStatus(env: Env, email: string, name: string | null, status: SenderStatus): Promise<number> {
   const now = Date.now();
   const [, moved] = await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO senders (email, name, status, decided_at, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (email) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at,
-         name = COALESCE(senders.name, excluded.name)`,
-    ).bind(email, name, status, status === "pending" ? null : now, now),
+    status === "pending"
+      ? // First sight of a sender never overrides a decision made meanwhile (or by a racing delivery).
+        env.DB.prepare(
+          "INSERT INTO senders (email, name, status, decided_at, created_at) VALUES (?, ?, 'pending', NULL, ?) ON CONFLICT (email) DO NOTHING",
+        ).bind(email, name, now)
+      : env.DB.prepare(
+          `INSERT INTO senders (email, name, status, decided_at, created_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (email) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at,
+             name = COALESCE(senders.name, excluded.name)`,
+        ).bind(email, name, status, now, now),
     status === "approved"
-      ? env.DB.prepare("UPDATE threads SET folder = 'inbox' WHERE sender_email = ? AND folder IN ('screener', 'blocked')").bind(email)
+      ? // Mail back from Blocked was never seen (blocking marks it read), so it comes back unread.
+        env.DB.prepare(
+          `UPDATE threads SET unread = CASE WHEN folder = 'blocked' THEN 1 ELSE unread END, folder = 'inbox'
+           WHERE sender_email = ? AND folder IN ('screener', 'blocked')`,
+        ).bind(email)
       : status === "blocked"
         ? env.DB.prepare("UPDATE threads SET folder = 'blocked', unread = 0 WHERE sender_email = ? AND folder = 'screener'").bind(email)
         : env.DB.prepare("SELECT 1"),

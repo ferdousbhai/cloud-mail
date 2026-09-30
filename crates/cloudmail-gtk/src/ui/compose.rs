@@ -148,6 +148,8 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     ));
     c.window.add_controller(keys);
 
+    ui.composes.borrow_mut().retain(|w| w.upgrade().is_some());
+    ui.composes.borrow_mut().push(c.window.downgrade());
     c.window.present();
     if draft.to.is_empty() {
         c.to.grab_focus();

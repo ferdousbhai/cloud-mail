@@ -149,6 +149,15 @@ async function identities(env: Env): Promise<Address[]> {
   return (await mailboxes(env)).map(({ name, email }) => ({ name, email }));
 }
 
+/** decodeURIComponent that yields "" (an invalid address) instead of throwing on malformed input. */
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return "";
+  }
+}
+
 async function readJson<T>(req: Request): Promise<T | null> {
   try {
     return (await req.json()) as T;
@@ -404,7 +413,8 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
   if (method === "POST" && (m = path.match(/^\/api\/senders\/([^/]+)$/))) {
-    const email = normalizeEmail(decodeURIComponent(m[1]));
+    const email = normalizeEmail(safeDecode(m[1]));
+    if (!email.includes("@")) return error("invalid email address");
     const body = await readJson<{ status?: string }>(req);
     if (body?.status !== "approved" && body?.status !== "blocked") return error("status must be approved or blocked");
     const moved = await setSenderStatus(env, email, null, body.status);
@@ -442,7 +452,7 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   if (method === "GET" && path === "/api/mailboxes") return json({ mailboxes: await mailboxes(env) });
 
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)$/))) {
-    const email = normalizeEmail(decodeURIComponent(m[1]));
+    const email = normalizeEmail(safeDecode(m[1]));
     if (method === "PUT") {
       const body = await readJson<{ name?: unknown; screen?: unknown; position?: unknown }>(req);
       if (!body) return error("invalid JSON");
