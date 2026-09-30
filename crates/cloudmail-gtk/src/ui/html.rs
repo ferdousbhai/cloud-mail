@@ -22,7 +22,7 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
     };
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {img_src}; style-src 'unsafe-inline'; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {img_src}; style-src 'unsafe-inline'; font-src 'none'">
 <style>
 html, body {{ background: {bg}; color: {fg}; }}
 body {{ margin: 0; padding: 18px 22px 60px; font: 10.5pt "JetBrainsMono Nerd Font", "JetBrains Mono", monospace; }}

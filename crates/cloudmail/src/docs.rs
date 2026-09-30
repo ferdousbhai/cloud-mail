@@ -214,7 +214,7 @@ Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "
 {EXIT_ROWS}
 
 Error codes: usage, not_configured, unauthorized, not_found, bad_request, api_error, network_error,
-bad_response, error.
+bad_response, confirmation_required, cancelled, not_logged_in, error.
 
 ## Concepts
 

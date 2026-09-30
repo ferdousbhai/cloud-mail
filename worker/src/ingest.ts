@@ -124,7 +124,10 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
     }
     // The same sender's more trusted copy (to a direct mailbox, or passing DMARC while approved)
     // lifts the stored one out of the Screener. Neither copy may have failed DMARC.
-    if (!storedUntrusted && !spoofable && stored.from_email === from.email && stored.folder === "screener" && newThreadFolder === "inbox") {
+    // An approved sender's copy also counts when the stored one came from elsewhere, e.g. a list
+    // that rewrote From ("Alice via Group"); a merely unscreened sender can't lift others' mail.
+    const liftsIt = stored.from_email === from.email || status === "approved";
+    if (!storedUntrusted && !spoofable && liftsIt && stored.folder === "screener" && newThreadFolder === "inbox") {
       await env.DB.prepare("UPDATE threads SET folder = 'inbox', unread = 1 WHERE id = ? AND folder = 'screener'")
         .bind(stored.thread_id)
         .run();

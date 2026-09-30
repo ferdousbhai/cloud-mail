@@ -86,6 +86,9 @@ pub struct Ui {
     /// The thread the user allowed remote images for (L). Tied to one thread, so a press while
     /// another thread is still loading can't unblock that one's trackers.
     images_for: RefCell<Option<(String, std::collections::HashSet<String>)>>,
+    /// The thread an open is in flight for, so a list rebuild keeps that row selected rather
+    /// than the one still on screen (which would let e/i/u act on the wrong thread).
+    opening: RefCell<Option<String>>,
     list_gen: Cell<u64>,
     open_gen: Cell<u64>,
     loading_more: Cell<bool>,
@@ -301,6 +304,7 @@ impl Ui {
             screener_threads: RefCell::new(Vec::new()),
             current: RefCell::new(None),
             images_for: RefCell::new(None),
+            opening: RefCell::new(None),
             list_gen: Cell::new(0),
             open_gen: Cell::new(0),
             loading_more: Cell::new(false),
@@ -612,7 +616,7 @@ impl Ui {
     }
 
     fn rebuild_rows(self: &Rc<Self>) {
-        let keep = self.current.borrow().as_ref().map(|d| d.thread.id.clone());
+        let keep = self.opening.borrow().clone().or_else(|| self.current.borrow().as_ref().map(|d| d.thread.id.clone()));
         let had_focus = self.list.focus_child().is_some();
         self.empty.remove_css_class("error");
         self.suppress.set(true);
@@ -718,9 +722,11 @@ impl Ui {
         let generation = self.open_gen.get() + 1;
         self.open_gen.set(generation);
         if !force && self.current.borrow().as_ref().is_some_and(|d| d.thread.id == id) {
+            *self.opening.borrow_mut() = None;
             return;
         }
         let Some(client) = self.client.clone() else { return };
+        *self.opening.borrow_mut() = Some(id.to_string());
         let id = id.to_string();
         util::run(
             move || client.thread(&id),
@@ -728,6 +734,7 @@ impl Ui {
                 if ui.open_gen.get() != generation {
                     return;
                 }
+                *ui.opening.borrow_mut() = None;
                 match result {
                     Ok(detail) => {
                         let unread = detail.thread.unread;

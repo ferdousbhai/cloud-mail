@@ -17,9 +17,9 @@ pub mod exit {
 
     pub const TABLE: &[(i32, &str)] = &[
         (OK, "success"),
-        (GENERIC, "other failure (local I/O, a setup step, a refused destructive action)"),
-        (USAGE, "invalid arguments or a request the worker rejected as invalid"),
-        (AUTH, "not configured, or the API token was rejected"),
+        (GENERIC, "other failure (local I/O, a setup step, a cancelled confirmation or editor)"),
+        (USAGE, "invalid arguments, a destructive command run without --yes, or a request the worker rejected"),
+        (AUTH, "not configured, the API token was rejected, or wrangler isn't logged in"),
         (NOT_FOUND, "the thread, message, attachment, mailbox or sender does not exist"),
         (API, "the worker could not be reached or returned an error"),
     ];

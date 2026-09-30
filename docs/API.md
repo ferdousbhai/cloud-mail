@@ -14,8 +14,9 @@ Mail is grouped into **threads**. A thread has one `folder`:
 - `blocked` – from a blocked sender (kept so a mistake can be undone; not shown in normal UI)
 
 Sent mail is stored as messages with `outgoing: true` inside its thread; the "Sent" view is a
-query, not a folder. Threads from approved senders land in `inbox`; a new message on an archived
-thread moves it back to `inbox`.
+query, not a folder. Threads from approved senders land in `inbox`; an incoming message on an archived
+thread moves it back to `inbox` (your own replies leave the thread where it is, and a new conversation
+you start is created in `archive` until someone replies).
 
 Senders are screened by lowercase address, only on mailboxes configured with `screen: true`; mail to
 direct mailboxes (e.g. `support@example.org`) from unknown senders goes straight to `inbox`.
@@ -24,8 +25,10 @@ or anyone not blocked on a direct mailbox, and not failing DMARC) and the thread
 already in your Inbox/Archive. A sender still in the Screener keeps adding to their own Screener thread.
 Anything else starts a new thread, so no mail hides inside another sender's Screener or Blocked thread.
 A message that arrives more than once (one copy per recipient mailbox, or directly and via a list) is
-stored once; if a later copy would have gone to the Inbox while the stored one is in the Screener
-(e.g. the later copy was sent to a direct mailbox), the thread moves to the Inbox. Blocked
+stored once. If a later copy would have gone to the Inbox while the stored one waits in the Screener,
+the thread moves to the Inbox, provided neither copy failed DMARC and the later copy is from the same
+sender or from an approved one (a list that rewrote From). A later copy from the same sender that passes
+DMARC replaces a stored copy that failed it; a different sender reusing a Message-ID never replaces one. Blocked
 senders are blocked everywhere. Replying to / emailing someone approves them.
 
 ## Types
@@ -88,12 +91,12 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | POST | `/api/threads/:id/read` | `{ "unread": false }` | `{ "ok": true }` |
 | DELETE | `/api/threads/:id` | | `{ "ok": true }` – deletes thread, messages, R2 objects |
 | GET | `/api/screener` | | `{ "senders": [PendingSender] }` |
-| POST | `/api/senders/:email` | `{ "status": "approved"\|"blocked" }` | `{ "ok": true, "moved": 2 }` – approved moves their screener threads to inbox; blocked moves them to blocked |
+| POST | `/api/senders/:email` | `{ "status": "approved"\|"blocked" }` | `{ "ok": true, "moved": 2 }` – approved moves their screener and blocked threads to inbox (mail back from blocked comes back unread); blocked moves their screener threads to blocked |
 | GET | `/api/senders` | `?status=approved\|blocked` | `{ "senders": [{ "email", "name", "status", "decided_at" }] }` |
 | POST | `/api/send` | see below | `{ "ok": true, "thread_id": "t_…", "message": Message }`; if the mail was sent but couldn't be saved: `{ "ok": true, "thread_id": <the replied-to thread, or null>, "message": null, "warning": "…" }` (don't retry) |
 | GET | `/api/attachments/:id` | | raw bytes with `Content-Type` and `Content-Disposition` |
 | GET | `/api/messages/:id/raw` | | original `.eml` (`message/rfc822`) |
-| GET | `/api/identities` | | `{ "identities": [Address], "default": Address }` – addresses you can send from (= mailboxes) |
+| GET | `/api/identities` | | `{ "identities": [Address], "default": Address \| null }` – addresses you can send from (= mailboxes); `default` is null when there are none |
 | GET | `/api/mailboxes` | | `{ "mailboxes": [Mailbox] }` in display order |
 | PUT | `/api/mailboxes/:email` | `{ "name"?: string, "screen"?: bool, "position"?: int }` | `{ "ok": true, "mailbox": Mailbox }` – creates or updates |
 | DELETE | `/api/mailboxes/:email` | | `{ "ok": true }` |
