@@ -176,40 +176,28 @@ fn has_remote_images(html: &str) -> bool {
 
 /// JavaScript is disabled, so this only needs to keep the markup from escaping
 /// its shadow root and from loading anything behind the CSP's back.
+/// An allowlist sanitiser (ammonia) rather than parse-and-reserialise: re-serialising lets a
+/// message exploit differences between two HTML parsers (MathML/SVG namespace tricks) to leave
+/// its card. Only HTML elements survive; SVG and MathML are dropped, and <style> is kept so
+/// designed mail still looks designed. Remote loads are still gated by the page's CSP.
 fn sanitize(html: &str) -> String {
-    // Parse and re-serialise: an unclosed comment, <textarea>, <style>, attribute quote or
-    // <plaintext> in one message would otherwise swallow the rest of the page, hiding later
-    // messages and their warnings. After this every element is balanced.
-    // <plaintext> is the one element nothing can close, even after re-serialising, so it
-    // becomes <pre> first and its contents are parsed (and escaped) like any others.
-    let html = replace_ci(html, "<plaintext", "<pre");
-    let mut doc = scraper::Html::parse_document(&html);
-    // Remove active and structural elements from the tree itself. Working on the serialised
-    // string instead would misread text inside <style> ("/* <script */") as markup, and a
-    // message's own <template> would close ours early.
-    let unwanted = scraper::Selector::parse("script, iframe, frame, frameset, object, embed, template, base, meta")
-        .expect("valid selector");
-    let ids: Vec<_> = doc.select(&unwanted).map(|el| el.id()).collect();
-    for id in ids {
-        if let Some(mut node) = doc.tree.get_mut(id) {
-            node.detach();
-        }
-    }
-    doc.root_element().html()
+    static CLEANER: std::sync::OnceLock<ammonia::Builder<'static>> = std::sync::OnceLock::new();
+    CLEANER
+        .get_or_init(|| {
+            let mut b = ammonia::Builder::default();
+            b.rm_clean_content_tags(&["style"])
+                .add_tags(&["style", "font", "big", "tfoot", "label"])
+                .add_generic_attributes(&[
+                    "style", "class", "id", "align", "valign", "bgcolor", "background", "width", "height",
+                    "border", "cellpadding", "cellspacing", "color", "face", "size", "dir", "role",
+                ])
+                .url_schemes(["http", "https", "mailto", "data"].into_iter().collect());
+            b
+        })
+        .clean(html)
+        .to_string()
 }
 
-fn replace_ci(haystack: &str, needle: &str, with: &str) -> String {
-    let lower = haystack.to_ascii_lowercase();
-    let mut out = String::with_capacity(haystack.len());
-    let mut pos = 0;
-    while let Some(i) = lower[pos..].find(needle).map(|i| i + pos) {
-        out.push_str(&haystack[pos..i]);
-        out.push_str(with);
-        pos = i + needle.len();
-    }
-    out.push_str(&haystack[pos..]);
-    out
-}
 
 fn plain(text: &str) -> String {
     let mut out = String::new();
@@ -285,19 +273,49 @@ mod tests {
         assert!(message(&m, true, &mut blocked).contains("sender not verified"));
     }
 
+    /// What a sanitised body must never contain: anything that could close the template, card or
+    /// message it is placed in, or run code.
+    fn assert_contained(input: &str) {
+        let out = sanitize(input);
+        // Text inside <style> is raw CSS that only </style> can end, so it is inert here.
+        let mut lower = out.to_ascii_lowercase();
+        while let Some(start) = lower.find("<style>") {
+            let end = lower[start..].find("</style>").map(|e| start + e + 8).unwrap_or(lower.len());
+            lower.replace_range(start..end, "");
+        }
+        for bad in ["</template", "</details", "</div></div>", "<script", "<iframe", "<object", "<embed", "<math", "<svg", "<meta", "<base"] {
+            assert!(!lower.contains(bad), "{bad} survived in {out}");
+        }
+        assert_eq!(sanitize(&out), out, "not stable under re-sanitising: {input}");
+    }
+
     #[test]
     fn strips_scripts_and_template_breakouts() {
         let s = sanitize("<p>a</p><SCRIPT>x()</script><b>b</b></TEMPLATE>");
-        assert_eq!(s, "<html><head></head><body><p>a</p><b>b</b></body></html>");
-        // Text that spells a closing tag stays text.
-        assert!(!sanitize("<p>&lt;/template&gt;</p>").contains("</template"));
+        assert_eq!(s, "<p>a</p><b>b</b>");
+        assert_contained("<p>&lt;/template&gt;</p>");
+        assert_contained(r#"<iframe src="x"></iframe><embed src="y"><meta http-equiv="refresh" content="0;url=z">ok"#);
+        assert_contained("<p>a</p><template><p>x</p></template><p>b</p>");
         // Markup-looking text inside <style> is CSS, not an element to cut at.
         let css = sanitize("<style>/* <script */ p{}</style><p>after</p>");
-        assert!(css.contains("<p>after</p>") && css.contains("</style>"), "{css}");
-        // A message's own <template> is removed rather than left to close ours.
-        let tpl = sanitize("<p>a</p><template><p>x</p></template><p>b</p>");
-        assert!(!tpl.contains("template") && tpl.contains("<p>b</p>"), "{tpl}");
-        assert!(!sanitize(r#"<iframe src="x"></iframe><embed src="y"><meta http-equiv="refresh" content="0;url=z">ok"#).contains("iframe"));
+        assert!(css.contains("<p>after</p>"), "{css}");
+        assert_contained("<style>/* <script */ p{}</style><p>after</p>");
+    }
+
+    #[test]
+    fn namespace_confusion_cannot_escape_the_card() {
+        // MathML/SVG parsing differences (mXSS): must not leave </template>, </details> or a live <style>.
+        let payload = r#"<table><tr><td>x</td></tr></table><math><mtext><table><mglyph><xmp></mglyph></math></template></div></div></details><style>.warn{display:none!important}</style></xmp></table></mtext></math>"#;
+        assert_contained(payload);
+        // Its <style> must come out as inert text, never as a live element.
+        assert!(!sanitize(payload).to_ascii_lowercase().contains("<style"), "{}", sanitize(payload));
+        for raw in ["style", "noembed", "noframes", "xmp", "noscript"] {
+            let smuggled = format!(r#"<math><mtext><table><mglyph><{raw}></mglyph></math></template></details><style>.warn{{display:none}}</style></{raw}>"#);
+            assert_contained(&smuggled);
+            assert!(!sanitize(&smuggled).to_ascii_lowercase().contains("<style"), "{raw}: {}", sanitize(&smuggled));
+            assert_contained(&format!(r#"<svg><foreignObject><{raw}></svg></template></details></{raw}></foreignObject></svg>"#));
+        }
+        assert_contained("<svg><style><img src=x onerror=alert(1)></style></svg>");
     }
 
     #[test]
@@ -320,16 +338,18 @@ mod tests {
     #[test]
     fn unclosed_markup_is_balanced() {
         // Whatever a message leaves open is closed before the next message starts.
-        let comment = sanitize("<p>hi<!-- never closed <textarea>");
-        assert!(comment.contains("<p>hi") && comment.contains("-->") && comment.ends_with("</html>"));
-        for open in ["<textarea>", "<title>", "<style>", "<xmp>", "<plaintext>", "<a href=\"x"] {
-            let out = sanitize(&format!("<p>hi</p>{open}rest"));
-            assert!(out.ends_with("</html>"), "{open}: {out}");
+        for open in ["<p>hi<!-- never closed <textarea>", "<textarea>", "<title>", "<style>", "<xmp>", "<plaintext>", "<a href=\"x", "<table><tr><td>"] {
+            assert_contained(&format!("<p>hi</p>{open}rest"));
         }
-        assert!(sanitize("<p>x<textarea>y").contains("</textarea>"));
-        let plain = sanitize("<p>hi</p><PlainText>rest <!-- <b>x");
-        assert!(!plain.to_ascii_lowercase().contains("<plaintext"), "{plain}");
-        assert!(plain.ends_with("--></pre></body></html>"), "{plain}");
+    }
+
+    #[test]
+    fn designed_mail_keeps_its_styling() {
+        let out = sanitize(r##"<style>.btn{color:red}</style><table bgcolor="#fff" cellpadding="4"><tr><td align="center" style="padding:8px"><a class="btn" href="https://x.example">Go</a><img src="data:image/png;base64,AA" width="1"></td></tr></table>"##);
+        for keep in ["<style>.btn{color:red}</style>", r##"bgcolor="#fff""##, "cellpadding", r#"style="padding:8px""#, r#"class="btn""#, "https://x.example", "data:image/png"] {
+            assert!(out.contains(keep), "{keep} missing from {out}");
+        }
+        assert!(!sanitize(r#"<a href="javascript:alert(1)">x</a>"#).contains("javascript"));
     }
 
     #[test]
