@@ -81,6 +81,9 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
         : status === "approved" && !spoofable
           ? "inbox"
           : "screener";
+  // Only a sender you'd let in anyway may join an existing conversation. Otherwise quoting a known
+  // Message-ID would carry a blocked, unscreened or forged sender past the Screener.
+  const mayJoinThread = status !== "blocked" && (!screened || (status === "approved" && !spoofable));
   const existingThreadFolder = (current: Folder): Folder => {
     if (status === "blocked") return current;
     // A reply on an archived conversation brings it back.
@@ -122,5 +125,6 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
     attachments,
     newThreadFolder,
     existingThreadFolder,
+    joinThread: mayJoinThread,
   });
 }

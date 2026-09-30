@@ -44,6 +44,7 @@ interface MessageRow {
   text_body: string | null;
   html_body: string | null;
   html_key: string | null;
+  text_key: string | null;
   date: number;
   auth: string | null;
 }
@@ -80,6 +81,8 @@ function threadSummary(t: ThreadRow) {
 async function messageView(env: Env, m: MessageRow, atts: AttachmentRow[]) {
   let html = m.html_body;
   if (!html && m.html_key) html = (await (await env.BUCKET.get(m.html_key))?.text()) ?? null;
+  let text = m.text_body;
+  if (m.text_key) text = (await (await env.BUCKET.get(m.text_key))?.text()) ?? text;
 
   if (html && html.includes("cid:")) {
     let budget = 8 * 1024 * 1024;
@@ -103,7 +106,7 @@ async function messageView(env: Env, m: MessageRow, atts: AttachmentRow[]) {
     reply_to: JSON.parse(m.reply_to_json) as Address[],
     subject: m.subject,
     date: m.date,
-    text: m.text_body,
+    text,
     html,
     message_id: m.message_id ?? "",
     auth: m.auth ? JSON.parse(m.auth) : null,
@@ -122,9 +125,9 @@ async function loadMessages(env: Env, where: string, bind: unknown[]) {
     .bind(...bind)
     .all<MessageRow>();
   if (messages.results.length === 0) return [];
-  const ids = messages.results.map((m) => m.id);
-  const atts = await env.DB.prepare(`SELECT * FROM attachments WHERE message_id IN (${ids.map(() => "?").join(",")})`)
-    .bind(...ids)
+  // A join rather than `IN (?, …)`: D1 allows 100 bound parameters, and threads can be longer.
+  const atts = await env.DB.prepare(`SELECT a.* FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.${where}`)
+    .bind(...bind)
     .all<AttachmentRow>();
   return Promise.all(messages.results.map((m) => messageView(env, m, atts.results.filter((a) => a.message_id === m.id))));
 }
@@ -156,7 +159,7 @@ async function readJson<T>(req: Request): Promise<T | null> {
 
 async function listThreads(env: Env, url: URL): Promise<Response> {
   const folder = url.searchParams.get("folder") ?? "inbox";
-  const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 200);
+  const limit = Math.max(1, Math.min(Math.trunc(Number(url.searchParams.get("limit"))) || 50, 200));
   const before = Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
   const q = url.searchParams.get("q")?.trim();
   const since = Number(url.searchParams.get("since")) || 0;
@@ -166,18 +169,18 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
     const match = ftsQuery(q);
     if (!match) return json({ threads: [] });
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND id IN (
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ? AND id IN (
          SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?
        ) ORDER BY last_at DESC LIMIT ?`,
     )
-      .bind(before, match, limit)
+      .bind(before, since, match, limit)
       .all<ThreadRow>();
   } else if (folder === "sent") {
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE last_sent_at IS NOT NULL AND last_sent_at < ?
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE last_sent_at IS NOT NULL AND last_sent_at < ? AND last_sent_at > ?
        ORDER BY last_sent_at DESC LIMIT ?`,
     )
-      .bind(before, limit)
+      .bind(before, since, limit)
       .all<ThreadRow>();
     return json({ threads: rows.results.map((t) => ({ ...threadSummary(t), last_at: t.last_sent_at })) });
   } else if (folder === "all") {

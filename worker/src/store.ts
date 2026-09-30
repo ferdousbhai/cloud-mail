@@ -3,8 +3,8 @@ import { type Address, htmlToText, makeSnippet, newId, byteLength } from "./util
 export type Folder = "screener" | "inbox" | "archive" | "blocked";
 export type SenderStatus = "pending" | "approved" | "blocked";
 
-// D1 rows cap out around 2 MB; bigger HTML bodies live in R2.
-const MAX_INLINE_HTML = 512 * 1024;
+// D1 rows cap out around 2 MB; bigger bodies live in R2.
+const MAX_INLINE_BODY = 512 * 1024;
 
 export interface NewAttachment {
   filename: string;
@@ -37,6 +37,8 @@ export interface NewMessage {
   newThreadFolder: Folder;
   /** Folder to move an existing thread to, if any. */
   existingThreadFolder?: (current: Folder) => Folder;
+  /** False starts a new thread even when In-Reply-To/References match one. */
+  joinThread?: boolean;
 }
 
 export async function senderStatus(env: Env, email: string): Promise<SenderStatus | null> {
@@ -64,7 +66,7 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   if (msg.threadId) {
     thread = await env.DB.prepare("SELECT id, folder FROM threads WHERE id = ?").bind(msg.threadId).first();
   }
-  if (!thread) {
+  if (!thread && msg.joinThread !== false) {
     // Includes the message's own id so a message you sent to yourself joins the thread it was sent from.
     const ids = [...msg.refs, msg.inReplyTo, msg.outgoing ? null : msg.messageId];
     thread = await findThreadByMessageIds(env, ids.filter((x): x is string => !!x));
@@ -76,10 +78,18 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
 
   let htmlBody = msg.html;
   let htmlKey: string | null = null;
-  if (htmlBody && byteLength(htmlBody) > MAX_INLINE_HTML) {
+  if (htmlBody && byteLength(htmlBody) > MAX_INLINE_BODY) {
     htmlKey = `html/${id}.html`;
     puts.push(env.BUCKET.put(htmlKey, htmlBody, { httpMetadata: { contentType: "text/html; charset=utf-8" } }));
     htmlBody = null;
+  }
+  let textBody = msg.text;
+  let textKey: string | null = null;
+  if (textBody && byteLength(textBody) > MAX_INLINE_BODY) {
+    textKey = `text/${id}.txt`;
+    puts.push(env.BUCKET.put(textKey, textBody, { httpMetadata: { contentType: "text/plain; charset=utf-8" } }));
+    // Keep a readable head inline for listings; the full text is fetched from R2.
+    textBody = textBody.slice(0, 64 * 1024);
   }
 
   const attachmentRows = msg.attachments.map((a) => {
@@ -145,13 +155,13 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   stmts.push(
     env.DB.prepare(
       `INSERT INTO messages (id, thread_id, outgoing, message_id, in_reply_to, refs, from_name, from_email,
-         to_json, cc_json, reply_to_json, envelope_to, subject, text_body, html_body, html_key, date, raw_key, auth)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         to_json, cc_json, reply_to_json, envelope_to, subject, text_body, text_key, html_body, html_key, date, raw_key, auth)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id, threadId, msg.outgoing ? 1 : 0, msg.messageId, msg.inReplyTo, msg.refs.join(" ") || null,
       msg.from.name, msg.from.email,
       JSON.stringify(msg.to), JSON.stringify(msg.cc), JSON.stringify(msg.replyTo),
-      msg.envelopeTo, msg.subject, msg.text, htmlBody, htmlKey, msg.date, rawKey,
+      msg.envelopeTo, msg.subject, textBody, textKey, htmlBody, htmlKey, msg.date, rawKey,
       msg.auth ? JSON.stringify(msg.auth) : null,
     ),
   );
@@ -172,7 +182,14 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
     ).bind(id, msg.subject, bodyText.slice(0, 100_000), [msg.from, ...msg.to, ...msg.cc].map((a) => `${a.name} ${a.email}`).join(" ")),
   );
 
-  await env.DB.batch(stmts);
+  try {
+    await env.DB.batch(stmts);
+  } catch (err) {
+    // Nothing references the objects just written; don't leave them behind.
+    const written = [rawKey, htmlKey, textKey, ...attachmentRows.map((r) => r.key)].filter((k): k is string => !!k);
+    await env.BUCKET.delete(written).catch(() => {});
+    throw err;
+  }
   return { id, threadId };
 }
 
@@ -195,9 +212,9 @@ export async function setSenderStatus(env: Env, email: string, name: string | nu
 }
 
 export async function deleteThread(env: Env, threadId: string): Promise<boolean> {
-  const messages = await env.DB.prepare("SELECT id, raw_key, html_key FROM messages WHERE thread_id = ?")
+  const messages = await env.DB.prepare("SELECT id, raw_key, html_key, text_key FROM messages WHERE thread_id = ?")
     .bind(threadId)
-    .all<{ id: string; raw_key: string | null; html_key: string | null }>();
+    .all<{ id: string; raw_key: string | null; html_key: string | null; text_key: string | null }>();
   const atts = await env.DB.prepare(
     "SELECT a.r2_key FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.thread_id = ?",
   )
@@ -205,7 +222,7 @@ export async function deleteThread(env: Env, threadId: string): Promise<boolean>
     .all<{ r2_key: string }>();
 
   const keys = [
-    ...messages.results.flatMap((m) => [m.raw_key, m.html_key]),
+    ...messages.results.flatMap((m) => [m.raw_key, m.html_key, m.text_key]),
     ...atts.results.map((a) => a.r2_key),
   ].filter((k): k is string => !!k);
   for (let i = 0; i < keys.length; i += 1000) await env.BUCKET.delete(keys.slice(i, i + 1000));
