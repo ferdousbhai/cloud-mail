@@ -18,11 +18,16 @@ gh_repo=ferdousbhai/cloud-mail
 repo=cloudmail
 fingerprint=35C47A06567940B6796B4D0F9B3C7BDF85268B31
 
+step() { printf '\n==> %s\n' "$*"; }
+
+step "Checking the signing key and the $tag release"
 gpg --batch --list-secret-keys "$fingerprint" >/dev/null 2>&1 \
   || { echo "The package-signing key $fingerprint is not in this keyring." >&2; exit 1; }
 gh release view "$tag" --repo "$gh_repo" >/dev/null \
   || { echo "No GitHub release $tag; tag and publish it first." >&2; exit 1; }
 bash packaging/repo/test.sh
+
+step "Building cloudmail $version (gpg will ask for the signing key's passphrase)"
 
 out="target/release-repo/$version"
 rm -rf "$out" && mkdir -p "$out/build"
@@ -38,6 +43,7 @@ sed -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" \
 
 cd "$out"
 pkg="$(ls ./cloudmail-"$version"-*.pkg.tar.zst)"
+step "Signing the [$repo] repository database"
 repo-add --sign --key "$fingerprint" --verify "$repo.db.tar.gz" "$pkg"
 # repo-add leaves $repo.db and $repo.files as symlinks; releases need files.
 for f in "$repo.db" "$repo.db.sig" "$repo.files" "$repo.files.sig"; do
@@ -46,12 +52,14 @@ done
 gpg --armor --export "$fingerprint" > "$repo-signing-key.asc"
 cp ../../../packaging/repo/install.sh install.sh
 
+step "Uploading the signed repository to the $tag release"
 gh release upload "$tag" --repo "$gh_repo" --clobber \
   "$pkg" "$pkg.sig" \
   "$repo.db" "$repo.db.sig" "$repo.db.tar.gz" "$repo.db.tar.gz.sig" \
   "$repo.files" "$repo.files.sig" "$repo.files.tar.gz" "$repo.files.tar.gz.sig" \
   "$repo-signing-key.asc" install.sh
 
+step "Publishing $tag"
 # A release is drafted first so `releases/latest` (and the one-liner) keeps
 # serving the previous one until this one carries its signed repository.
 if [[ "$(gh release view "$tag" --repo "$gh_repo" --json isDraft --jq .isDraft)" == true ]]; then
@@ -59,4 +67,5 @@ if [[ "$(gh release view "$tag" --repo "$gh_repo" --json isDraft --jq .isDraft)"
 fi
 
 cd - >/dev/null
+step "Verifying the one-liner in a clean Arch container"
 bin/verify-release "$version"
