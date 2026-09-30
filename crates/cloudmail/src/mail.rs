@@ -24,7 +24,7 @@ fn missing<'a>(what: &'a str, id: &'a str, list_hint: &'a str) -> impl FnOnce(cl
 }
 
 /// "1 thread", "2 threads".
-fn plural(n: usize, noun: &str) -> String {
+pub fn plural(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
 

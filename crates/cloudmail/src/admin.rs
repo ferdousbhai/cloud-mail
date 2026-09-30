@@ -70,12 +70,12 @@ pub fn status(ctx: &Ctx) -> CliResult {
         counts.screener
     );
     let human = format!(
-        "Worker:     {} (ok)\nConfig:     {}\nInbox:      {} threads, {} unread\nScreener:   {} senders waiting\nMailboxes:  {}\nForwarding: {}",
+        "Worker:     {} (ok)\nConfig:     {}\nInbox:      {}, {} unread\nScreener:   {} waiting\nMailboxes:  {}\nForwarding: {}",
         client.base_url(),
         config::path().display(),
-        counts.inbox,
+        crate::mail::plural(counts.inbox as usize, "thread"),
         counts.inbox_unread,
-        counts.screener,
+        crate::mail::plural(counts.screener as usize, "sender"),
         mailboxes.len(),
         if settings.forward_to.is_empty() { "off".to_string() } else { format!("a copy of every message goes to {}", settings.forward_to) },
     );
