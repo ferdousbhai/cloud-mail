@@ -90,6 +90,9 @@ pub struct Ui {
     /// than the one still on screen (which would let e/i/u act on the wrong thread).
     opening: RefCell<Option<String>>,
     list_gen: Cell<u64>,
+    /// A full (non-soft) list load is in flight: its rows aren't there yet, so nothing else should
+    /// rebuild the list from stale data meanwhile.
+    list_loading: Cell<bool>,
     open_gen: Cell<u64>,
     loading_more: Cell<bool>,
     exhausted: Cell<bool>,
@@ -306,6 +309,7 @@ impl Ui {
             images_for: RefCell::new(None),
             opening: RefCell::new(None),
             list_gen: Cell::new(0),
+            list_loading: Cell::new(false),
             open_gen: Cell::new(0),
             loading_more: Cell::new(false),
             exhausted: Cell::new(false),
@@ -533,6 +537,7 @@ impl Ui {
         self.exhausted.set(false);
         self.loading_more.set(false);
         let view = self.view.get();
+        self.list_loading.set(!soft);
         if !soft {
             self.empty.set_label("Loading…");
             self.list_stack.set_visible_child_name("empty");
@@ -553,6 +558,7 @@ impl Ui {
                 if ui.list_gen.get() != generation {
                     return;
                 }
+                ui.list_loading.set(false);
                 match result {
                     Ok((threads, senders)) => {
                         if view == View::Screener {
@@ -1115,7 +1121,8 @@ impl Ui {
             clone!(#[weak(rename_to = ui)] self, move |result| match result {
                 Ok(ids) => {
                     *ui.identities.borrow_mut() = Some(ids);
-                    if ui.view.get() != View::Screener {
+                    // A load still in flight will build its rows with the identities in place.
+                    if ui.view.get() != View::Screener && !ui.list_loading.get() {
                         ui.rebuild_rows();
                     }
                 }

@@ -570,7 +570,7 @@ pub fn watch(ctx: &Ctx, a: &WatchArgs) -> CliResult {
             Err(e) => {
                 failures += 1;
                 if machine {
-                    println!("{}", json!({ "event": "error", "code": e.kind.code(), "message": e.message }));
+                    println!("{}", output::json_safe(&json!({ "event": "error", "code": e.kind.code(), "message": e.message }).to_string()));
                 } else {
                     eprintln!("{}", output::terminal_safe(&format!("warning: {e} (retrying)")));
                 }
@@ -587,7 +587,7 @@ pub fn watch(ctx: &Ctx, a: &WatchArgs) -> CliResult {
 
 fn emit(t: &ThreadSummary, machine: bool) {
     let line = if machine {
-        json!({ "event": "thread", "thread": t }).to_string()
+        output::json_safe(&json!({ "event": "thread", "thread": t }).to_string())
     } else {
         let from = render::clean(&t.from.as_ref().map(|a| a.display()).unwrap_or_default());
         let line = format!("{}  {:<8}  {}  {}  ", cloudmail_api::text::short_time(t.last_at), t.folder, render::truncate(&from, 24), t.subject);

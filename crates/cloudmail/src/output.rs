@@ -198,7 +198,22 @@ pub fn shell_arg(s: &str) -> String {
 }
 
 pub fn pretty(v: &Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_default()
+    json_safe(&serde_json::to_string_pretty(v).unwrap_or_default())
+}
+
+/// JSON with DEL and the C1 controls escaped as `\u00XX`. serde_json leaves U+007F–U+009F raw,
+/// and terminals act on C1 codes (U+009B is CSI), so a sender's subject could drive a terminal
+/// that shows `--json` output. These characters only occur inside strings, so the JSON is the same.
+pub fn json_safe(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if ('\u{7f}'..='\u{9f}').contains(&c) {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn write_line(text: &str) {
@@ -304,6 +319,15 @@ pub type CliResult<T = Response> = Result<T, CliError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_output_escapes_c1_controls() {
+        let v = json!({ "subject": "a\u{9b}2Jb\u{7f}" });
+        let out = pretty(&v);
+        assert!(!out.contains('\u{9b}') && !out.contains('\u{7f}'), "{out:?}");
+        let back: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, v, "still the same JSON");
+    }
 
     #[test]
     fn shell_args_are_quoted_when_they_need_to_be() {

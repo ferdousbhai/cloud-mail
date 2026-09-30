@@ -65,6 +65,11 @@ if ! command -v pacman >/dev/null; then
   echo "pacman not found: this installer is for Omarchy and other Arch Linux systems." >&2
   exit 1
 fi
+if [[ $(uname -m) != x86_64 ]]; then
+  echo "The signed repository has x86_64 packages only; on $(uname -m), build from source:" >&2
+  echo "  https://github.com/ferdousbhai/cloud-mail#install" >&2
+  exit 1
+fi
 
 echo "Adding the [$REPO] repository"
 add_signed_repo "$REPO" "$RELEASES" "$SIGNING_KEY_FINGERPRINT"
