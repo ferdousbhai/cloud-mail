@@ -264,6 +264,12 @@ fn is_worker_dir(dir: &Path) -> bool {
 /// `--worker-dir`, else `./worker` in a clone, else a writable copy of the packaged worker in
 /// `~/.local/share/cloudmail/worker` (refreshed on each run, keeping the generated wrangler.jsonc and node_modules).
 pub fn resolve_worker_dir(flag: Option<&Path>) -> CliResult<PathBuf> {
+    let data = dirs::data_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"));
+    let packaged: Vec<&Path> = PACKAGED_WORKER_DIRS.iter().map(Path::new).collect();
+    resolve_worker_dir_in(flag, Path::new("worker"), &packaged, &data)
+}
+
+fn resolve_worker_dir_in(flag: Option<&Path>, local: &Path, packaged: &[&Path], data: &Path) -> CliResult<PathBuf> {
     if let Some(dir) = flag {
         if is_worker_dir(dir) {
             return Ok(dir.to_path_buf());
@@ -271,14 +277,12 @@ pub fn resolve_worker_dir(flag: Option<&Path>) -> CliResult<PathBuf> {
         return Err(CliError::usage(format!("{} is not a cloudmail worker directory", dir.display()))
             .hint("pass the worker/ directory of a cloudmail checkout"));
     }
-    let local = PathBuf::from("worker");
-    if is_worker_dir(&local) {
-        return Ok(local);
+    if is_worker_dir(local) {
+        return Ok(local.to_path_buf());
     }
-    if let Some(packaged) = PACKAGED_WORKER_DIRS.iter().map(Path::new).find(|d| is_worker_dir(d)) {
-        let data = dirs::data_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"));
+    if let Some(source) = packaged.iter().find(|d| is_worker_dir(d)) {
         let dest = data.join("cloudmail").join("worker");
-        copy_tree(packaged, &dest)?;
+        copy_tree(source, &dest)?;
         return Ok(dest);
     }
     Err(CliError::usage("couldn't find the cloudmail worker source")
@@ -602,6 +606,35 @@ pub fn run(args: &SetupArgs) -> CliResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_worker_is_copied_somewhere_writable_and_refreshed() {
+        let tmp = std::env::temp_dir().join(format!("cloudmail-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let packaged = tmp.join("usr/share/cloudmail/worker");
+        std::fs::create_dir_all(packaged.join("src")).unwrap();
+        std::fs::write(packaged.join("wrangler.template.jsonc"), "{}").unwrap();
+        std::fs::write(packaged.join("src/index.ts"), "v1").unwrap();
+        let data = tmp.join("data");
+
+        let dir = resolve_worker_dir_in(None, &tmp.join("no-clone"), &[&packaged], &data).unwrap();
+        assert_eq!(dir, data.join("cloudmail/worker"));
+        assert_eq!(std::fs::read_to_string(dir.join("src/index.ts")).unwrap(), "v1");
+
+        // A later package version replaces the source but keeps what setup generated.
+        std::fs::write(dir.join("wrangler.jsonc"), "generated").unwrap();
+        std::fs::write(packaged.join("src/index.ts"), "v2").unwrap();
+        let dir = resolve_worker_dir_in(None, &tmp.join("no-clone"), &[&packaged], &data).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("src/index.ts")).unwrap(), "v2");
+        assert_eq!(std::fs::read_to_string(dir.join("wrangler.jsonc")).unwrap(), "generated");
+
+        // A clone's worker/ wins over the package; nothing at all is a usage error.
+        std::fs::create_dir_all(tmp.join("clone/worker")).unwrap();
+        std::fs::write(tmp.join("clone/worker/wrangler.template.jsonc"), "{}").unwrap();
+        assert_eq!(resolve_worker_dir_in(None, &tmp.join("clone/worker"), &[&packaged], &data).unwrap(), tmp.join("clone/worker"));
+        assert!(resolve_worker_dir_in(None, &tmp.join("no-clone"), &[], &data).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     const RULES: &str = "\n \u{1b}[33m▲ WARNING\u{1b}[0m open beta\n\nRule: 6b4a6ac1f8d643999a3a6111c0583125\n  Name:     Rule created at 2025\n  Enabled:  true\n  Matchers: to:hi@example.com\n  Actions:  forward:me@elsewhere.com\n  Priority: 0\n\nRule: 06bae9a8c2794e41a8fd99679a84f310\n  Name:     (none)\n  Enabled:  true\n  Matchers: to:hello@example.com\n  Actions:  worker:cloudmail\n  Priority: 0\n\n\nCatch-all rule: disabled, action: drop\n";
 

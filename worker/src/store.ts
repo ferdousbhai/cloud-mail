@@ -121,6 +121,8 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   } else {
     threadId = newId("t");
     const subject = msg.subject.replace(/^((re|fwd?|aw|sv)\s*:\s*)+/i, "").trim() || "(no subject)";
+    // A thread shows the other party: the sender, or for one you start, who you wrote to.
+    const party = msg.outgoing ? (msg.to[0] ?? msg.cc[0] ?? msg.from) : msg.from;
     stmts.push(
       env.DB.prepare(
         `INSERT INTO threads (id, subject, folder, sender_email, from_name, from_email, to_address, snippet,
@@ -129,7 +131,7 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
       ).bind(
         threadId, subject, msg.newThreadFolder,
         msg.outgoing ? (msg.to[0]?.email ?? null) : msg.from.email,
-        msg.from.name, msg.from.email,
+        party.name, party.email,
         msg.outgoing ? msg.from.email : msg.envelopeTo,
         snippet,
         msg.outgoing || msg.newThreadFolder === "blocked" ? 0 : 1,

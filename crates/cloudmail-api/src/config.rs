@@ -68,7 +68,14 @@ pub fn save(file: &FileConfig) -> Result<PathBuf> {
 /// Writes a file readable only by the current user (it holds the API token).
 pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(dir)?;
     }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);

@@ -33,7 +33,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
   "subject": "Your receipt",
   "folder": "inbox",
   "snippet": "Thanks for your payment…",
-  "from": Address,          // sender of the latest incoming message (or you, if only outgoing)
+  "from": Address,          // the other party: sender of the latest incoming message, or who you wrote to
   "to_address": "hi@example.com", // which of your mailboxes it was sent to (reply from this)
   "message_count": 3,
   "unread": true,
