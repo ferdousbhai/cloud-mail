@@ -76,6 +76,12 @@ pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
             builder.mode(0o700);
         }
         builder.create(dir)?;
+        // An existing directory from an older version may be world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
     }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);

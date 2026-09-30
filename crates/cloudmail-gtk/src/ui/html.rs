@@ -177,37 +177,25 @@ fn has_remote_images(html: &str) -> bool {
 /// JavaScript is disabled, so this only needs to keep the markup from escaping
 /// its shadow root and from loading anything behind the CSP's back.
 fn sanitize(html: &str) -> String {
-    // Parse and re-serialise first: an unclosed comment, <textarea>, <style>, attribute
-    // quote or <plaintext> in one message would otherwise swallow the rest of the page,
-    // hiding later messages and their warnings. After this every element is balanced.
+    // Parse and re-serialise: an unclosed comment, <textarea>, <style>, attribute quote or
+    // <plaintext> in one message would otherwise swallow the rest of the page, hiding later
+    // messages and their warnings. After this every element is balanced.
     // <plaintext> is the one element nothing can close, even after re-serialising, so it
-    // becomes <pre> before parsing and its contents are parsed (and escaped) like any others.
+    // becomes <pre> first and its contents are parsed (and escaped) like any others.
     let html = replace_ci(html, "<plaintext", "<pre");
-    let balanced = scraper::Html::parse_document(&html).root_element().html();
-    let mut out = strip_element(&balanced, "script");
-    out = strip_element(&out, "iframe");
-    out = strip_element(&out, "object");
-    replace_ci(&out, "</template", "&lt;/template")
-}
-
-fn strip_element(html: &str, tag: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let open = format!("<{tag}");
-    let close = format!("</{tag}>");
-    let mut out = String::with_capacity(html.len());
-    let mut pos = 0;
-    while let Some(start) = lower[pos..].find(&open).map(|i| i + pos) {
-        out.push_str(&html[pos..start]);
-        match lower[start..].find(&close) {
-            Some(end) => pos = start + end + close.len(),
-            None => {
-                pos = html.len();
-                break;
-            }
+    let mut doc = scraper::Html::parse_document(&html);
+    // Remove active and structural elements from the tree itself. Working on the serialised
+    // string instead would misread text inside <style> ("/* <script */") as markup, and a
+    // message's own <template> would close ours early.
+    let unwanted = scraper::Selector::parse("script, iframe, frame, frameset, object, embed, template, base, meta")
+        .expect("valid selector");
+    let ids: Vec<_> = doc.select(&unwanted).map(|el| el.id()).collect();
+    for id in ids {
+        if let Some(mut node) = doc.tree.get_mut(id) {
+            node.detach();
         }
     }
-    out.push_str(&html[pos.min(html.len())..]);
-    out
+    doc.root_element().html()
 }
 
 fn replace_ci(haystack: &str, needle: &str, with: &str) -> String {
@@ -303,6 +291,13 @@ mod tests {
         assert_eq!(s, "<html><head></head><body><p>a</p><b>b</b></body></html>");
         // Text that spells a closing tag stays text.
         assert!(!sanitize("<p>&lt;/template&gt;</p>").contains("</template"));
+        // Markup-looking text inside <style> is CSS, not an element to cut at.
+        let css = sanitize("<style>/* <script */ p{}</style><p>after</p>");
+        assert!(css.contains("<p>after</p>") && css.contains("</style>"), "{css}");
+        // A message's own <template> is removed rather than left to close ours.
+        let tpl = sanitize("<p>a</p><template><p>x</p></template><p>b</p>");
+        assert!(!tpl.contains("template") && tpl.contains("<p>b</p>"), "{tpl}");
+        assert!(!sanitize(r#"<iframe src="x"></iframe><embed src="y"><meta http-equiv="refresh" content="0;url=z">ok"#).contains("iframe"));
     }
 
     #[test]
