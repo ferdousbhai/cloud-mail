@@ -67,6 +67,11 @@ instead of the browser login, and `--yes` to allow moving a domain's mail:
 CLOUDFLARE_API_TOKEN=… cloudmail setup you@yourdomain.com --yes
 ```
 
+Create the token under *My Profile › API Tokens* with these permissions:
+**Account**: Workers Scripts, D1, Workers R2 Storage, Email Routing Addresses and Email Sending (all
+Edit), Account Settings (Read); **Zone** (your mail domains): Email Routing Rules and Zone Settings
+(Edit), Zone (Read).
+
 With several Cloudflare accounts, add `--account <id>`.
 
 Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu

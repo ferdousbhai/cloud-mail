@@ -167,14 +167,20 @@ fn mx_hosts(domain: &str) -> Option<Vec<String>> {
     Some(parse_mx_answer(&body))
 }
 
+/// MX hosts in priority order (most preferred first).
 pub fn parse_mx_answer(body: &Value) -> Vec<String> {
-    body["Answer"]
+    let mut mx: Vec<(u16, String)> = body["Answer"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|a| a["type"] == 15)
-        .filter_map(|a| a["data"].as_str()?.split_whitespace().nth(1).map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
-        .collect()
+        .filter_map(|a| {
+            let (priority, host) = a["data"].as_str()?.split_once(' ')?;
+            Some((priority.parse().ok()?, host.trim().trim_end_matches('.').to_ascii_lowercase()))
+        })
+        .collect();
+    mx.sort();
+    mx.into_iter().map(|(_, host)| host).collect()
 }
 
 pub fn domain_of(email: &str) -> Option<&str> {
@@ -565,7 +571,7 @@ fn login(w: &mut Wrangler, wrangler: &str) -> CliResult<String> {
         }
     }
     Err(CliError::new("not_logged_in", exit::AUTH, "not logged in to Cloudflare").hint(format!(
-        "run `{wrangler} login`, or set CLOUDFLARE_API_TOKEN to a token that can edit Workers Scripts, D1, Workers R2 Storage, Email Routing Rules, Email Sending and Zone Settings"
+        "run `{wrangler} login`, or set CLOUDFLARE_API_TOKEN to a token with the permissions listed in the README (https://github.com/ferdousbhai/cloud-mail#get-started)"
     )))
 }
 
@@ -675,13 +681,19 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
 
     // 5. schema + deploy
     w.mutate("apply database migrations", &["d1", "migrations", "apply", &db_name, "--remote"], None)?;
-    let deploy_out = w.mutate("deploy worker", &["deploy"], None).map_err(|e| {
-        if e.message.contains("workers.dev subdomain") {
-            e.hint("pick a workers.dev subdomain at https://dash.cloudflare.com/?to=/:account/workers/onboarding, then run the same command again")
-        } else {
-            e
+    // A new Cloudflare account has no workers.dev subdomain yet, and wrangler asks for one. With
+    // someone at the terminal, let wrangler ask (it then deploys), and deploy again to read the URL.
+    let deploy_out = match w.mutate("deploy worker", &["deploy"], None) {
+        Err(e) if e.message.contains("workers.dev subdomain") && w.interactive => {
+            eprintln!("\nYour Cloudflare account needs a workers.dev subdomain: the address your mail service runs at.");
+            w.attached(&["deploy"])?;
+            w.mutate("deploy worker", &["deploy"], None)?
         }
-    })?;
+        Err(e) if e.message.contains("workers.dev subdomain") => {
+            return Err(e.hint("pick a workers.dev subdomain at https://dash.cloudflare.com/?to=/:account/workers/onboarding, then run the same command again"));
+        }
+        other => other?,
+    };
     let url = if args.dry_run {
         format!("https://{worker_name}.<your-subdomain>.workers.dev")
     } else {
@@ -909,7 +921,7 @@ mod tests {
         assert_eq!(parse_accounts(whoami), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into()), ("Team".into(), "11111111111111111111111111111111".into())]);
         let dests = "│ id │ email │ verified │ created │\n│ b51d │ Me@Hey.com │ 2025-12-26T05:50:19Z │ 2025-12-26T04:33:43Z │\n│ 87be │ new@gmail.com │  │ 2026-01-01T00:00:00Z │\n";
         assert_eq!(parse_destinations(dests), vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]);
-        let mx = json!({"Answer": [{"type": 15, "data": "10 ASPMX.L.Google.com."}, {"type": 5, "data": "x."}, {"type": 15, "data": "20 route2.mx.cloudflare.net."}]});
+        let mx = json!({"Answer": [{"type": 15, "data": "20 route2.mx.cloudflare.net."}, {"type": 5, "data": "x."}, {"type": 15, "data": "10 ASPMX.L.Google.com."}]});
         assert_eq!(parse_mx_answer(&mx), vec!["aspmx.l.google.com", "route2.mx.cloudflare.net"]);
         assert!(parse_mx_answer(&json!({"Status": 3})).is_empty());
     }
