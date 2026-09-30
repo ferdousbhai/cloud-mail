@@ -205,7 +205,8 @@ impl Mail {
     fn worker_index(&self, threads: &[ThreadSummary]) -> Vec<ThreadSummary> {
         let Some(oldest) = threads.iter().map(|t| t.last_at).filter(|t| *t > 0).min() else { return Vec::new() };
         let since = Some(oldest - DUPLICATE_WINDOW_MS - 1);
-        let fetch = |folder: &str| self.client.list_threads(&ThreadQuery { folder: folder.into(), since, limit: 500, ..Default::default() }).unwrap_or_default();
+        // 200 is the most the worker returns per request.
+        let fetch = |folder: &str| self.client.list_threads(&ThreadQuery { folder: folder.into(), since, limit: 200, ..Default::default() }).unwrap_or_default();
         let (mut all, blocked) = std::thread::scope(|s| {
             let blocked = s.spawn(|| fetch("blocked"));
             (fetch("all"), blocked.join().unwrap_or_default())
