@@ -15,6 +15,10 @@ pub enum ErrorKind {
     Network,
     /// The worker's response could not be understood.
     Decode,
+    /// A linked account (HEY, …) needs signing in again.
+    AccountAuth,
+    /// A linked account's tool is missing, failed, or answered something unexpected.
+    AccountUnavailable,
 }
 
 impl ErrorKind {
@@ -28,6 +32,8 @@ impl ErrorKind {
             ErrorKind::Api => "api_error",
             ErrorKind::Network => "network_error",
             ErrorKind::Decode => "bad_response",
+            ErrorKind::AccountAuth => "account_unauthorized",
+            ErrorKind::AccountUnavailable => "account_unavailable",
         }
     }
 }

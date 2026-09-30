@@ -42,6 +42,9 @@ pub struct ThreadSummary {
     pub unread: bool,
     pub has_attachments: bool,
     pub last_at: i64,
+    /// The linked account the thread lives in (e.g. "hey"); absent for your Cloudmail worker's own mail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl ThreadSummary {
@@ -136,6 +139,12 @@ pub struct PendingSender {
     pub thread_count: i64,
     pub last_subject: Option<String>,
     pub last_at: i64,
+    /// The linked account the sender waits in (e.g. "hey"); absent for your Cloudmail worker's Screener.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// What to pass to `screener approve|block` for a linked account's sender (e.g. "hey:123").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl PendingSender {

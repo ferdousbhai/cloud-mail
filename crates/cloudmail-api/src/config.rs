@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, ErrorKind, Result};
@@ -10,6 +11,29 @@ pub struct Config {
     pub api_url: String,
     pub api_token: String,
     pub poll_seconds: u32,
+    /// Linked accounts (HEY, …) by name; the name prefixes their IDs (`hey:…`).
+    pub accounts: BTreeMap<String, AccountConfig>,
+}
+
+/// A linked mail account, `[accounts.<name>]` in the config file. Opt-in: without one,
+/// cloudmail only talks to your worker.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct AccountConfig {
+    /// Which provider serves it ("hey"); defaults to the account's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The provider's command-line tool, when it isn't on PATH under its usual name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The provider's own account selector (e.g. a HEY linked-account ID); default: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+impl AccountConfig {
+    pub fn provider<'a>(&'a self, name: &'a str) -> &'a str {
+        self.provider.as_deref().filter(|p| !p.is_empty()).unwrap_or(name)
+    }
 }
 
 /// The on-disk config file, all keys optional.
@@ -21,6 +45,8 @@ pub struct FileConfig {
     pub api_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, AccountConfig>,
 }
 
 fn config_dir() -> PathBuf {
@@ -132,6 +158,7 @@ pub fn load() -> Result<Config> {
             api_url,
             api_token,
             poll_seconds: file.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS).max(10),
+            accounts: file.accounts,
         }),
         (url, _) => Err(Error::new(
             ErrorKind::Config,
@@ -141,5 +168,24 @@ pub fn load() -> Result<Config> {
                 path().display()
             ),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accounts_are_optional_and_round_trip() {
+        let old: FileConfig = toml::from_str("api_url = \"https://x\"\napi_token = \"t\"\n").unwrap();
+        assert!(old.accounts.is_empty());
+        assert!(!toml::to_string(&old).unwrap().contains("accounts"), "a config without accounts is written as before");
+        let mut with = old.clone();
+        with.accounts.insert("hey".into(), AccountConfig { command: Some("/opt/hey".into()), ..Default::default() });
+        let text = toml::to_string(&with).unwrap();
+        assert!(text.contains("[accounts.hey]"), "{text}");
+        let back: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.accounts["hey"].command.as_deref(), Some("/opt/hey"));
+        assert_eq!(back.accounts["hey"].provider("hey"), "hey");
     }
 }

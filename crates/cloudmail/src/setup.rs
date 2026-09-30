@@ -733,6 +733,8 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
             api_url: Some(url.clone()),
             api_token: Some(token.clone()),
             poll_seconds: Some(config::DEFAULT_POLL_SECONDS),
+            // Linked accounts survive a token rotation.
+            accounts: existing_cfg.as_ref().map(|c| c.accounts.clone()).unwrap_or_default(),
         };
         w.perform("write config", None, Some(cfg_path.display().to_string()), |_| {
             config::save(&file)?;
@@ -742,7 +744,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     };
 
     // 7. a new workers.dev hostname and secret take a few seconds to go live
-    let client = Client::new(&Config { api_url: url.clone(), api_token: token, poll_seconds: config::DEFAULT_POLL_SECONDS });
+    let client = Client::new(&Config { api_url: url.clone(), api_token: token, poll_seconds: config::DEFAULT_POLL_SECONDS, accounts: Default::default() });
     w.perform("wait for the worker", None, Some(url.clone()), |_| wait_until_live(&client))?;
 
     // 8. mailboxes and routes
