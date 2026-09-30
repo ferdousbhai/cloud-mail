@@ -147,7 +147,7 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             }
             Ok(Response { data, ..Response::new((), summary) }.human(render::thread(&detail, html)).ids(ids).crumbs(crumbs))
         }
-        // A HEY thread's "archive" is a move to Paper Trail (HEY has no Archive).
+        // A HEY thread's "archive" is a move to Paper Trail (HEY has no Archive); Gmail's drops the Inbox label.
         ThreadCommand::Archive { ids } => each(&ids, "archived", |id| on(id).move_thread(id, "archive")),
         ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| on(id).move_thread(id, "inbox")),
         ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| on(id).set_unread(id, true)),
@@ -492,13 +492,11 @@ fn target_path(output: Option<PathBuf>, name: &str) -> PathBuf {
 }
 
 pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
-    if ctx.mail()?.account_for(&a.id).is_some() {
-        return Err(CliError::usage(format!("{} is a linked account's message; the hey CLI doesn't give out original .eml files", a.id)));
-    }
-    let bytes = ctx.client()?.raw_message(&a.id).map_err(missing("raw message", &a.id, "message IDs (m_…) are in `cloudmail thread read <id> --json`; sent messages have no raw copy"))?;
+    let mail = ctx.mail()?;
+    let bytes = mail.provider(&a.id).raw_message(&a.id).map_err(missing("raw message", &a.id, "message IDs (m_…, gmail:<thread>/<message>) are in `cloudmail thread read <id> --json`; sent messages have no raw copy"))?;
     match &a.output {
         Some(p) if p.as_os_str() != "-" => {
-            let path = target_path(Some(p.clone()), &format!("{}.eml", a.id));
+            let path = target_path(Some(p.clone()), &format!("{}.eml", a.id.replace(['/', ':'], "_")));
             std::fs::write(&path, &bytes)?;
             Ok(Response::new(json!({ "id": a.id, "path": path, "size": bytes.len() }), format!("Saved {}", path.display())))
         }

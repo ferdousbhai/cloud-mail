@@ -29,7 +29,7 @@ impl Ctx {
         Ok(&self.mail()?.client)
     }
 
-    /// The worker plus any linked accounts (HEY, …) from the config.
+    /// The worker plus any linked accounts (HEY, Gmail) from the config.
     pub fn mail(&self) -> CliResult<&Mail> {
         if let Some(m) = self.mail.get() {
             return Ok(m);

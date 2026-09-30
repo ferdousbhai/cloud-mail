@@ -673,3 +673,376 @@ fn account_add_list_remove() {
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
     assert_eq!(h.run(&m, &["account", "remove", "hey"], &[]).status.code(), Some(4));
 }
+
+// ---------- linked Gmail account, through tests/fake-gws ----------
+
+/// A home whose config links Gmail, served by the fake `gws` (which logs every call).
+struct GmailHome {
+    home: PathBuf,
+    log: PathBuf,
+}
+
+fn gmail_home(tag: &str, config: &str, signed_in: bool) -> GmailHome {
+    let home = temp_home(&format!("gmail-{tag}"));
+    let cfg = home.join("config").join("cloudmail");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), config).unwrap();
+    let gws = cfg.join("gws").join("gmail");
+    if signed_in {
+        std::fs::create_dir_all(&gws).unwrap();
+        std::fs::write(gws.join("credentials.enc"), "fake").unwrap();
+    } else {
+        let _ = std::fs::remove_dir_all(&gws);
+    }
+    let log = home.join("gws.log");
+    for f in [log.clone(), home.join("gws.log.env"), home.join("gws.log.sent")] {
+        let _ = std::fs::remove_file(f);
+    }
+    GmailHome { home, log }
+}
+
+fn fake_gws() -> String {
+    format!("{}/tests/fake-gws", env!("CARGO_MANIFEST_DIR"))
+}
+
+impl GmailHome {
+    fn run(&self, m: &Mock, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+        cmd.args(args)
+            .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("HOME", &self.home)
+            .env("CLOUDMAIL_API_URL", &m.url)
+            .env("CLOUDMAIL_API_TOKEN", "test-token")
+            .env("CLOUDMAIL_GWS_COMMAND", fake_gws())
+            .env("CLOUDMAIL_HEY_COMMAND", fake_hey())
+            .env("CLOUDMAIL_BROWSER", fake_gws())
+            .env("FAKE_GWS_LOG", &self.log)
+            .env("FAKE_HEY_LOG", self.home.join("hey.log"))
+            // A gws of your own must never stand in for cloudmail's.
+            .env("GOOGLE_WORKSPACE_CLI_TOKEN", "a-token-from-your-own-shell")
+            .env_remove("FAKE_GWS_MODE")
+            .env_remove("FAKE_HEY_MODE")
+            .env_remove("CLOUDMAIL_GOOGLE_CLIENT_ID")
+            .env_remove("CLOUDMAIL_GOOGLE_CLIENT_SECRET")
+            .current_dir(&self.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    }
+
+    /// Each `gws` invocation, arguments joined by spaces.
+    fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.log).unwrap_or_default().lines().map(|l| l.replace('\t', " ")).collect()
+    }
+
+    /// The environment each `gws` invocation ran with, as fake-gws recorded it.
+    fn envs(&self) -> Vec<String> {
+        std::fs::read_to_string(self.home.join("gws.log.env")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Every message sent through `gws gmail users messages send`, decoded.
+    fn sent(&self) -> String {
+        std::fs::read_to_string(self.home.join("gws.log.sent")).unwrap_or_default()
+    }
+
+    fn gws_dir(&self) -> PathBuf {
+        self.home.join("config/cloudmail/gws/gmail")
+    }
+}
+
+const GMAIL: &str = "poll_seconds = 60\n\n[accounts.gmail]\n";
+
+/// The default worker, plus a readable t_2 whose message isn't the one Gmail has.
+fn gmail_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
+    if req.method == "GET" && req.path == "/api/threads/t_2" {
+        let mut d = detail();
+        d["thread"] = thread_summary("t_2", "inbox", 900);
+        d["messages"][0]["id"] = json!("m_2");
+        d["messages"][0]["message_id"] = json!("<t2@x>");
+        return ok(d);
+    }
+    default_handler(req)
+}
+
+#[test]
+fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("inbox", GMAIL, true);
+    let o = h.run(&m, &["inbox"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v = json_out(&o);
+    // t-a2 carries t_1's Message-ID (hidden although far apart in time); t-a3 has t_2's sender,
+    // subject and time but another Message-ID, so it stays.
+    assert_eq!(ids(&v), ["gmail:t-a1", "t_1", "gmail:t-a3", "t_2"]);
+    assert_eq!(v["meta"]["duplicates_hidden"], 1);
+    let g = &v["data"][0];
+    assert_eq!(g["account"], "gmail");
+    assert_eq!(g["folder"], "inbox");
+    assert_eq!(g["unread"], true);
+    assert_eq!(g["has_attachments"], true);
+    assert_eq!(g["message_count"], 2);
+    assert_eq!(g["from"]["name"], "Ana Alvarez", "the latest mail you received, not your reply");
+    assert_eq!(g["subject"], "Trip itinerary");
+    assert_eq!(g["to_address"], "me@gmail.example");
+    let calls = h.calls();
+    assert!(calls.iter().any(|c| c.starts_with("gmail users threads list --params") && c.contains(r#""labelIds":["INBOX"]"#) && c.contains(r#""maxResults":25"#)), "{calls:?}");
+    assert!(calls.iter().any(|c| c.contains("threads get") && c.contains(r#""format":"metadata""#) && c.contains("Message-ID")), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.contains("modify") || c.contains("send")), "listing changes nothing");
+    // Every run is confined to cloudmail's own gws directory and sign-in.
+    let dir = h.gws_dir().display().to_string();
+    for e in h.envs() {
+        assert!(e.contains(&format!("config_dir={dir} ")) && e.contains("keyring=file") && e.contains("token=unset") && e.contains(&format!("adc={dir}/")) && e.ends_with(&format!("cwd={dir}")), "{e}");
+    }
+
+    // Without the worker's message to compare, the sender + subject + time match decides.
+    let v = json_out(&h.run(&mock(default_handler), &["inbox"], &[]));
+    assert_eq!(ids(&v), ["gmail:t-a1", "t_1", "t_2"]);
+
+    let o = h.run(&m, &["inbox", "--styled"], &[]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Gmail"));
+}
+
+#[test]
+fn gmail_folders_map_to_labels() {
+    let m = mock(default_handler);
+    let h = gmail_home("folders", GMAIL, true);
+    let v = json_out(&h.run(&m, &["archive"], &[]));
+    assert!(ids(&v).contains(&"gmail:t-a4".to_string()), "{v}");
+    assert!(!ids(&v).contains(&"gmail:t-a1".to_string()), "a thread still in the Inbox isn't archived: {v}");
+    assert_eq!(v["data"][0]["folder"], "archive");
+    let v = json_out(&h.run(&m, &["sent"], &[]));
+    assert!(ids(&v).contains(&"gmail:t-a5".to_string()), "{v}");
+    assert!(h.calls().iter().any(|c| c.contains(r#""labelIds":["SENT"]"#)));
+    let before = h.calls().len();
+    let v = json_out(&h.run(&m, &["threads", "list", "--folder", "screener"], &[]));
+    assert!(!ids(&v).iter().any(|i| i.starts_with("gmail:")), "{v}");
+    assert_eq!(h.calls().len(), before, "Gmail has no Screener, so it isn't asked");
+    let o = h.run(&m, &["threads", "list", "--folder", "feed"], &[]);
+    assert_eq!(o.status.code(), Some(2), "HEY's boxes need HEY");
+}
+
+#[test]
+fn gmail_thread_read_attachments_raw_and_reply() {
+    let m = mock(default_handler);
+    let h = gmail_home("read", GMAIL, true);
+    let v = json_out(&h.run(&m, &["thread", "read", "gmail:t-a1"], &[]));
+    let t = &v["data"]["thread"];
+    assert_eq!(t["subject"], "Trip itinerary");
+    assert_eq!(t["account"], "gmail");
+    let msgs = v["data"]["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0]["id"], "gmail:t-a1/m-a1-1");
+    assert_eq!(msgs[0]["from"]["email"], "ana@example.net");
+    assert_eq!(msgs[0]["cc"][0]["name"], "Ops, Travel");
+    assert_eq!(msgs[0]["message_id"], "<trip-1@example.net>");
+    assert!(msgs[0]["text"].as_str().unwrap().starts_with("Here is the plan for Friday."), "{}", msgs[0]["text"]);
+    let v = json_out(&h.run(&m, &["thread", "read", "gmail:t-a1", "--html"], &[]));
+    assert!(v["data"]["messages"][0]["html"].as_str().unwrap().contains("<b>Friday</b>"), "{v}");
+    assert_eq!(msgs[0]["attachments"][0]["id"], "gmail:m-a1-1:1");
+    assert_eq!(msgs[0]["attachments"][0]["filename"], "itinerary.pdf");
+    assert_eq!(msgs[0]["attachments"][1]["inline"], true);
+    assert_eq!(msgs[1]["outgoing"], true);
+    assert!(h.calls().iter().any(|c| c.contains("threads get") && c.contains(r#""format":"full""#)));
+    assert!(!h.calls().iter().any(|c| c.contains("modify")), "reading doesn't mark read unless asked");
+    let v = json_out(&h.run(&m, &["thread", "read", "gmail:t-a1", "--mark-read"], &[]));
+    assert_eq!(v["data"]["thread"]["unread"], false);
+    assert!(h.calls().iter().any(|c| c.contains("threads modify") && c.contains(r#""removeLabelIds":["UNREAD"]"#)));
+
+    let v = json_out(&h.run(&m, &["attachment", "list", "gmail:t-a1"], &[]));
+    assert_eq!(v["data"].as_array().unwrap().len(), 1, "inline images aren't listed");
+    let dir = h.home.join("dl");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = h.run(&m, &["attachment", "save", "gmail:m-a1-1:1", "-o", &format!("{}/", dir.display())], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(std::fs::read(dir.join("itinerary.pdf")).unwrap(), b"%PDF-");
+    assert!(h.calls().iter().any(|c| c.contains("messages attachments get") && c.contains(r#""messageId":"m-a1-1""#)));
+    let o = h.run(&m, &["raw", "gmail:t-a1/m-a1-1", "-o", &format!("{}/", dir.display())], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(std::fs::read_to_string(dir.join("gmail_t-a1_m-a1-1.eml")).unwrap().contains("Subject: Trip itinerary"));
+
+    let v = json_out(&h.run(&m, &["reply", "gmail:t-a1", "--all", "-m", "See you there", "--dry-run"], &[]));
+    let req = &v["data"]["request"];
+    assert_eq!(req["to"], json!(["Ana Alvarez <ana@example.net>"]));
+    assert_eq!(req["cc"], json!(["Ops, Travel <travel@example.net>"]), "your own Gmail address is left out");
+    assert_eq!(req["from"], "me@gmail.example");
+    assert_eq!(req["reply_to_message_id"], "gmail:t-a1/m-a1-1");
+
+    let o = h.run(&m, &["reply", "gmail:t-a1", "-m", "See you there"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(json_out(&o)["data"]["thread_id"], "gmail:t-a1");
+    let sent = h.sent();
+    for want in ["From: Sam Sample <me@gmail.example>\r\n", "To: Ana Alvarez <ana@example.net>\r\n", "Subject: Re: Trip itinerary\r\n", "In-Reply-To: <trip-1@example.net>\r\n", "References: <trip-0@example.net> <trip-1@example.net>\r\n"] {
+        assert!(sent.contains(want), "missing {want:?} in\n{sent}");
+    }
+    assert!(h.calls().iter().any(|c| c.contains("messages send") && c.contains(r#""threadId":"t-a1""#)), "{:?}", h.calls());
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a Gmail reply never goes through the worker");
+}
+
+#[test]
+fn gmail_moves_marks_and_composes() {
+    let m = mock(default_handler);
+    let h = gmail_home("actions", GMAIL, true);
+    for (args, body) in [
+        (&["thread", "archive", "gmail:t-a1"][..], r#"{"addLabelIds":[],"removeLabelIds":["INBOX"]}"#),
+        (&["thread", "unarchive", "gmail:t-a4"], r#"{"addLabelIds":["INBOX"],"removeLabelIds":[]}"#),
+        (&["thread", "markread", "gmail:t-a1"], r#"{"addLabelIds":[],"removeLabelIds":["UNREAD"]}"#),
+        (&["thread", "unread", "gmail:t-a1"], r#"{"addLabelIds":["UNREAD"],"removeLabelIds":[]}"#),
+    ] {
+        let o = h.run(&m, args, &[]);
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stdout));
+        assert!(h.calls().last().unwrap().ends_with(&format!("--json {body}")), "{args:?}: {:?}", h.calls().last());
+    }
+    let o = h.run(&m, &["thread", "archive", "t_1", "gmail:t-a2"], &[]);
+    assert!(o.status.success());
+    assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
+    assert_eq!(h.run(&m, &["thread", "archive", "gmail:nope"], &[]).status.code(), Some(4));
+    assert_eq!(h.run(&m, &["thread", "delete", "gmail:t-a1", "--yes"], &[]).status.code(), Some(2), "deleting stays a worker-only action");
+
+    let o = h.run(&m, &["compose", "--from", "sam@alias.example", "--to", "Lee <lee@example.org>", "--subject", "Lunch", "-m", "Thursday?"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let sent = h.sent();
+    assert!(sent.contains("From: Sam at Alias <sam@alias.example>\r\n") && sent.contains("To: Lee <lee@example.org>\r\n") && !sent.contains("In-Reply-To"), "{sent}");
+    assert!(!h.calls().iter().any(|c| c.contains("threadId")), "a new message starts its own thread");
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
+    let o = h.run(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello"], &[]);
+    assert!(o.status.success());
+    assert!(requests(&m).iter().any(|r| r.path == "/api/send"), "no --from: your worker sends, as before");
+}
+
+#[test]
+fn gmail_search_uses_gmail_queries() {
+    let m = mock(default_handler);
+    let h = gmail_home("search", GMAIL, true);
+    let v = json_out(&h.run(&m, &["search", "trip", "from:ana"], &[]));
+    assert_eq!(ids(&v), ["gmail:t-a1", "gmail:t-a6", "t_1", "t_2"]);
+    assert!(h.calls().iter().any(|c| c.contains("threads list") && c.contains(r#""q":"trip from:ana""#)), "{:?}", h.calls());
+}
+
+#[test]
+fn a_failing_gmail_never_breaks_your_own_mail() {
+    let m = mock(default_handler);
+    let h = gmail_home("isolation", GMAIL, true);
+    for (mode, code) in [("expired", "account_unauthorized"), ("revoked", "account_unauthorized"), ("offline", "account_unavailable"), ("crash", "account_unavailable"), ("garbage", "account_unavailable")] {
+        let o = h.run(&m, &["inbox"], &[("FAKE_GWS_MODE", mode)]);
+        assert!(o.status.success(), "{mode}: {}", String::from_utf8_lossy(&o.stdout));
+        let v = json_out(&o);
+        assert_eq!(ids(&v), ["t_1", "t_2"], "{mode}");
+        assert_eq!(v["meta"]["warnings"][0]["account"], "gmail", "{mode}");
+        assert_eq!(v["meta"]["warnings"][0]["code"], code, "{mode}: {v}");
+    }
+    let v = json_out(&h.run(&m, &["inbox"], &[("FAKE_GWS_MODE", "expired")]));
+    assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains("run `cloudmail account add gmail` to sign in again"), "{v}");
+    let o = h.run(&m, &["inbox", "--styled"], &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Google's Workspace CLI isn't installed"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Signed out: gws isn't even run.
+    let h = gmail_home("signed-out", GMAIL, false);
+    let v = json_out(&h.run(&m, &["inbox"], &[]));
+    assert_eq!(ids(&v), ["t_1", "t_2"]);
+    assert_eq!(v["meta"]["warnings"][0]["code"], "account_unauthorized");
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+
+    // Asking Gmail itself for something does fail, with Gmail's reason and exit code.
+    let h = gmail_home("isolation2", GMAIL, true);
+    let o = h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "expired")]);
+    assert_eq!(o.status.code(), Some(3));
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "account_unauthorized");
+    assert!(v["error"]["message"].as_str().unwrap().contains("cloudmail account add gmail"));
+    assert_eq!(h.run(&m, &["thread", "read", "gmail:nope"], &[]).status.code(), Some(4));
+    assert_eq!(h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "offline")]).status.code(), Some(5));
+}
+
+#[test]
+fn gmail_account_add_list_remove() {
+    let m = mock(default_handler);
+    let h = gmail_home("accounts", "poll_seconds = 30\n", false);
+    let cfg = h.home.join("config/cloudmail/config.toml");
+    let client = [("CLOUDMAIL_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com"), ("CLOUDMAIL_GOOGLE_CLIENT_SECRET", "test-secret")];
+
+    let o = h.run(&m, &["account", "add", "gmail", "--login"], &[]);
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "not_configured");
+    assert!(v["error"]["message"].as_str().unwrap().contains("Google sign-in isn't configured in this build"), "{v}");
+
+    let o = h.run(&m, &["account", "add", "gmail"], &client);
+    assert_eq!(o.status.code(), Some(3), "no terminal: no browser sign-in, just the hint");
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "not_logged_in");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("at a terminal"));
+
+    let o = h.run(&m, &["account", "add", "gmail"], &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")]);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(json_out(&o)["error"]["code"], "not_installed");
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
+
+    let o = h.run(&m, &["account", "add", "gmail", "--login"], &[client[0], client[1], ("FAKE_GWS_MODE", "deny")]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(json_out(&o)["error"]["message"].as_str().unwrap().contains("access_denied"));
+
+    let o = h.run(&m, &["account", "add", "gmail", "--login"], &client);
+    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    let v = json_out(&o);
+    assert_eq!(v["data"]["addresses"], json!(["me@gmail.example", "sam@alias.example"]), "verified send-as addresses, default first");
+    assert!(v["summary"].as_str().unwrap().contains("no Screener"));
+    let calls = h.calls();
+    assert!(calls.iter().any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify"), "{calls:?}");
+    assert!(calls.iter().any(|c| c.starts_with("browser https://accounts.google.com/o/oauth2/auth?") && c.contains("client_id=test-client")), "the link opens in the browser: {calls:?}");
+    assert!(h.envs().iter().any(|e| e.contains("client_id=test-client.apps.googleusercontent.com")));
+    assert!(h.gws_dir().join("credentials.enc").is_file());
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains("poll_seconds = 30") && text.contains("[accounts.gmail]") && !text.contains("client"), "{text}");
+
+    // Already signed in: nothing to do in the browser, even with no client configured.
+    let logins = || h.calls().iter().filter(|c| c.starts_with("auth login")).count();
+    let before = logins();
+    let o = h.run(&m, &["account", "add", "gmail"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(logins(), before);
+    // A sign-in Google no longer accepts has to be done again.
+    let o = h.run(&m, &["account", "add", "gmail"], &[client[0], client[1], ("FAKE_GWS_MODE", "expired")]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(json_out(&o)["error"]["message"].as_str().unwrap().contains("needs signing in again"));
+
+    let v = json_out(&h.run(&m, &["account", "list"], &[]));
+    assert_eq!(v["data"]["accounts"][0]["name"], "gmail");
+    assert_eq!(v["data"]["accounts"][0]["ok"], true);
+    assert_eq!(v["data"]["accounts"][0]["addresses"][0], "me@gmail.example");
+    let v = json_out(&h.run(&m, &["status"], &[]));
+    assert_eq!(v["data"]["accounts"][0]["label"], "Gmail");
+
+    // Another Gmail account under its own name, with its own client, directory and ID prefix.
+    let o = h.run(&m, &["account", "add", "gmail", "--name", "work", "--client-id", "own-id", "--client-secret", "own-secret", "--login"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    assert!(text.contains("[accounts.work]") && text.contains("provider = \"gmail\"") && text.contains("client_id = \"own-id\""), "{text}");
+    assert!(h.home.join("config/cloudmail/gws/work/credentials.enc").is_file());
+    let v = json_out(&h.run(&m, &["inbox"], &[]));
+    assert!(ids(&v).contains(&"work:t-a1".to_string()) && ids(&v).contains(&"gmail:t-a1".to_string()), "{v}");
+
+    let o = h.run(&m, &["account", "remove", "gmail"], &[]);
+    assert!(o.status.success());
+    assert_eq!(json_out(&o)["data"]["signed_out"], true);
+    assert!(!h.gws_dir().exists(), "cloudmail's own Gmail sign-in goes with the account");
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("[accounts.gmail]"));
+    assert_eq!(h.run(&m, &["account", "remove", "gmail"], &[]).status.code(), Some(4));
+    assert!(!h.calls().iter().any(|c| c.starts_with("auth logout")), "signing out is removing cloudmail's own directory");
+}
+
+#[test]
+fn gmail_and_hey_together() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("both", "[accounts.gmail]\n\n[accounts.hey]\n", true);
+    let v = json_out(&h.run(&m, &["inbox"], &[]));
+    assert_eq!(ids(&v), ["gmail:t-a1", "hey:9001:7001", "t_1", "gmail:t-a3", "t_2"]);
+    assert_eq!(v["meta"]["duplicates_hidden"], 2, "one copy each");
+    let o = h.run(&m, &["archive", "--styled"], &[]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("Gmail") && out.contains("HEY"), "{out}");
+}

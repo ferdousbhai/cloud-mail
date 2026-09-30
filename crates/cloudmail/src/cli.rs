@@ -88,7 +88,7 @@ pub enum Command {
     /// View or change the local config file
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Link other mail accounts (HEY) so their mail shows next to yours; opt-in
+    /// Link other mail accounts (HEY, Gmail) so their mail shows next to yours; opt-in
     #[command(subcommand)]
     Account(AccountCommand),
 
@@ -186,7 +186,7 @@ pub struct SearchArgs {
 pub enum ThreadCommand {
     /// Show every message in a thread (does not mark it read unless --mark-read)
     Read {
-        /// Thread ID (t_…, or hey:… for a linked HEY account)
+        /// Thread ID (t_…, or hey:… / gmail:… for a linked account)
         id: String,
         /// Output the original HTML bodies instead of plain text
         #[arg(long)]
@@ -304,7 +304,7 @@ pub struct ComposeArgs {
 
 #[derive(Args, Debug)]
 pub struct ReplyArgs {
-    /// Thread ID (t_…, or hey:… to reply through HEY)
+    /// Thread ID (t_…, or hey:… / gmail:… to reply through that account)
     pub thread_id: String,
     /// Reply to everyone on the latest message (your own addresses are left out)
     #[arg(long, short = 'a')]
@@ -326,12 +326,12 @@ pub struct ReplyArgs {
 pub enum AttachmentCommand {
     /// List the attachments in a thread
     List {
-        /// Thread ID (t_… or hey:…)
+        /// Thread ID (t_…, hey:… or gmail:…)
         thread_id: String,
     },
     /// Download an attachment
     Save {
-        /// Attachment ID (a_… or hey:…)
+        /// Attachment ID (a_…, hey:… or gmail:…)
         id: String,
         /// Output file or directory (- for stdout); defaults to the attachment's name in the current directory
         #[arg(long, short = 'o')]
@@ -519,9 +519,9 @@ pub struct SetupArgs {
 pub enum AccountCommand {
     /// Show your worker and every linked account, with whether each is signed in
     List,
-    /// Link an account: `cloudmail account add hey` (signs in with `hey auth login` if needed)
+    /// Link an account: `cloudmail account add hey` or `cloudmail account add gmail` (one browser sign-in if needed)
     Add {
-        /// Provider to link (hey)
+        /// Provider to link (hey, gmail)
         provider: String,
         /// Name for the account, which prefixes its IDs (default: the provider)
         #[arg(long)]
@@ -529,12 +529,21 @@ pub enum AccountCommand {
         /// The provider's CLI, when it isn't on PATH under its usual name
         #[arg(long, value_name = "PATH")]
         command: Option<String>,
-        /// Only this one of the provider's linked accounts (a `hey account list` ID; default: all)
+        /// HEY: only this one of its linked accounts (a `hey account list` ID; default: all)
         #[arg(long, value_name = "ID")]
         account: Option<String>,
+        /// Gmail: sign in with this Google OAuth client (a Desktop app client) instead of cloudmail's own
+        #[arg(long, value_name = "ID", requires = "client_secret")]
+        client_id: Option<String>,
+        /// Gmail: the secret of --client-id
+        #[arg(long, value_name = "SECRET", requires = "client_id")]
+        client_secret: Option<String>,
         /// Don't start a browser sign-in even on a terminal; fail if not signed in
-        #[arg(long)]
+        #[arg(long, conflicts_with = "login")]
         no_login: bool,
+        /// Start the browser sign-in when needed even without a terminal (for a script that shows the browser)
+        #[arg(long)]
+        login: bool,
     },
     /// Unlink an account (nothing changes in the account itself, and its CLI stays signed in)
     Remove {

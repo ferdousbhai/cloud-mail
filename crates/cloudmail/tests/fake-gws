@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# A stand-in for Google's Workspace CLI `gws` (googleworkspace/cli 0.22) for tests and headless
+# smoke runs. It answers raw Gmail API calls (`gws gmail users … --params '<json>'`) with
+# synthetic data shaped like the Gmail API's JSON, and never talks to Google.
+#
+#   FAKE_GWS_LOG=<file>   append each invocation's arguments (tab-separated) to <file>; the
+#                         environment it ran with goes to <file>.env, sent messages to <file>.sent
+#   FAKE_GWS_MODE=ok (default) | expired | revoked | offline | crash | garbage | slow
+#
+# Like gws, it keeps its sign-in in $GOOGLE_WORKSPACE_CLI_CONFIG_DIR/credentials.enc, which
+# `auth login` writes. Point cloudmail at it with CLOUDMAIL_GWS_COMMAND=/path/to/fake-gws.
+
+log() { [[ -n "$FAKE_GWS_LOG" ]] && printf '%s\n' "$1" >> "$FAKE_GWS_LOG"; }
+(IFS=$'\t'; log "$*")
+if [[ -n "$FAKE_GWS_LOG" ]]; then
+  printf 'config_dir=%s keyring=%s client_id=%s adc=%s token=%s cwd=%s\n' "$GOOGLE_WORKSPACE_CLI_CONFIG_DIR" "$GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" "$GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_WORKSPACE_CLI_TOKEN-unset}" "$PWD" >> "$FAKE_GWS_LOG.env"
+fi
+mode="${FAKE_GWS_MODE:-ok}"
+dir="${GOOGLE_WORKSPACE_CLI_CONFIG_DIR:-$HOME/.config/gws}"
+
+# Doubles as the browser (CLOUDMAIL_BROWSER=fake-gws) in sign-in tests.
+if [[ "$1" == https://* ]]; then log "browser $1"; exit 0; fi
+
+err() { # exit code, http code, reason, message
+  printf '{\n  "error": {\n    "code": %s,\n    "message": "%s",\n    "reason": "%s"\n  }\n}\n' "$2" "$4" "$3"
+  echo "error[${3%Error}]: $4" >&2
+  exit "$1"
+}
+
+case "$1" in
+  --version) printf 'gws 0.22.5-fake\nThis is not an officially supported Google product.\n'; exit 0 ;;
+esac
+
+if [[ "$1 $2" == "auth login" ]]; then
+  [[ " $* " == *" --scopes https://www.googleapis.com/auth/gmail.modify "* ]] || err 3 400 validationError "fake-gws: expected --scopes gmail.modify"
+  if [[ -z "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" || -z "$GOOGLE_WORKSPACE_CLI_CLIENT_SECRET" ]]; then
+    err 2 401 authError "No OAuth client configured."
+  fi
+  echo "Using keyring backend: $GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" >&2
+  printf 'Open this URL in your browser to authenticate:\n\n  https://accounts.google.com/o/oauth2/auth?scope=https%%3A%%2F%%2Fwww.googleapis.com%%2Fauth%%2Fgmail.modify&access_type=offline&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8080&response_type=code&client_id=%s\n\n' "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" >&2
+  [[ "$mode" == "deny" ]] && err 2 401 authError "OAuth flow failed: access_denied"
+  mkdir -p "$dir" && printf 'fake-encrypted-credentials' > "$dir/credentials.enc" && printf 'fake-key' > "$dir/.encryption_key"
+  printf '{\n  "status": "success",\n  "message": "Authentication successful. Encrypted credentials saved.",\n  "account": "me@gmail.example",\n  "credentials_file": "%s/credentials.enc",\n  "scopes": ["https://www.googleapis.com/auth/gmail.modify", "openid"]\n}\n' "$dir"
+  exit 0
+fi
+
+[[ "$1" == gmail && "$2" == users ]] || err 3 400 validationError "fake-gws doesn't know: $*"
+shift 2
+method=(); params=""; body=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --params) params="$2"; shift 2 ;;
+    --json) body="$2"; shift 2 ;;
+    *) method+=("$1"); shift ;;
+  esac
+done
+method="${method[*]}"
+
+[[ -f "$dir/credentials.enc" ]] || err 2 401 authError "Access denied. No credentials provided. Run \`gws auth login\` or set GOOGLE_APPLICATION_CREDENTIALS to a service account key file."
+case "$mode" in
+  expired) err 2 401 authError "Authentication failed: Failed to get token: Server error: invalid_grant: Token has been expired or revoked." ;;
+  revoked) err 1 401 unauthorized "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential." ;;
+  offline) err 4 500 discoveryError "Failed to fetch Discovery Document: error sending request for url (https://gmail.googleapis.com/\$discovery/rest?version=v1)" ;;
+  crash) echo "thread 'main' panicked at src/main.rs:1:1: fake-gws crashed" >&2; exit 101 ;;
+  garbage) echo "this is not json"; exit 0 ;;
+  slow) sleep 5 ;;
+esac
+
+param() { [[ "$params" =~ \"$1\":\"([^\"]*)\" ]] && printf '%s' "${BASH_REMATCH[1]}"; }
+b64url() { printf '%s' "$1" | base64 -w0 | tr '+/' '-_' | tr -d '='; }
+
+ME='me@gmail.example'
+# message: id thread labels date(ms) from to subject msgid snippet [delivered] [content-type]
+meta() {
+  local ct="${11:-text/plain; charset=UTF-8}"
+  printf '{"id":"%s","threadId":"%s","labelIds":[%s],"snippet":"%s","sizeEstimate":2048,"historyId":"9%s","internalDate":"%s","payload":{"partId":"","mimeType":"%s","filename":"","headers":[{"name":"Delivered-To","value":"%s"},{"name":"From","value":"%s"},{"name":"To","value":"%s"},{"name":"Subject","value":"%s"},{"name":"Date","value":"Wed, 30 Sep 2026 08:00:00 +0000"},{"name":"Message-ID","value":"%s"},{"name":"Content-Type","value":"%s"}],"body":{"size":0}}}' \
+    "$1" "$2" "$3" "$9" "$4" "$4" "${ct%%;*}" "${10:-$ME}" "$5" "$6" "$7" "$8" "$ct"
+}
+full_plain() { # like meta, with a text/plain body
+  local data; data=$(b64url "$9")
+  printf '{"id":"%s","threadId":"%s","labelIds":[%s],"snippet":"%s","sizeEstimate":2048,"historyId":"9%s","internalDate":"%s","payload":{"partId":"","mimeType":"text/plain","filename":"","headers":[{"name":"Delivered-To","value":"%s"},{"name":"From","value":"%s"},{"name":"To","value":"%s"},{"name":"Subject","value":"%s"},{"name":"Message-ID","value":"%s"},{"name":"Content-Type","value":"text/plain; charset=UTF-8"}],"body":{"size":%s,"data":"%s"}}}' \
+    "$1" "$2" "$3" "$9" "$4" "$4" "$ME" "$5" "$6" "$7" "$8" "${#9}" "$data"
+}
+ana_full() { # the first message of the trip thread, with text, HTML and two attachments
+  local text html pdf
+  text=$(b64url $'Here is the plan for Friday.\nSee the attached itinerary.')
+  html=$(b64url '<div>Here is the plan for <b>Friday</b>.</div><div>See the attached itinerary.</div>')
+  printf '{"id":"m-a1-1","threadId":"t-a1","labelIds":["INBOX","UNREAD","IMPORTANT","CATEGORY_PERSONAL"],"snippet":"Here is the plan for Friday.","historyId":"91","internalDate":"1790751600000","payload":{"partId":"","mimeType":"multipart/mixed","filename":"","headers":[{"name":"Delivered-To","value":"%s"},{"name":"From","value":"Ana Alvarez <ana@example.net>"},{"name":"To","value":"Sam Sample <%s>"},{"name":"Cc","value":"\\"Ops, Travel\\" <travel@example.net>"},{"name":"Subject","value":"Trip itinerary"},{"name":"Message-ID","value":"<trip-1@example.net>"},{"name":"Content-Type","value":"multipart/mixed; boundary=\\"b1\\""}],"body":{"size":0},"parts":[{"partId":"0","mimeType":"multipart/alternative","filename":"","headers":[{"name":"Content-Type","value":"multipart/alternative; boundary=\\"b2\\""}],"body":{"size":0},"parts":[{"partId":"0.0","mimeType":"text/plain","filename":"","headers":[{"name":"Content-Type","value":"text/plain; charset=\\"UTF-8\\""}],"body":{"size":54,"data":"%s"}},{"partId":"0.1","mimeType":"text/html","filename":"","headers":[{"name":"Content-Type","value":"text/html; charset=\\"UTF-8\\""}],"body":{"size":80,"data":"%s"}}]},{"partId":"1","mimeType":"application/pdf","filename":"itinerary.pdf","headers":[{"name":"Content-Type","value":"application/pdf; name=\\"itinerary.pdf\\""},{"name":"Content-Disposition","value":"attachment; filename=\\"itinerary.pdf\\""}],"body":{"attachmentId":"ANGjdJ8fakeAttachmentIdThatGmailChangesOnEveryRead","size":5}},{"partId":"2","mimeType":"image/png","filename":"map.png","headers":[{"name":"Content-Type","value":"image/png"},{"name":"Content-ID","value":"<map@example.net>"},{"name":"Content-Disposition","value":"inline"}],"body":{"attachmentId":"ANGjdJ8fakeInlineImage","size":10}}]}}' \
+    "$ME" "$ME" "$text" "$html"
+}
+
+thread() { # id format
+  local f="$2" m1 m2
+  case "$1" in
+    t-a1)
+      if [[ "$f" == full ]]; then m1=$(ana_full); else m1=$(meta m-a1-1 t-a1 '"INBOX","UNREAD","IMPORTANT","CATEGORY_PERSONAL"' 1790751600000 'Ana Alvarez <ana@example.net>' "Sam Sample <$ME>" 'Trip itinerary' '<trip-1@example.net>' 'Here is the plan for Friday.' "$ME" 'multipart/mixed; boundary=\"b1\"'); fi
+      m2=$(full_plain m-a1-2 t-a1 '"SENT","INBOX"' 1790755200000 "Sam Sample <$ME>" 'Ana Alvarez <ana@example.net>' 'Re: Trip itinerary' '<CAF-sam-2@mail.gmail.com>' 'Thanks, looks great.')
+      printf '{"id":"t-a1","historyId":"201","messages":[%s,%s]}' "$m1" "$m2" ;;
+    t-a2) # a copy of the worker's t_1 (same Message-ID), long after it by the clock
+      printf '{"id":"t-a2","historyId":"202","messages":[%s]}' "$(full_plain m-a2-1 t-a2 '"INBOX","UNREAD","CATEGORY_UPDATES"' 1790000000000 'Joe <joe@x.com>' 'support@example.org' 'Subject t_1' '<a@x>' 'Where is it?')" ;;
+    t-a3) # the same sender, subject and time as the worker's t_2, but another message
+      printf '{"id":"t-a3","historyId":"203","messages":[%s]}' "$(full_plain m-a3-1 t-a3 '"INBOX","CATEGORY_UPDATES"' 950 'Joe <joe@x.com>' "$ME" 'Subject t_2' '<different@x.com>' 'Not the same mail')" ;;
+    t-a4)
+      printf '{"id":"t-a4","historyId":"204","messages":[%s]}' "$(full_plain m-a4-1 t-a4 '"CATEGORY_UPDATES"' 1790600000000 'Shop <receipts@shop.example>' "$ME" 'Your receipt #42' '<r42@shop.example>' 'Thanks for your order')" ;;
+    t-a5)
+      printf '{"id":"t-a5","historyId":"205","messages":[%s]}' "$(full_plain m-a5-1 t-a5 '"SENT"' 1790700000000 "Sam Sample <$ME>" 'Lee <lee@example.org>' 'Lunch Thursday?' '<CAF-sam-5@mail.gmail.com>' 'Are you free?')" ;;
+    t-a6)
+      printf '{"id":"t-a6","historyId":"206","messages":[%s]}' "$(full_plain m-a6-1 t-a6 '"CATEGORY_PERSONAL"' 1735804800000 'Ana Alvarez <ana@example.net>' "$ME" 'Old trip notes' '<trip-0@example.net>' 'Last year')" ;;
+    *) err 1 404 notFound "Requested entity was not found." ;;
+  esac
+}
+entry() { printf '{"id":"%s","snippet":"%s","historyId":"20%s"}' "$1" "$2" "${1: -1}"; }
+listing() { local IFS=,; printf '{"threads":[%s],"resultSizeEstimate":%s}\n' "$*" "$#"; }
+
+id=$(param id)
+case "$method" in
+  "getProfile") printf '{"emailAddress":"%s","messagesTotal":1234,"threadsTotal":987,"historyId":"301"}\n' "$ME" ;;
+  "settings sendAs list")
+    printf '{"sendAs":[{"sendAsEmail":"%s","displayName":"Sam Sample","replyToAddress":"","signature":"","isPrimary":true,"isDefault":true},{"sendAsEmail":"sam@alias.example","displayName":"Sam at Alias","isDefault":false,"treatAsAlias":true,"verificationStatus":"accepted"},{"sendAsEmail":"pending@alias.example","displayName":"","verificationStatus":"pending"}]}\n' "$ME" ;;
+  "threads list")
+    q=$(param q)
+    if [[ "$params" == *'"labelIds":["INBOX"]'* ]]; then
+      listing "$(entry t-a1 'Thanks, looks great.')" "$(entry t-a2 'Where is it?')" "$(entry t-a3 'Not the same mail')"
+    elif [[ "$params" == *'"labelIds":["SENT"]'* ]]; then
+      listing "$(entry t-a1 'Thanks, looks great.')" "$(entry t-a5 'Are you free?')"
+    elif [[ "$q" == -in:inbox* ]]; then
+      # Gmail matches the thread whose older message is out of the Inbox too; cloudmail drops it.
+      listing "$(entry t-a1 'Thanks, looks great.')" "$(entry t-a4 'Thanks for your order')"
+    elif [[ -n "$q" ]]; then
+      listing "$(entry t-a1 'Thanks, looks great.')" "$(entry t-a6 'Last year')"
+    else
+      listing "$(entry t-a1 'x')" "$(entry t-a4 'x')" "$(entry t-a5 'x')"
+    fi ;;
+  "threads get") thread "$id" "$(param format)"; echo ;;
+  "threads modify")
+    [[ "$id" == t-a* ]] || err 1 404 notFound "Requested entity was not found."
+    printf '{"id":"%s","historyId":"299","messages":[]}\n' "$id" ;;
+  "messages get")
+    format=$(param format)
+    case "$id" in
+      m-a1-1)
+        case "$format" in
+          raw) printf '{"id":"m-a1-1","threadId":"t-a1","raw":"%s"}\n' "$(b64url $'From: Ana Alvarez <ana@example.net>\r\nSubject: Trip itinerary\r\nMessage-ID: <trip-1@example.net>\r\n\r\nHere is the plan for Friday.\r\n')" ;;
+          metadata) printf '{"id":"m-a1-1","threadId":"t-a1","labelIds":["INBOX"],"payload":{"mimeType":"multipart/mixed","headers":[{"name":"Message-ID","value":"<trip-1@example.net>"},{"name":"References","value":"<trip-0@example.net>"}]}}\n' ;;
+          *) ana_full; echo ;;
+        esac ;;
+      m-a*) printf '{"id":"%s","threadId":"t-a1","payload":{"mimeType":"text/plain","headers":[{"name":"Message-ID","value":"<%s@example.net>"}]}}\n' "$id" "$id" ;;
+      *) err 1 404 notFound "Requested entity was not found." ;;
+    esac ;;
+  "messages attachments get")
+    [[ "$(param messageId)" == m-a1-1 && "$id" == ANGjdJ8fake* ]] || err 1 400 invalidArgument "Invalid attachment token"
+    printf '{"size":5,"data":"%s"}\n' "$(b64url '%PDF-')" ;;
+  "messages send")
+    [[ "$body" =~ \"raw\":\"([^\"]*)\" ]] || err 1 400 invalidArgument "Invalid value for ByteString"
+    raw="${BASH_REMATCH[1]}"
+    pad=$(( (4 - ${#raw} % 4) % 4 )); raw="$raw$(printf '%*s' $pad '' | tr ' ' '=')"
+    [[ -n "$FAKE_GWS_LOG" ]] && printf '%s' "$raw" | tr -- '-_' '+/' | base64 -d >> "$FAKE_GWS_LOG.sent"
+    thread_id="t-new"; [[ "$body" =~ \"threadId\":\"([^\"]*)\" ]] && thread_id="${BASH_REMATCH[1]}"
+    printf '{"id":"m-sent-1","threadId":"%s","labelIds":["SENT"]}\n' "$thread_id" ;;
+  *) err 3 400 validationError "fake-gws doesn't know: gmail users $method" ;;
+esac

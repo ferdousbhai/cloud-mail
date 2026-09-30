@@ -36,9 +36,9 @@ pub fn clean_line(s: &str) -> String {
     clean(s).replace(['\n', '\t'], " ")
 }
 
-/// "HEY" for a linked account's thread, "" for the worker's own.
+/// "HEY" or "Gmail" for a linked account's thread, "" for the worker's own.
 pub fn account_tag(account: Option<&str>) -> String {
-    account.map(|a| if a == "hey" { "HEY".to_string() } else { a.to_string() }).unwrap_or_default()
+    account.map(cloudmail_api::provider::account_label).unwrap_or_default()
 }
 
 pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {

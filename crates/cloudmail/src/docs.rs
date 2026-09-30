@@ -68,8 +68,18 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("config path", &["cloudmail config path"]),
     ("account", &["cloudmail account list"]),
     ("account list", &["cloudmail account list", "cloudmail account list --json"]),
-    ("account add", &["cloudmail account add hey", "cloudmail account add hey --command ~/.local/bin/hey", "cloudmail account add hey --no-login --json"]),
-    ("account remove", &["cloudmail account remove hey"]),
+    (
+        "account add",
+        &[
+            "cloudmail account add gmail",
+            "cloudmail account add gmail --name work",
+            "cloudmail account add gmail --client-id 123-abc.apps.googleusercontent.com --client-secret GOCSPX-xyz",
+            "cloudmail account add hey",
+            "cloudmail account add hey --command ~/.local/bin/hey",
+            "cloudmail account add hey --no-login --json",
+        ],
+    ),
+    ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey"]),
     (
         "setup",
         &[
@@ -272,36 +282,51 @@ Watch for new mail (JSONL, one object per new or updated thread):
     cloudmail watch --folder all --interval 30
     # {"event":"thread","thread":{"id":"t_…","folder":"screener","from":{…},"subject":"…",…}}
 
-## Linked accounts (HEY)
+## Linked accounts (HEY, Gmail)
 
 Optional. `cloudmail account add hey` links a HEY account through the official `hey` CLI (it must be
 installed and signed in; on a terminal, add runs `hey auth login` for you, otherwise it fails with
-`not_logged_in` and the hint). `cloudmail account list --json` shows each account and whether it works.
+`not_logged_in` and the hint). `cloudmail account add gmail` links Gmail through Google's Workspace CLI
+`gws` (installed with `npm install -g @googleworkspace/cli`); on a terminal it opens one Google sign-in
+in the browser (Gmail access only, kept in cloudmail's own gws directory, apart from any gws of yours),
+otherwise it fails with `not_logged_in`; `--login` signs in without a terminal. A build without
+cloudmail's Google client fails with `not_configured` until CLOUDMAIL_GOOGLE_CLIENT_ID/SECRET or
+`--client-id/--client-secret` name one. `cloudmail account list --json` shows each account and whether
+it works.
 
-Once linked, HEY mail appears next to yours with `"account": "hey"` on threads and Screener senders
-(your worker's own mail has no `account` key). IDs from HEY are prefixed and go back to HEY:
+Once linked, their mail appears next to yours with `"account": "hey"` / `"account": "gmail"` on threads
+and HEY's Screener senders (your worker's own mail has no `account` key). IDs are prefixed and go back
+to their account:
 
     hey:<topic>:<box-item>   a thread in a box (read, reply, archive, markread/unread)
     hey:<topic>              a thread outside any box (read and reply only)
     hey:<topic>/<entry>      a message        hey:<id>   an attachment or a Screener sender
+    gmail:<thread>           a Gmail thread   gmail:<thread>/<message>   a message (also for `raw`)
+    gmail:<message>:<part>   a Gmail attachment
 
-Folders: `inbox` = your Inbox + HEY's Imbox; `archive` = your Archive + HEY's Paper Trail (archiving a
-HEY thread moves it to Paper Trail, unarchive moves it to the Imbox); `screener` = both Screeners (a
-sender waiting in both shows once); `sent` and `blocked` are yours only. HEY's other boxes are extra
-folders: `threads list --folder feed|paper-trail|set-aside|reply-later`. Search covers both.
+Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's Inbox; `archive` = your Archive + HEY's Paper
+Trail + Gmail threads out of the Inbox (archiving a HEY thread moves it to Paper Trail, a Gmail thread
+loses its Inbox label; unarchive undoes either); `sent` = yours + Gmail's; `screener` = yours + HEY's
+(a sender waiting in both shows once; Gmail has no Screener, its mail goes straight to the Inbox);
+`blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
+feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads its own search syntax).
 
     cloudmail inbox --json                           # merged by time
     cloudmail thread read hey:9001:7001 --json
     cloudmail reply hey:9001:7001 -m "Thanks"        # sent by `hey reply`, from your HEY address
-    cloudmail compose --from you@hey.com --to a@b.com --subject Hi -m "Hello"   # sent through HEY
+    cloudmail reply gmail:18c2f0a1b2 -m "Thanks"     # sent through Gmail, threaded, from your Gmail address
+    cloudmail compose --from you@gmail.com --to a@b.com --subject Hi -m "Hello"   # sent through Gmail
     cloudmail screener approve alice@example.com     # decides her everywhere she waits
     cloudmail screener approve hey:5001              # only in HEY
 
-If your worker forwards to your HEY address, HEY's copy of each message is hidden (`meta.duplicates_hidden`).
-A HEY failure never fails a command about your own mail: the rest is returned and `meta.warnings` lists
-`{account, code, message}`. A command about a HEY ID fails with `account_unauthorized` (exit 3: run
-`hey auth login`), `account_unavailable` (exit 5: hey missing or failing), or `not_found`.
-HEY can't delete threads or give out raw .eml from here, and `watch` follows your worker only.
+If your worker forwards to a linked address (or Gmail forwards into your worker), the account's copy of
+each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY copies by sender,
+subject and time. A linked account's failure never fails a command about your own mail: the rest is
+returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
+fails with `account_unauthorized` (exit 3: `hey auth login`, or `cloudmail account add gmail` again
+when Google's sign-in expired), `account_unavailable` (exit 5: its CLI missing or failing, or Google
+unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
+and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
 `cloudmail commands --json` lists every command, flag and example.
