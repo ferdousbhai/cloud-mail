@@ -7,7 +7,8 @@
 # It waits until GitHub has the tag, drafts the GitHub release with the tag's message as its
 # notes (commit-generated notes for a lightweight tag), runs bin/release (gpg asks for the
 # signing key's passphrase in a desktop prompt) and reports the outcome as a desktop
-# notification. Everything it prints goes to ~/.local/state/cloudmail/release-<version>.log.
+# notification, then moves the omarchy-pkgs pull request to the new version while it is open.
+# Everything it prints goes to ~/.local/state/cloudmail/release-<version>.log.
 #
 #   bin/release-on-tag <version> [--dry-run]    # --dry-run checks and logs, changes nothing
 set -uo pipefail
@@ -63,12 +64,48 @@ else
     --title "Cloudmail $version" --generate-notes || fail "could not draft the release"
 fi
 
+# Carry the new version to the omarchy-pkgs pull request while it is open (once merged, Omarchy's
+# tag watch takes over). Works in a throwaway worktree of the PR branch, starting from the
+# fork's copy, so a checkout another session is using is never touched; pushes fast-forward only.
+bump_omarchy_pkgs() {
+  local pkgs="${CLOUDMAIL_OMARCHY_PKGS:-$HOME/github.com/ferdousbhai/omarchy-pkgs}" branch=cloudmail pr=724
+  local state work sum
+  [[ -d $pkgs/.git ]] || { echo "no omarchy-pkgs checkout at $pkgs; skipped"; return 0; }
+  state="$(gh pr view "$pr" --repo omacom/omarchy-pkgs --json state --jq .state 2>/dev/null)"
+  [[ $state == OPEN ]] || { echo "omacom/omarchy-pkgs#$pr is ${state:-unknown}; skipped"; return 0; }
+  sum="$(curl -fsSL "https://github.com/$gh_repo/archive/refs/tags/$tag.tar.gz" | sha256sum | cut -d' ' -f1)"
+  [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 1
+  if ((dry_run)); then
+    echo "would set pkgbuilds/cloudmail/PKGBUILD to $version (sha256 $sum) on $branch and push"
+    return 0
+  fi
+  # A private ref, so no remote-tracking branch or FETCH_HEAD another session relies on moves.
+  local base=refs/cloudmail-release/base status=0
+  work="$(mktemp -d)/omarchy-pkgs"
+  git -C "$pkgs" fetch -q origin "+refs/heads/$branch:$base" || return 1
+  git -C "$pkgs" worktree add -q --detach "$work" "$base" || { git -C "$pkgs" update-ref -d "$base"; return 1; }
+  cp packaging/aur/cloudmail/PKGBUILD "$work/pkgbuilds/cloudmail/PKGBUILD"
+  sed -i "s/^sha256sums=.*/sha256sums=('$sum')/" "$work/pkgbuilds/cloudmail/PKGBUILD"
+  if git -C "$work" diff --quiet; then
+    echo "omarchy-pkgs already has $version"
+  else
+    git -C "$work" commit -qam "cloudmail $version" && git -C "$work" push -q origin "HEAD:refs/heads/$branch" || status=1
+  fi
+  git -C "$pkgs" worktree remove --force "$work"
+  git -C "$pkgs" update-ref -d "$base"
+  return $status
+}
+
 if ((dry_run)); then
   step "Dry run: would run bin/release $version"
+  bump_omarchy_pkgs
   exit 0
 fi
 
 notify "Cloudmail $version" "Building and signing the release; gpg will ask for the signing key's passphrase"
 step "bin/release $version"
 bin/release "$version" || fail "bin/release stopped"
+
+step "Updating the omarchy-pkgs pull request"
+bump_omarchy_pkgs || notify "Cloudmail $version" "Released, but the omarchy-pkgs bump failed (log: $log)"
 notify "Cloudmail $version released" "Published and verified; omarchy update brings it in"

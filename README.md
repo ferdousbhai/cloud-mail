@@ -213,7 +213,8 @@ It drafts the GitHub release from the tag's message, then runs `bin/release`, wh
 package with makepkg, signs it and the `[cloudmail]` repository database with the
 package-signing key (gpg asks for its passphrase in a desktop prompt), attaches them with
 `install.sh`, and has `bin/verify-release` install it with the public one-liner in a clean Arch
-container. A desktop notification reports the outcome; the log is in
+container, and then moves the omarchy-pkgs pull request to the new version (while it is open).
+A desktop notification reports the outcome; the log is in
 `~/.local/state/cloudmail/release-<version>.log`. `bin/release <version>` still works by hand,
 and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
 
