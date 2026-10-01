@@ -1,0 +1,74 @@
+#!/bin/bash
+# Release a pushed version tag with no separate command. The pre-push hook (.githooks/pre-push)
+# starts this in the background whenever a push carries a tag vX.Y.Z:
+#
+#   git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin v0.3.2
+#
+# It waits until GitHub has the tag, drafts the GitHub release with the tag's message as its
+# notes (commit-generated notes for a lightweight tag), runs bin/release (gpg asks for the
+# signing key's passphrase in a desktop prompt) and reports the outcome as a desktop
+# notification. Everything it prints goes to ~/.local/state/cloudmail/release-<version>.log.
+#
+#   bin/release-on-tag <version> [--dry-run]    # --dry-run checks and logs, changes nothing
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+version="${1:?usage: bin/release-on-tag <version> [--dry-run]}"
+dry_run=$([[ ${2:-} == --dry-run ]] && echo 1 || echo 0)
+tag="v$version"
+gh_repo=ferdousbhai/cloud-mail
+log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/cloudmail"
+mkdir -p "$log_dir"
+log="$log_dir/release-$version.log"
+exec >>"$log" 2>&1
+
+step() { printf '\n==> %s (%s)\n' "$*" "$(date +%T)"; }
+notify() {
+  if command -v omarchy-notification-send >/dev/null; then
+    omarchy-notification-send "$1" "$2" -t 15000
+  else
+    notify-send "$1" "$2"
+  fi
+}
+fail() {
+  echo "error: $*"
+  notify "Cloudmail $version: release failed" "$* (log: $log)"
+  exit 1
+}
+
+step "Waiting for $tag on GitHub"
+for _ in $(seq 1 120); do
+  gh api "repos/$gh_repo/git/ref/tags/$tag" >/dev/null 2>&1 && break
+  sleep 5
+done
+gh api "repos/$gh_repo/git/ref/tags/$tag" >/dev/null 2>&1 || fail "$tag never reached GitHub"
+
+step "Drafting the $tag release"
+if gh release view "$tag" --repo "$gh_repo" >/dev/null 2>&1; then
+  echo "the release exists already"
+elif ((dry_run)); then
+  echo "would create a draft release for $tag"
+elif [[ $(git cat-file -t "$tag" 2>/dev/null) == tag ]]; then
+  git tag -l --format='%(contents:body)' "$tag" >"$log_dir/notes-$version.md"
+  # An annotated tag's subject is its title; a message with no body gets generated notes.
+  if [[ -s $log_dir/notes-$version.md ]]; then
+    gh release create "$tag" --repo "$gh_repo" --draft --verify-tag \
+      --title "Cloudmail $version" --notes-file "$log_dir/notes-$version.md" || fail "could not draft the release"
+  else
+    gh release create "$tag" --repo "$gh_repo" --draft --verify-tag \
+      --title "Cloudmail $version" --generate-notes || fail "could not draft the release"
+  fi
+else
+  gh release create "$tag" --repo "$gh_repo" --draft --verify-tag \
+    --title "Cloudmail $version" --generate-notes || fail "could not draft the release"
+fi
+
+if ((dry_run)); then
+  step "Dry run: would run bin/release $version"
+  exit 0
+fi
+
+notify "Cloudmail $version" "Building and signing the release; gpg will ask for the signing key's passphrase"
+step "bin/release $version"
+bin/release "$version" || fail "bin/release stopped"
+notify "Cloudmail $version released" "Published and verified; omarchy update brings it in"

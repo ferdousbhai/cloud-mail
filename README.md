@@ -200,10 +200,22 @@ cloudmail commands --json     # every command, flag and example
 
 ## Releasing
 
-`bin/release <version>` builds the tagged release with makepkg, signs the package and the
-`[cloudmail]` repository database with the package-signing key (gpg asks for its passphrase),
-attaches them to the GitHub release with `install.sh`, and then `bin/verify-release` installs it
-with the public one-liner in a clean Arch container.
+Bump `version` in `Cargo.toml` and `pkgver` in the PKGBUILD, commit, then push an annotated tag
+whose message is the release notes:
+
+```sh
+git config core.hooksPath .githooks          # once per clone
+git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
+```
+
+Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
+It drafts the GitHub release from the tag's message, then runs `bin/release`, which builds the
+package with makepkg, signs it and the `[cloudmail]` repository database with the
+package-signing key (gpg asks for its passphrase in a desktop prompt), attaches them with
+`install.sh`, and has `bin/verify-release` install it with the public one-liner in a clean Arch
+container. A desktop notification reports the outcome; the log is in
+`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version>` still works by hand,
+and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
 
 ## Development
 

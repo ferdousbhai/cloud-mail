@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pushing a version tag (refs/tags/vX.Y.Z) releases it: this starts bin/release-on-tag in the
+# background, which waits for the push to land and then publishes. Enable once per clone with
+#   git config core.hooksPath .githooks
+# Set CLOUDMAIL_NO_AUTO_RELEASE=1 to push a tag without releasing it.
+[[ ${CLOUDMAIL_NO_AUTO_RELEASE:-} == 1 ]] && exit 0
+
+top="$(git rev-parse --show-toplevel)"
+while read -r _ local_sha remote_ref _; do
+  [[ $local_sha =~ ^0+$ ]] && continue # a deleted tag
+  [[ $remote_ref =~ ^refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || continue
+  version="${BASH_REMATCH[1]}"
+  setsid -f "$top/bin/release-on-tag" "$version" </dev/null >/dev/null 2>&1
+  echo "Releasing $version in the background; log: ${XDG_STATE_HOME:-$HOME/.local/state}/cloudmail/release-$version.log" >&2
+done
+exit 0
