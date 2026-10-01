@@ -965,11 +965,10 @@ fn gmail_account_add_list_remove() {
     let cfg = h.home.join("config/cloudmail/config.toml");
     let client = [("CLOUDMAIL_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com"), ("CLOUDMAIL_GOOGLE_CLIENT_SECRET", "test-secret")];
 
-    let o = h.run(&m, &["account", "add", "gmail", "--login"], &[]);
+    // The build's own client needs nothing set: without a terminal it goes straight to the sign-in hint.
+    let o = h.run(&m, &["account", "add", "gmail"], &[]);
     assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
-    let v = json_out(&o);
-    assert_eq!(v["error"]["code"], "not_configured");
-    assert!(v["error"]["message"].as_str().unwrap().contains("Google sign-in isn't configured in this build"), "{v}");
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
 
     let o = h.run(&m, &["account", "add", "gmail"], &client);
     assert_eq!(o.status.code(), Some(3), "no terminal: no browser sign-in, just the hint");

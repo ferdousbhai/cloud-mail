@@ -37,11 +37,10 @@ use crate::types::*;
 
 /// Cloudmail's own Google OAuth client, a "Desktop app" client in Cloudmail's Google Cloud project
 /// with the Gmail API enabled, used for the one browser sign-in. Google treats a desktop client's
-/// secret as public, so it ships in the binary. Empty until that project exists; meanwhile a build
-/// signs in with CLOUDMAIL_GOOGLE_CLIENT_ID / CLOUDMAIL_GOOGLE_CLIENT_SECRET, or `client_id` /
-/// `client_secret` under `[accounts.gmail]` in config.toml.
-pub const GOOGLE_CLIENT_ID: &str = "";
-pub const GOOGLE_CLIENT_SECRET: &str = "";
+/// secret as public, so it ships in the binary. CLOUDMAIL_GOOGLE_CLIENT_ID / _SECRET, or `client_id` /
+/// `client_secret` under `[accounts.gmail]` in config.toml, use another client instead.
+pub const GOOGLE_CLIENT_ID: &str = "858534886670-37fmq8bl312beufkc420h9nvtjrb4l0d.apps.googleusercontent.com";
+pub const GOOGLE_CLIENT_SECRET: &str = "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";
 
 pub const COMMAND_ENV: &str = "CLOUDMAIL_GWS_COMMAND";
 pub const CLIENT_ID_ENV: &str = "CLOUDMAIL_GOOGLE_CLIENT_ID";
