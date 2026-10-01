@@ -54,6 +54,16 @@ pub fn parse_deploy_url(output: &str) -> Option<String> {
         .map(|w| w.trim_end_matches(['.', ',', ')']).to_string())
 }
 
+/// The worker name in a workers.dev URL (`https://<worker>.<subdomain>.workers.dev`).
+pub fn worker_name_from_url(url: &str) -> Option<String> {
+    let host = url.strip_prefix("https://")?.split(['/', ':']).next()?;
+    let labels: Vec<&str> = host.strip_suffix(".workers.dev")?.split('.').collect();
+    match labels.as_slice() {
+        [worker, _subdomain] if !worker.is_empty() => Some(worker.to_string()),
+        _ => None,
+    }
+}
+
 /// The first string value of `"key": "…"` in a wrangler.jsonc.
 pub fn jsonc_field(jsonc: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
@@ -533,12 +543,15 @@ fn zones<'a>(w: &Wrangler, cache: &'a mut Option<Vec<String>>, kind: &str) -> Cl
 pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> CliResult<Value> {
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
     let generated = std::fs::read_to_string(dir.join("wrangler.jsonc")).ok();
+    // A worker set up from a clone keeps its wrangler.jsonc there, not in the packaged copy, so
+    // fall back to the worker this CLI is configured to talk to.
     let worker = match &args.worker_name {
         Some(n) => n.clone(),
         None => generated
             .as_deref()
             .and_then(|t| jsonc_field(t, "name"))
-            .ok_or_else(|| CliError::usage("could not read the worker name from wrangler.jsonc").hint("run `cloudmail setup` first"))?,
+            .or_else(|| config::load().ok().and_then(|c| worker_name_from_url(&c.api_url)))
+            .ok_or_else(|| CliError::usage("couldn't tell which worker to route to").hint("run `cloudmail setup` first"))?,
     };
     let mut w = Wrangler::new(&args.wrangler, dir, false, interactive);
     if let Some(account) = generated.as_deref().and_then(|t| jsonc_field(t, "account_id")) {
@@ -886,6 +899,15 @@ mod tests {
         assert_eq!(r[0].action, "forward:me@elsewhere.com");
         assert_eq!(r[1].id, "06bae9a8c2794e41a8fd99679a84f310");
         assert_eq!(r[1].action, "worker:cloudmail");
+    }
+
+    #[test]
+    fn reads_worker_name_from_workers_dev_url() {
+        assert_eq!(worker_name_from_url("https://cloud-mail.ferdousbd.workers.dev").as_deref(), Some("cloud-mail"));
+        assert_eq!(worker_name_from_url("https://cm.sub.workers.dev/api").as_deref(), Some("cm"));
+        assert_eq!(worker_name_from_url("https://mail.example.com"), None);
+        assert_eq!(worker_name_from_url("https://sub.workers.dev"), None);
+        assert_eq!(worker_name_from_url("http://cm.sub.workers.dev"), None);
     }
 
     #[test]
