@@ -72,7 +72,13 @@ pub struct Hey {
 }
 
 fn millis(v: &Value) -> i64 {
-    v.as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp_millis()).unwrap_or(0)
+    let Some(s) = v.as_str() else { return 0 };
+    // Listings carry RFC 3339; `thread read` gives UTC to the minute ("2026-05-30T14:51").
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.timestamp_millis())
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").map(|d| d.and_utc().timestamp_millis()))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").map(|d| d.and_utc().timestamp_millis()))
+        .unwrap_or(0)
 }
 
 fn text(v: &Value) -> String {
@@ -341,8 +347,38 @@ fn split_articles(doc: &str) -> HashMap<i64, String> {
         let Ok(id) = id.parse::<i64>() else { continue };
         let Some((_, body)) = rest.split_once("</header>\n") else { continue };
         let body = body.rfind("</article>").map(|i| &body[..i]).unwrap_or(body);
-        out.insert(id, body.trim().to_string());
+        out.insert(id, unwrap_trix(body.trim()));
     }
+    out
+}
+
+/// HEY keeps a received HTML email as a Trix attachment: the email sits in the figure's JSON
+/// attribute, inside `<shadow-content><template>`, which a browser never renders. Puts each such
+/// email back in place of its figure; other attachments (images) stay as they are.
+fn unwrap_trix(body: &str) -> String {
+    const OPEN: &str = "<figure data-trix-attachment=\"";
+    const CLOSE: &str = "</figure>";
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(i) = rest.find(OPEN) {
+        let after = &rest[i + OPEN.len()..];
+        let Some(q) = after.find('"') else { break };
+        let Some(end) = after[q..].find(CLOSE).map(|e| q + e) else { break };
+        let attr = after[..q].replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&#39;", "'").replace("&amp;", "&");
+        let email = serde_json::from_str::<Value>(&attr)
+            .ok()
+            .filter(|j| j["contentType"] == "text/html")
+            .and_then(|j| j["content"].as_str().map(str::to_string));
+        out.push_str(&rest[..i]);
+        match email {
+            Some(html) => out.push_str(
+                html.trim().trim_start_matches("<shadow-content><template>").trim_end_matches("</template></shadow-content>"),
+            ),
+            None => out.push_str(&rest[i..i + OPEN.len() + end + CLOSE.len()]),
+        }
+        rest = &after[end + CLOSE.len()..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -699,6 +735,25 @@ mod tests {
         let m = split_articles(doc);
         assert_eq!(m[&7], "<p>one</p>");
         assert_eq!(m[&9], "<p>two</article></p>");
+    }
+
+    #[test]
+    fn thread_read_times_are_utc_to_the_minute() {
+        assert_eq!(millis(&json!("2026-09-30T16:46")), 1790786760000);
+        assert_eq!(millis(&json!("2026-09-30T16:46:36Z")), 1790786796000);
+        assert_eq!(millis(&json!("")), 0);
+    }
+
+    #[test]
+    fn received_html_comes_out_of_its_trix_attachment() {
+        let email = "<shadow-content><template><div style=\"color: red\">Hi &amp; bye</div></template></shadow-content>";
+        let attr = serde_json::to_string(&json!({ "contentType": "text/html", "content": email, "data": "{}" })).unwrap();
+        let attr = attr.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+        let body = format!("<div><figure data-trix-attachment=\"{attr}\"></figure></div>");
+        assert_eq!(unwrap_trix(&body), "<div><div style=\"color: red\">Hi &amp; bye</div></div>");
+        let image = "<figure data-trix-attachment=\"{&quot;contentType&quot;:&quot;image/png&quot;}\"><img src=\"x\"></figure>";
+        assert_eq!(unwrap_trix(image), image, "other attachments stay");
+        assert_eq!(unwrap_trix("<p>plain</p>"), "<p>plain</p>");
     }
 
     #[test]

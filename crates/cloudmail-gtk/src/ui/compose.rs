@@ -32,7 +32,8 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     let window = gtk::Window::builder()
         .title(if draft.reply_to_message_id.is_some() { "Reply" } else { "New message" })
         .transient_for(&ui.window)
-        .default_width(760)
+        // Hyprland centres a dialog on its parent, so one wider than a half-screen tile hangs off the edge.
+        .default_width((ui.window.width() - 40).clamp(480, 760))
         .default_height(600)
         .build();
     window.add_css_class("compose");
