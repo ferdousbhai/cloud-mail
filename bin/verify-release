@@ -10,7 +10,7 @@ set -euo pipefail
 version="${1:?usage: bin/verify-release <version>}"
 url="${CLOUDMAIL_INSTALL_URL:-https://github.com/ferdousbhai/cloud-mail/releases/latest/download/install.sh}"
 
-docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "
+check="
   pacman-key --init >/dev/null 2>&1
   pacman-key --populate archlinux >/dev/null 2>&1
   curl -fsSL '$url' | bash
@@ -24,3 +24,16 @@ docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "
   done
   echo \"verified: cloudmail \$installed from the signed repository\"
 "
+
+# The container's network sometimes fails right after it starts ("Could not resolve host"); a
+# network error retries, anything else fails at once.
+for attempt in 1 2 3; do
+  if out="$(docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "$check" 2>&1)"; then
+    echo "$out"
+    exit 0
+  fi
+  echo "$out"
+  grep -qE "Could not resolve host|Temporary failure in name resolution|Failed to connect|Connection timed out" <<<"$out" || exit 1
+  ((attempt < 3)) && { echo "network error in the container; retrying ($attempt/3)" >&2; sleep 10; }
+done
+exit 1
