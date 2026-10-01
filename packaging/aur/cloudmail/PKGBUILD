@@ -1,6 +1,6 @@
 # Maintainer: Ferdous Bhai <23114244+ferdousbhai@users.noreply.github.com>
 pkgname=cloudmail
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Screened email on your own domains, running in your Cloudflare account (CLI + GTK app)"
 arch=('x86_64' 'aarch64')
@@ -10,7 +10,7 @@ depends=('gtk4' 'webkitgtk-6.0' 'glib2' 'gcc-libs' 'glibc')
 makedepends=('cargo')
 options=('!debug' '!lto')  # makepkg's C LTO breaks ring's assembly objects
 optdepends=(
-  'npm: needed by `cloudmail setup` to deploy the worker with wrangler'
+  'npm: deploying the worker with `cloudmail setup`, and Google'\''s Workspace CLI for an opt-in Gmail account'
   'libnotify: new-mail notifications in cloudmail-gtk'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
