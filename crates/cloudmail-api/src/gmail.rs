@@ -19,7 +19,7 @@
 //! SENT label; unread is the UNREAD label. Gmail has no Screener: its mail goes straight to the Inbox.
 
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_PAD_INDIFFERENT};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_PAD_INDIFFERENT};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use crate::client::ThreadQuery;
 use crate::config::AccountConfig;
 use crate::error::{Error, ErrorKind, Result};
-use crate::provider::{AccountStatus, Provider, Run, run_command};
+use crate::provider::{AccountStatus, PrivateDir, Provider, Run, run_command};
 use crate::text::{bare_email, html_to_text, split_addresses};
 use crate::types::*;
 
@@ -57,8 +57,6 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 const LIST_LIMIT: u32 = 100;
 /// `gws` runs at a time when fetching a listing's threads.
 const PARALLEL: usize = 8;
-/// A message goes to gws as one argument, which the OS caps (128 KiB on Linux).
-const MAX_RAW: usize = 120 * 1024;
 const META_HEADERS: &[&str] = &["From", "To", "Subject", "Date", "Message-ID", "Delivered-To", "Content-Type"];
 
 /// A thread as last listed, kept while its historyId stays the same.
@@ -183,7 +181,39 @@ pub struct Threading {
     pub references: String,
 }
 
-/// An RFC 5322 plain-text message for `users.messages.send`.
+/// Base64 in 76-character lines, as a MIME part carries it.
+fn base64_lines(bytes: &[u8]) -> String {
+    let encoded = STANDARD.encode(bytes);
+    encoded.as_bytes().chunks(76).map(|c| std::str::from_utf8(c).unwrap_or("")).collect::<Vec<_>>().join("\r\n")
+}
+
+/// A file name as Content-Type `name` and Content-Disposition `filename` parameters: quoted when
+/// ASCII, else RFC 2231 (`filename*=UTF-8''…`) with an RFC 2047 `name` for older readers.
+fn filename_params(filename: &str) -> (String, String) {
+    let name = crate::attach::safe_filename(filename);
+    if name.is_ascii() {
+        let quoted = format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""));
+        return (format!("name={quoted}"), format!("filename={quoted}"));
+    }
+    let encoded: String = name
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    (format!("name=\"=?UTF-8?B?{}?=\"", STANDARD.encode(name.as_bytes())), format!("filename*=UTF-8''{encoded}"))
+}
+
+/// A MIME type fit for a header, else `application/octet-stream`.
+fn clean_mime_type(t: &str) -> String {
+    let t = t.trim().to_ascii_lowercase();
+    let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&b));
+    match t.split_once('/') {
+        Some((a, b)) if ok(a) && ok(b) => t,
+        _ => "application/octet-stream".into(),
+    }
+}
+
+/// An RFC 5322 message for `users.messages.send`: plain text, or multipart/mixed with the text
+/// first and each attachment after it.
 pub fn build_message(from: &Address, req: &SendRequest, threading: Option<&Threading>, date: &str) -> String {
     let list = |items: &[String]| items.iter().flat_map(|i| split_addresses(i)).map(|a| format_address(&address_from(&a))).filter(|a| a.contains('@')).collect::<Vec<_>>().join(", ");
     let mut head = vec![format!("From: {}", format_address(from))];
@@ -204,12 +234,26 @@ pub fn build_message(from: &Address, req: &SendRequest, threading: Option<&Threa
         head.push(format!("References: {}", clean(&refs)));
     }
     head.push("MIME-Version: 1.0".into());
-    head.push("Content-Type: text/plain; charset=utf-8".into());
-    head.push("Content-Transfer-Encoding: base64".into());
-    let body = req.text.replace("\r\n", "\n").replace('\n', "\r\n");
-    let encoded = STANDARD.encode(body.as_bytes());
-    let lines: Vec<&str> = encoded.as_bytes().chunks(76).map(|c| std::str::from_utf8(c).unwrap_or("")).collect();
-    format!("{}\r\n\r\n{}\r\n", head.join("\r\n"), lines.join("\r\n"))
+    let text = "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64";
+    let body = base64_lines(req.text.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
+    if req.attachments.is_empty() {
+        return format!("{}\r\n{text}\r\n\r\n{body}\r\n", head.join("\r\n"));
+    }
+    // Every part is base64, which never contains "=_", so the boundary can't occur inside one.
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let boundary = format!("=_cloudmail_{nanos:x}");
+    head.push(format!("Content-Type: multipart/mixed; boundary=\"{boundary}\""));
+    let mut out = format!("{}\r\n\r\n--{boundary}\r\n{text}\r\n\r\n{body}\r\n", head.join("\r\n"));
+    for a in &req.attachments {
+        let (name, filename) = filename_params(&a.filename);
+        out.push_str(&format!(
+            "--{boundary}\r\nContent-Type: {}; {name}\r\nContent-Disposition: attachment; {filename}\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+            clean_mime_type(&a.mime_type),
+            base64_lines(&a.content)
+        ));
+    }
+    out.push_str(&format!("--{boundary}--\r\n"));
+    out
 }
 
 /// The client to sign in with: the environment, then the config, then cloudmail's built-in one.
@@ -384,6 +428,12 @@ impl Gmail {
 
     /// `gws gmail users <method…> --params <params> [--json <body>]`, returning the API's JSON.
     fn call(&self, method: &[&str], params: Value, body: Option<&Value>) -> Result<Value> {
+        self.call_with(method, params, body, None)
+    }
+
+    /// `call`, uploading a message (`--upload <path> --upload-content-type message/rfc822`): gws
+    /// only uploads files under its working directory, `self.dir`, so `upload` is relative to it.
+    fn call_with(&self, method: &[&str], params: Value, body: Option<&Value>, upload: Option<&Path>) -> Result<Value> {
         if !self.signed_in() {
             return Err(self.not_signed_in());
         }
@@ -392,6 +442,9 @@ impl Gmail {
         cmd.args(["gmail", "users"]).args(method).arg("--params").arg(params.to_string());
         if let Some(b) = body {
             cmd.arg("--json").arg(b.to_string());
+        }
+        if let Some(path) = upload {
+            cmd.arg("--upload").arg(path).arg("--upload-content-type").arg("message/rfc822");
         }
         let (status, stdout, stderr) = match run_command(&mut cmd, None, TIMEOUT) {
             Run::Done { status, stdout, stderr } => (status, stdout, stderr),
@@ -807,15 +860,19 @@ impl Provider for Gmail {
             }
             None => (None, None),
         };
-        let raw = URL_SAFE.encode(build_message(&from, req, threading.as_ref(), &chrono::Utc::now().to_rfc2822()));
-        if raw.len() > MAX_RAW {
-            return Err(self.fail(ErrorKind::BadRequest, "the message is too long to send through gws (about 90 KB of text at most)"));
+        let message = build_message(&from, req, threading.as_ref(), &chrono::Utc::now().to_rfc2822());
+        if !self.signed_in() {
+            return Err(self.not_signed_in());
         }
-        let mut body = json!({ "raw": raw });
-        if let Some(t) = &thread {
-            body["threadId"] = json!(t);
-        }
-        let sent = self.call(&["messages", "send"], json!({ "userId": "me" }), Some(&body))?;
+        // The message goes as a media upload from a file (an argument couldn't hold more than about
+        // 128 KiB), in a private directory inside gws's working directory, removed after.
+        let dir = PrivateDir::new(&self.dir, ".outgoing").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory in {}: {e}", self.dir.display())))?;
+        let path = dir.write("0", "message.eml", message.as_bytes()).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not write the message for gws: {e}")))?;
+        let relative = path.strip_prefix(&self.dir).unwrap_or(&path).to_path_buf();
+        let metadata = thread.as_ref().map(|t| json!({ "threadId": t }));
+        let sent = self.call_with(&["messages", "send"], json!({ "userId": "me" }), metadata.as_ref(), Some(&relative));
+        drop(dir);
+        let sent = sent?;
         let thread_id = nonempty(text(&sent["threadId"])).or(thread);
         if let Some(t) = &thread_id {
             self.forget_thread(t);
@@ -854,6 +911,7 @@ impl Provider for Gmail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE;
 
     fn gmail() -> Gmail {
         Gmail::new("gmail", &AccountConfig::default())
@@ -937,6 +995,52 @@ mod tests {
         let injected = SendRequest { to: vec!["a@b.c".into()], subject: "Hi\r\nBcc: evil@x.y".into(), ..Default::default() };
         let raw = build_message(&Address { name: None, email: "me@gmail.example".into() }, &injected, None, "d");
         assert!(!raw.contains("\r\nBcc:") && !raw.contains("In-Reply-To"), "{raw}");
+    }
+
+    #[test]
+    fn attachments_make_a_multipart_message() {
+        let pdf: Vec<u8> = (0..=255).cycle().take(200).collect();
+        let req = SendRequest {
+            to: vec!["ana@example.net".into()],
+            subject: "Files".into(),
+            text: "Two files\nattached".into(),
+            attachments: vec![
+                OutgoingAttachment { filename: "Résumé 2026.pdf".into(), mime_type: "application/pdf".into(), content: pdf.clone() },
+                OutgoingAttachment { filename: "say \"hi\".txt".into(), mime_type: "text/plain\r\nX-Evil: 1".into(), content: b"hi".to_vec() },
+            ],
+            ..Default::default()
+        };
+        let t = Threading { in_reply_to: "<m1@example.net>".into(), references: String::new() };
+        let raw = build_message(&Address { name: None, email: "me@gmail.example".into() }, &req, Some(&t), "d");
+        assert!(raw.lines().all(|l| l.len() <= 998), "no line over RFC 5322's limit");
+        assert!(!raw.contains("X-Evil"), "{raw}");
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains("In-Reply-To: <m1@example.net>\r\nReferences: <m1@example.net>\r\nMIME-Version: 1.0\r\n"), "{head}");
+        let boundary = head.split("boundary=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert!(head.ends_with(&format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"")), "{head}");
+        assert!(body.ends_with(&format!("\r\n--{boundary}--\r\n")));
+        let parts: Vec<&str> = body.split(&format!("--{boundary}")).collect();
+        assert_eq!(parts.len(), 5, "preamble, text, two files, end: {body}");
+        let part = |p: &str| {
+            let (h, b) = p.trim_start_matches("\r\n").split_once("\r\n\r\n").unwrap();
+            (h.to_string(), STANDARD.decode(b.replace("\r\n", "")).unwrap())
+        };
+        let (h, b) = part(parts[1]);
+        assert_eq!(h, "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64");
+        assert_eq!(b, b"Two files\r\nattached");
+        let (h, b) = part(parts[2]);
+        assert_eq!(
+            h,
+            format!(
+                "Content-Type: application/pdf; name=\"=?UTF-8?B?{}?=\"\r\nContent-Disposition: attachment; filename*=UTF-8''R%C3%A9sum%C3%A9%202026.pdf\r\nContent-Transfer-Encoding: base64",
+                STANDARD.encode("Résumé 2026.pdf")
+            )
+        );
+        assert_eq!(b, pdf);
+        let (h, b) = part(parts[3]);
+        assert_eq!(h, "Content-Type: application/octet-stream; name=\"say \\\"hi\\\".txt\"\r\nContent-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\nContent-Transfer-Encoding: base64");
+        assert_eq!(b, b"hi");
+        assert_eq!(parts[4], "--\r\n");
     }
 
     #[test]

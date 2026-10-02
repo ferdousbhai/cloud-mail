@@ -5,6 +5,8 @@
 #
 #   FAKE_GWS_LOG=<file>   append each invocation's arguments (tab-separated) to <file>; the
 #                         environment it ran with goes to <file>.env, sent messages to <file>.sent
+#                         (from --json's raw or an --upload file; an upload's directory and file
+#                         permissions to <file>.upload)
 #   FAKE_GWS_MODE=ok (default) | expired | revoked | offline | crash | garbage | slow
 #
 # Like gws, it keeps its sign-in in $GOOGLE_WORKSPACE_CLI_CONFIG_DIR/credentials.enc, which
@@ -46,11 +48,13 @@ fi
 
 [[ "$1" == gmail && "$2" == users ]] || err 3 400 validationError "fake-gws doesn't know: $*"
 shift 2
-method=(); params=""; body=""
+method=(); params=""; body=""; upload=""; upload_type=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --params) params="$2"; shift 2 ;;
     --json) body="$2"; shift 2 ;;
+    --upload) upload="$2"; shift 2 ;;
+    --upload-content-type) upload_type="$2"; shift 2 ;;
     *) method+=("$1"); shift ;;
   esac
 done
@@ -151,10 +155,18 @@ case "$method" in
     [[ "$(param messageId)" == m-a1-1 && "$id" == ANGjdJ8fake* ]] || err 1 400 invalidArgument "Invalid attachment token"
     printf '{"size":5,"data":"%s"}\n' "$(b64url '%PDF-')" ;;
   "messages send")
-    [[ "$body" =~ \"raw\":\"([^\"]*)\" ]] || err 1 400 invalidArgument "Invalid value for ByteString"
-    raw="${BASH_REMATCH[1]}"
-    pad=$(( (4 - ${#raw} % 4) % 4 )); raw="$raw$(printf '%*s' $pad '' | tr ' ' '=')"
-    [[ -n "$FAKE_GWS_LOG" ]] && printf '%s' "$raw" | tr -- '-_' '+/' | base64 -d >> "$FAKE_GWS_LOG.sent"
+    if [[ -n "$upload" ]]; then
+      # Like gws: a media upload only from a file under the working directory.
+      [[ "$(realpath -m "$upload")" == "$(realpath "$PWD")"/* ]] || err 3 400 validationError "--upload '$upload' resolves to '$(realpath -m "$upload")' which is outside the current directory"
+      [[ -f "$upload" ]] || err 3 400 validationError "Failed to get metadata for upload file '$upload'"
+      [[ "$upload_type" == message/rfc822 ]] || err 1 400 invalidArgument "Media type '$upload_type' is not supported."
+      [[ -n "$FAKE_GWS_LOG" ]] && { cat "$upload" >> "$FAKE_GWS_LOG.sent"; printf '%s %s\n' "$(stat -c %a "$(dirname "$(dirname "$upload")")")" "$(stat -c %a "$upload")" >> "$FAKE_GWS_LOG.upload"; }
+    else
+      [[ "$body" =~ \"raw\":\"([^\"]*)\" ]] || err 1 400 invalidArgument "Invalid value for ByteString"
+      raw="${BASH_REMATCH[1]}"
+      pad=$(( (4 - ${#raw} % 4) % 4 )); raw="$raw$(printf '%*s' $pad '' | tr ' ' '=')"
+      [[ -n "$FAKE_GWS_LOG" ]] && printf '%s' "$raw" | tr -- '-_' '+/' | base64 -d >> "$FAKE_GWS_LOG.sent"
+    fi
     thread_id="t-new"; [[ "$body" =~ \"threadId\":\"([^\"]*)\" ]] && thread_id="${BASH_REMATCH[1]}"
     printf '{"id":"m-sent-1","threadId":"%s","labelIds":["SENT"]}\n' "$thread_id" ;;
   *) err 3 400 validationError "fake-gws doesn't know: gmail users $method" ;;
