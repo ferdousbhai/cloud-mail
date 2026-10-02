@@ -25,6 +25,8 @@ use crate::types::*;
 
 pub const COMMAND_ENV: &str = "CLOUDMAIL_HEY_COMMAND";
 const TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a browser sign-in may take.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 /// How many threads one box listing asks for. HEY pages by cursor, not by time, so paging back
 /// past this many in a merged view isn't possible.
 const BOX_LIMIT: u32 = 100;
@@ -141,12 +143,27 @@ impl Hey {
         }
     }
 
-    /// Runs `hey auth login` attached to the terminal: HEY's own browser sign-in (OAuth with PKCE).
+    /// Runs `hey auth login`, its output on the terminal: HEY's own browser sign-in (OAuth with
+    /// PKCE). Gives up after `LOGIN_TIMEOUT`, so a sign-in abandoned in the browser can't hang the app.
     pub fn login(&self) -> Result<()> {
-        let status = Command::new(&self.command)
+        let mut child = Command::new(&self.command)
             .args(["auth", "login"])
-            .status()
+            .stdin(std::process::Stdio::null())
+            .spawn()
             .map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)))?;
+        let deadline = std::time::Instant::now() + LOGIN_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(self.fail(ErrorKind::AccountAuth, "the HEY sign-in wasn't finished within 10 minutes"));
+                }
+                Err(e) => return Err(self.fail(ErrorKind::AccountUnavailable, e.to_string())),
+            }
+        };
         if status.success() { Ok(()) } else { Err(self.fail(ErrorKind::AccountAuth, format!("`hey auth login` didn't finish ({status})"))) }
     }
 

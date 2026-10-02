@@ -107,5 +107,11 @@ step "bin/release $version"
 bin/release "$version" || fail "bin/release stopped"
 
 step "Updating the omarchy-pkgs pull request"
-bump_omarchy_pkgs || notify "Cloudmail $version" "Released, but the omarchy-pkgs bump failed (log: $log)"
+if bump_omarchy_pkgs; then
+  echo "omarchy-pkgs is on $version"
+else
+  echo "the omarchy-pkgs bump failed"
+  notify "Cloudmail $version" "Released, but the omarchy-pkgs bump failed (log: $log)"
+fi
+step "Done: Cloudmail $version is released"
 notify "Cloudmail $version released" "Published and verified; omarchy update brings it in"
