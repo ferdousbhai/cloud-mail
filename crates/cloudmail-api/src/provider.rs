@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -264,4 +265,48 @@ pub(crate) fn run_command(cmd: &mut Command, stdin: Option<&str>, timeout: Durat
     let stdout = out.join().unwrap_or_default();
     let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).trim().to_string();
     Run::Done { status, stdout, stderr }
+}
+
+/// A fresh directory only you can read, removed with everything in it when dropped: where files
+/// handed to a linked account's CLI (attachments to send, downloads) live for a moment.
+pub(crate) struct PrivateDir(PathBuf);
+
+impl PrivateDir {
+    pub fn new(parent: &Path, prefix: &str) -> std::io::Result<Self> {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        Self::create(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn create(dir: &Path) -> std::io::Result<()> {
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(dir)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Writes `bytes` to `<sub>/<name>` (owner-only, never through an existing file); a
+    /// subdirectory per file lets two files share a name.
+    pub fn write(&self, sub: &str, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+        let dir = self.0.join(sub);
+        Self::create(&dir)?;
+        let path = dir.join(name);
+        let mut file = std::fs::OpenOptions::new();
+        file.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+        file.open(&path)?.write_all(bytes)?;
+        Ok(path)
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }

@@ -2,7 +2,8 @@
 # A stand-in for the `hey` CLI (basecamp/hey-cli 1.7) for tests and headless smoke runs.
 # It answers with synthetic data shaped like real `hey … --json` output and changes nothing.
 #
-#   FAKE_HEY_LOG=<file>   append each invocation's arguments (tab-separated) to <file>
+#   FAKE_HEY_LOG=<file>   append each invocation's arguments (tab-separated) to <file>, attached
+#                         files to <file>.attached
 #   FAKE_HEY_MODE=ok (default) | logged_out | crash | garbage | slow
 #
 # Point cloudmail at it with CLOUDMAIL_HEY_COMMAND=/path/to/fake-hey.
@@ -23,6 +24,17 @@ fail() { printf '{"ok":false,"error":"%s","code":"%s"%s}\n' "$2" "$3" "${4:+,\"h
 case "$1 $2" in
   "version "*|"--version "*) echo "hey version 1.7.0-fake"; exit 0 ;;
 esac
+
+# --attach <path>: the file must be there while hey runs; with a log, each one goes to <log>.attached
+# as name, its directory's and its own permissions, and its content in base64 (tab-separated).
+for ((i=1; i<=$#; i++)); do
+  [[ "${!i}" == "--attach" ]] || continue
+  j=$((i+1)); f="${!j}"
+  [[ -f "$f" ]] || fail 1 "file not found: $f" usage
+  if [[ -n "$FAKE_HEY_LOG" ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$(basename "$f")" "$(stat -c %a "$(dirname "$(dirname "$f")")")" "$(stat -c %a "$f")" "$(base64 -w0 < "$f")" >> "$FAKE_HEY_LOG.attached"
+  fi
+done
 
 if [[ "$1 $2" == "auth status" ]]; then
   if [[ "$mode" == "logged_out" ]]; then ok '{"authenticated":false,"base_url":"https://app.hey.com"}' "Not logged in"; fi

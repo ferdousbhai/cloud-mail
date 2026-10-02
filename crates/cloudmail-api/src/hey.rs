@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::client::ThreadQuery;
 use crate::config::AccountConfig;
 use crate::error::{Error, ErrorKind, Result};
-use crate::provider::{AccountStatus, ExtraFolder, Provider, Run, run_command};
+use crate::provider::{AccountStatus, ExtraFolder, PrivateDir, Provider, Run, run_command};
 use crate::text::bare_email;
 use crate::types::*;
 
@@ -658,8 +658,24 @@ impl Provider for Hey {
             }
         }
         args.extend(body_args);
+        // `hey` attaches files by path: each goes in a private directory, under its own name.
+        let files = if req.attachments.is_empty() {
+            None
+        } else {
+            let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey-send").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}")))?;
+            for (i, a) in req.attachments.iter().enumerate() {
+                let path = dir
+                    .write(&i.to_string(), &crate::attach::safe_filename(&a.filename), &a.content)
+                    .map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not write {} for hey: {e}", a.filename)))?;
+                args.push("--attach".into());
+                args.push(path.to_string_lossy().into_owned());
+            }
+            Some(dir)
+        };
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.run(&refs, stdin)?;
+        let sent = self.run(&refs, stdin);
+        drop(files);
+        sent?;
         Ok(SendResponse { thread_id: nonempty(thread_id), message: None, warning: None })
     }
 
@@ -669,20 +685,16 @@ impl Provider for Hey {
 
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let local = self.local(id)?.to_string();
-        let dir = std::env::temp_dir().join(format!("cloudmail-hey-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&dir).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create {}: {e}", dir.display())))?;
+        let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}")))?;
         let result = (|| {
-            let target = format!("{}/", dir.display());
+            let target = format!("{}/", dir.path().display());
             let data = self.run(&["attachment", "save", &local, "--output", &target, "--force"], None)?;
             let path = data["path"].as_str().map(std::path::PathBuf::from).ok_or_else(|| self.shape_error("attachment save"))?;
             let bytes = std::fs::read(&path).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not read the saved attachment: {e}")))?;
             let filename = nonempty(text(&data["filename"])).or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()));
             Ok(Download { bytes, content_type: None, filename })
         })();
-        let _ = std::fs::remove_dir_all(&dir);
+        drop(dir);
         result
     }
 }
