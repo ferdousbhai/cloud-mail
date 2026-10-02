@@ -130,7 +130,7 @@ Attachments go out with `Content-Disposition: attachment` and are kept with the 
 received ones: listed in its `attachments`, downloadable from `/api/attachments/:id`, and the thread's
 `has_attachments` is set). A filename loses control characters and path separators; a `mime_type` that
 isn't `type/subtype` becomes `application/octet-stream`. Cloudflare Email Service sends at most 5 MiB per
-message, attachments included once base64-encoded, so attachments can total about 3.7 MiB (less with a
+message, attachments included once base64-encoded, so attachments can total about 3.6 MiB (less with a
 long body). A bigger message gets `413` with an `error` saying how much room there is, and nothing is
 sent; malformed attachments get `400`.
 

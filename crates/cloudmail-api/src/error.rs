@@ -7,7 +7,7 @@ pub enum ErrorKind {
     /// The worker rejected the API token.
     Unauthorized,
     NotFound,
-    /// The worker rejected the request as invalid (HTTP 400, 409 or 422).
+    /// The worker rejected the request as invalid (HTTP 400, 409, 413 or 422).
     BadRequest,
     /// The worker returned another error status.
     Api,

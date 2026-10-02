@@ -663,6 +663,10 @@ impl Provider for Hey {
         Ok(SendResponse { thread_id: nonempty(thread_id), message: None, warning: None })
     }
 
+    fn attachment_limit(&self) -> u64 {
+        crate::attach::HEY_LIMIT
+    }
+
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let local = self.local(id)?.to_string();
         let dir = std::env::temp_dir().join(format!("cloudmail-hey-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));

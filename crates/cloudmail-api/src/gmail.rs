@@ -823,6 +823,10 @@ impl Provider for Gmail {
         Ok(SendResponse { thread_id: thread_id.map(|t| format!("{}:{t}", self.name)), message: None, warning: None })
     }
 
+    fn attachment_limit(&self) -> u64 {
+        crate::attach::GMAIL_LIMIT
+    }
+
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let (message, part_id) = self.local(id)?.split_once(':').ok_or_else(|| self.fail(ErrorKind::NotFound, format!("{id} isn't a Gmail attachment ID")))?;
         let m = self.call(&["messages", "get"], json!({ "userId": "me", "id": message, "format": "full" }), None)?;

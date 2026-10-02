@@ -363,7 +363,9 @@ impl Mail {
     }
 
     pub fn send(&self, req: &SendRequest) -> Result<SendResponse> {
-        self.sender_for(req).send(req)
+        let sender = self.sender_for(req);
+        crate::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
+        sender.send(req)
     }
 }
 

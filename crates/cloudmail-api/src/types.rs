@@ -219,6 +219,31 @@ pub struct SendRequest {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<OutgoingAttachment>,
+}
+
+/// A file sent with a message; `content` is base64 on the wire.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct OutgoingAttachment {
+    pub filename: String,
+    pub mime_type: String,
+    #[serde(with = "base64_content")]
+    pub content: Vec<u8>,
+}
+
+mod base64_content {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        STANDARD.decode(String::deserialize(d)?.trim()).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -266,5 +291,16 @@ mod tests {
         assert_eq!(t.to_address.as_deref(), Some("hi@example.com"));
         let t: ThreadSummary = serde_json::from_str(r#"{"id":"t_1"}"#).unwrap();
         assert_eq!(t.to_address, None);
+    }
+
+    #[test]
+    fn attachments_go_as_base64_and_only_when_there_are_some() {
+        let mut req = SendRequest { to: vec!["a@b.c".into()], text: "hi".into(), ..Default::default() };
+        assert!(serde_json::to_value(&req).unwrap().get("attachments").is_none(), "existing payloads don't change");
+        req.attachments.push(OutgoingAttachment { filename: "a.bin".into(), mime_type: "application/octet-stream".into(), content: vec![0, 255, 1] });
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["attachments"], serde_json::json!([{ "filename": "a.bin", "mime_type": "application/octet-stream", "content": "AP8B" }]));
+        let back: OutgoingAttachment = serde_json::from_value(v["attachments"][0].clone()).unwrap();
+        assert_eq!(back.content, [0, 255, 1]);
     }
 }

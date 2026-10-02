@@ -242,6 +242,7 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
         subject: c.subject.text().to_string(),
         text,
         reply_to_message_id: c.reply_to_message_id.clone(),
+        attachments: Vec::new(),
     };
     c.error.set_label("");
     c.send.set_sensitive(false);

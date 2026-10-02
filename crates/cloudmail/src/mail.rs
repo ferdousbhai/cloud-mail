@@ -351,6 +351,7 @@ pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {
         subject: a.subject.clone(),
         text,
         reply_to_message_id: None,
+        attachments: Vec::new(),
     };
     send_or_preview(ctx, req, a.dry_run)
 }
@@ -391,6 +392,7 @@ pub fn build_reply(detail: &ThreadDetail, own: &[String], default_from: Option<&
         subject: reply_subject(&latest.subject),
         text: String::new(),
         reply_to_message_id: Some(latest.id.clone()),
+        attachments: Vec::new(),
     };
     Ok((req, quoted))
 }

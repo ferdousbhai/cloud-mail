@@ -88,6 +88,8 @@ pub trait Provider: Send + Sync {
     fn identities(&self) -> Result<Vec<Address>>;
     /// Sends a new message, or a reply when `reply_to_message_id` is one of this provider's message IDs.
     fn send(&self, req: &SendRequest) -> Result<SendResponse>;
+    /// The most bytes of attachments one message can carry.
+    fn attachment_limit(&self) -> u64;
     fn download_attachment(&self, id: &str) -> Result<Download>;
     /// A message's original .eml, when the provider gives it out.
     fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
@@ -167,6 +169,10 @@ impl Provider for Client {
 
     fn send(&self, req: &SendRequest) -> Result<SendResponse> {
         Client::send(self, req)
+    }
+
+    fn attachment_limit(&self) -> u64 {
+        crate::attach::WORKER_LIMIT
     }
 
     fn download_attachment(&self, id: &str) -> Result<Download> {
