@@ -232,8 +232,6 @@ const MESSAGE_OVERHEAD = 16 * 1024;
 interface OutgoingAttachment {
   filename: string;
   mimeType: string;
-  /** Canonical base64, as the Email Service binding takes it. */
-  base64: string;
   bytes: Uint8Array;
 }
 
@@ -276,7 +274,7 @@ export function parseAttachments(input: unknown): OutgoingAttachment[] | string 
       return `attachments[${i}].content is not valid base64`;
     }
     const type = typeof mime_type === "string" ? mime_type.trim().toLowerCase() : "";
-    out.push({ filename: cleanFilename(filename), mimeType: MIME_RE.test(type) ? type : "application/octet-stream", base64: b64, bytes });
+    out.push({ filename: cleanFilename(filename), mimeType: MIME_RE.test(type) ? type : "application/octet-stream", bytes });
   }
   return out;
 }
@@ -346,7 +344,8 @@ async function send(env: Env, req: Request): Promise<Response> {
       html,
       headers,
       attachments: attachments.length
-        ? attachments.map((a) => ({ disposition: "attachment" as const, filename: a.filename, type: a.mimeType, content: a.base64 }))
+        ? // Bytes, not base64: the deployed Email Service sends a string content as the file's literal text.
+          attachments.map((a) => ({ disposition: "attachment" as const, filename: a.filename, type: a.mimeType, content: a.bytes }))
         : undefined,
     });
   } catch (err) {

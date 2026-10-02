@@ -108,9 +108,10 @@ test("sends attachments through the binding and keeps them in Sent", async () =>
   const out = (await res.json()) as { thread_id: string; message: { id: string; attachments: { id: string; filename: string; mime_type: string; size: number; inline: boolean }[] } };
 
   expect(sent).toHaveLength(1);
+  // The binding gets the bytes themselves: a string content is sent as the file's literal text.
   expect(sent[0].attachments).toEqual([
-    { disposition: "attachment", filename: "report.pdf", type: "application/pdf", content: b64(pdf) },
-    { disposition: "attachment", filename: ".._notes.txt", type: "application/octet-stream", content: b64("hello") },
+    { disposition: "attachment", filename: "report.pdf", type: "application/pdf", content: pdf },
+    { disposition: "attachment", filename: ".._notes.txt", type: "application/octet-stream", content: new TextEncoder().encode("hello") },
   ]);
 
   const atts = out.message.attachments;
