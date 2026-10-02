@@ -118,10 +118,21 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
   "subject": "Hello",
   "text": "plain body",                 // required
   "html": "<p>optional</p>",            // optional; server derives one from text if absent
-  "reply_to_message_id": "m_…"          // optional; threads the reply (In-Reply-To/References) and
+  "reply_to_message_id": "m_…",         // optional; threads the reply (In-Reply-To/References) and
                                         // puts the sent message in that thread
+  "attachments": [                      // optional; at most 32
+    { "filename": "report.pdf", "mime_type": "application/pdf", "content": "<base64>" }
+  ]
 }
 ```
+
+Attachments go out with `Content-Disposition: attachment` and are kept with the sent message (like
+received ones: listed in its `attachments`, downloadable from `/api/attachments/:id`, and the thread's
+`has_attachments` is set). A filename loses control characters and path separators; a `mime_type` that
+isn't `type/subtype` becomes `application/octet-stream`. Cloudflare Email Service sends at most 5 MiB per
+message, attachments included once base64-encoded, so attachments can total about 3.7 MiB (less with a
+long body). A bigger message gets `413` with an `error` saying how much room there is, and nothing is
+sent; malformed attachments get `400`.
 
 Health check (no auth): `GET /health` → `{ "ok": true }`.
 

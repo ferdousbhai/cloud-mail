@@ -3,6 +3,7 @@ import { deleteThread, senderStatus, setSenderStatus, storeMessage } from "./sto
 import {
   type Address,
   arrayBufferToBase64,
+  byteLength,
   error,
   json,
   messageIdList,
@@ -218,9 +219,74 @@ interface SendBody {
   text?: string;
   html?: string;
   reply_to_message_id?: string;
+  attachments?: unknown;
+}
+
+// Cloudflare Email Service takes at most 5 MiB per message, attachments included once encoded, and 32
+// attachments (developers.cloudflare.com/email-service/platform/limits/ and …/api/send-emails/workers-api/).
+const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS = 32;
+// Headers, MIME boundaries and part headers, generously.
+const MESSAGE_OVERHEAD = 16 * 1024;
+
+interface OutgoingAttachment {
+  filename: string;
+  mimeType: string;
+  /** Canonical base64, as the Email Service binding takes it. */
+  base64: string;
+  bytes: Uint8Array;
+}
+
+const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+// Native where the runtime has it (far cheaper in CPU than atob for megabytes).
+const fromBase64 = (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array }).fromBase64;
+
+/** Bytes once base64-encoded in 76-character lines, as a MIME part carries them. */
+export function encodedSize(bytes: number): number {
+  const b64 = Math.ceil(bytes / 3) * 4;
+  return b64 + Math.ceil(b64 / 76) * 2;
+}
+
+function megabytes(n: number): string {
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/** A file name safe for a Content-Disposition header and for listing: one line, no path. */
+function cleanFilename(name: string): string {
+  const clean = name.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[/\\]/g, "_").trim().slice(0, 255);
+  return clean || "attachment";
+}
+
+export function parseAttachments(input: unknown): OutgoingAttachment[] | string {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) return "attachments must be an array";
+  if (input.length > MAX_ATTACHMENTS) return `too many attachments (${input.length}); at most ${MAX_ATTACHMENTS}`;
+  const out: OutgoingAttachment[] = [];
+  for (const [i, a] of input.entries()) {
+    const { filename, mime_type, content } = (a ?? {}) as { filename?: unknown; mime_type?: unknown; content?: unknown };
+    if (typeof filename !== "string" || !filename.trim()) return `attachments[${i}].filename is required`;
+    if (typeof content !== "string") return `attachments[${i}].content must be a base64 string`;
+    const b64 = content.replace(/\s+/g, "");
+    if (b64.length % 4 !== 0 || !BASE64_RE.test(b64)) return `attachments[${i}].content is not valid base64`;
+    let bytes: Uint8Array;
+    try {
+      bytes = fromBase64 ? fromBase64.call(Uint8Array, b64) : Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    } catch {
+      return `attachments[${i}].content is not valid base64`;
+    }
+    const type = typeof mime_type === "string" ? mime_type.trim().toLowerCase() : "";
+    out.push({ filename: cleanFilename(filename), mimeType: MIME_RE.test(type) ? type : "application/octet-stream", base64: b64, bytes });
+  }
+  return out;
 }
 
 async function send(env: Env, req: Request): Promise<Response> {
+  // Base64 makes attachments a third bigger in the request than in the message; anything far past
+  // the message limit can't be sent anyway, so don't read it.
+  if (Number(req.headers.get("content-length")) > 2 * MAX_MESSAGE_BYTES) {
+    return error(`the request is too large; a message can be at most ${megabytes(MAX_MESSAGE_BYTES)} with its attachments`, 413);
+  }
   const body = await readJson<SendBody>(req);
   if (!body) return error("invalid JSON");
 
@@ -229,6 +295,8 @@ async function send(env: Env, req: Request): Promise<Response> {
   const bcc = parseAddressList(body.bcc);
   if (to.length + cc.length + bcc.length === 0) return error("no recipients");
   if (typeof body.text !== "string") return error("text is required");
+  const attachments = parseAttachments(body.attachments);
+  if (typeof attachments === "string") return error(attachments);
 
   const ids = await identities(env);
   const requested = body.from ? parseAddressList(body.from)[0] : ids[0];
@@ -253,6 +321,19 @@ async function send(env: Env, req: Request): Promise<Response> {
   const subject = body.subject?.trim() || "(no subject)";
   const html = body.html ?? textToHtml(body.text);
 
+  if (attachments.length) {
+    // Text and HTML bodies may be quoted-printable or base64 encoded: count them as base64.
+    const bodies = encodedSize(byteLength(body.text)) + encodedSize(byteLength(html)) + MESSAGE_OVERHEAD;
+    const files = attachments.reduce((n, a) => n + a.bytes.length, 0);
+    if (bodies + attachments.reduce((n, a) => n + encodedSize(a.bytes.length), 0) > MAX_MESSAGE_BYTES) {
+      const room = Math.max(0, Math.floor(((MAX_MESSAGE_BYTES - bodies) * 3) / 4 / (78 / 76)));
+      return error(
+        `the attachments are too large (${megabytes(files)}): Cloudflare Email Service sends at most ${megabytes(MAX_MESSAGE_BYTES)} per message once encoded, which leaves about ${megabytes(room)} for attachments`,
+        413,
+      );
+    }
+  }
+
   let result: EmailSendResult;
   try {
     result = await env.EMAIL.send({
@@ -264,10 +345,14 @@ async function send(env: Env, req: Request): Promise<Response> {
       text: body.text,
       html,
       headers,
+      attachments: attachments.length
+        ? attachments.map((a) => ({ disposition: "attachment" as const, filename: a.filename, type: a.mimeType, content: a.base64 }))
+        : undefined,
     });
   } catch (err) {
     const e = err as { code?: string; message?: string };
-    return error(`send failed: ${e.code ?? ""} ${e.message ?? String(err)}`.trim(), 502);
+    const status = e.code === "E_CONTENT_TOO_LARGE" ? 413 : e.code === "E_TOO_MANY_ATTACHMENTS" ? 400 : 502;
+    return error(`send failed: ${e.code ?? ""} ${e.message ?? String(err)}`.trim(), status);
   }
 
   // The mail has gone out. Anything failing from here must not look like a failed send, or a
@@ -288,7 +373,7 @@ async function send(env: Env, req: Request): Promise<Response> {
       html,
       date: Date.now(),
       raw: null,
-      attachments: [],
+      attachments: attachments.map((a) => ({ filename: a.filename, mimeType: a.mimeType, content: a.bytes, contentId: null, inline: false })),
       threadId: original?.thread_id,
       // A new conversation you start isn't something to act on; replies bring it to the inbox.
       newThreadFolder: "archive",
