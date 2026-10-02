@@ -1045,3 +1045,142 @@ fn gmail_and_hey_together() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("Gmail") && out.contains("HEY"), "{out}");
 }
+
+/// Files to attach, in a directory of their own: report.pdf (binary), notes.txt, and a second notes.txt.
+fn attachment_files(tag: &str) -> PathBuf {
+    let dir = temp_home(&format!("files-{tag}"));
+    std::fs::write(dir.join("report.pdf"), [0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x10]).unwrap();
+    std::fs::write(dir.join("notes.txt"), "first").unwrap();
+    std::fs::create_dir_all(dir.join("other")).unwrap();
+    std::fs::write(dir.join("other/notes.txt"), "second").unwrap();
+    dir
+}
+
+fn path_arg(dir: &std::path::Path, name: &str) -> String {
+    dir.join(name).display().to_string()
+}
+
+#[test]
+fn compose_and_reply_attach_files_through_the_worker() {
+    let m = mock(default_handler);
+    let files = attachment_files("worker");
+    let (pdf, notes) = (path_arg(&files, "report.pdf"), path_arg(&files, "notes.txt"));
+    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "Attached", "--attach", &pdf, "--attach", &notes], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(json_out(&o)["summary"], "Sent \"Files\" to a@b.com with 2 attachments");
+    let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
+    assert_eq!(
+        sent.body["attachments"],
+        json!([
+            { "filename": "report.pdf", "mime_type": "application/pdf", "content": "JVBERgD/EA==" },
+            { "filename": "notes.txt", "mime_type": "text/plain", "content": "Zmlyc3Q=" },
+        ])
+    );
+
+    // A dry run lists the files instead of carrying them.
+    let v = json_out(&cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "x", "--attach", &pdf, "--dry-run"], None));
+    assert_eq!(v["data"]["request"]["attachments"], json!([{ "filename": "report.pdf", "mime_type": "application/pdf", "size": 7 }]));
+    assert_eq!(v["summary"], "Would send \"Files\" to a@b.com with 1 attachment (dry run)");
+
+    let o = cloudmail(&m, &["reply", "t_1", "--no-quote", "-m", "Here", "--attach", &notes], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let sent = requests(&m).into_iter().rfind(|r| r.path == "/api/send").unwrap();
+    assert_eq!(sent.body["reply_to_message_id"], "m_1");
+    assert_eq!(sent.body["attachments"][0]["filename"], "notes.txt");
+
+    // Without --attach the request is as it always was.
+    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "Plain", "-m", "x"], None);
+    assert!(o.status.success());
+    assert!(requests(&m).into_iter().rfind(|r| r.path == "/api/send").unwrap().body.get("attachments").is_none());
+    assert_eq!(requests(&m).iter().filter(|r| r.path == "/api/send").count(), 3);
+}
+
+#[test]
+fn bad_attachments_fail_before_anything_is_sent() {
+    let m = mock(default_handler);
+    let files = attachment_files("bad");
+    let missing = path_arg(&files, "nope.pdf");
+    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", &missing], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json_out(&o)["error"]["message"], format!("can't attach {missing}: no such file"));
+    let o = cloudmail(&m, &["reply", "t_1", "-m", "x", "--attach", &files.display().to_string()], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(json_out(&o)["error"]["message"].as_str().unwrap().ends_with("it's a directory"));
+
+    // Over the worker's limit: refused here, with the limit in the message, even on a dry run.
+    let big = files.join("big.bin");
+    std::fs::write(&big, vec![0u8; 3700 * 1024]).unwrap();
+    for extra in [&[][..], &["--dry-run"]] {
+        let mut args = vec!["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", big.to_str().unwrap()];
+        args.extend(extra);
+        let o = cloudmail(&m, &args, None);
+        assert_eq!(o.status.code(), Some(2), "{extra:?}");
+        let v = json_out(&o);
+        assert_eq!(v["error"]["code"], "bad_request");
+        assert_eq!(v["error"]["message"], "the attachments are too large to send through Cloudmail: 3.6 MB in all, and it takes at most 3.5 MB");
+    }
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
+
+    // The worker's own refusal (413) is a bad request too.
+    let m = mock(|req| if req.path == "/api/send" { (413, br#"{"error":"the attachments are too large"}"#.to_vec(), "application/json") } else { default_handler(req) });
+    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", &path_arg(&files, "notes.txt")], None);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json_out(&o)["error"]["message"], "the attachments are too large");
+}
+
+#[test]
+fn hey_sends_attachments_by_path_from_a_private_directory() {
+    let m = mock(default_handler);
+    let h = hey_home("attach");
+    let files = attachment_files("hey");
+    let _ = std::fs::remove_file(h.home.join("hey.log.attached"));
+    let o = h.run(&m, &["compose", "--from", "me@hey.example", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello", "--attach", &path_arg(&files, "report.pdf"), "--attach", &path_arg(&files, "notes.txt"), "--attach", &path_arg(&files, "other/notes.txt")], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let call = h.calls().into_iter().find(|c| c.starts_with("compose ")).unwrap();
+    assert!(call.starts_with("compose --to a@b.com --subject Hi --from me@hey.example --message-html <div>Hello</div> --attach "), "{call}");
+    let paths: Vec<&str> = call.split(" --attach ").skip(1).collect();
+    assert_eq!(paths.len(), 3);
+    assert!(paths[0].ends_with("/0/report.pdf") && paths[1].ends_with("/1/notes.txt") && paths[2].ends_with("/2/notes.txt"), "{paths:?}");
+    assert!(paths.iter().all(|p| !std::path::Path::new(p).exists()), "removed once hey has run");
+    let attached = std::fs::read_to_string(h.home.join("hey.log.attached")).unwrap();
+    assert_eq!(attached, "report.pdf\t700\t600\tJVBERgD/EA==\nnotes.txt\t700\t600\tZmlyc3Q=\nnotes.txt\t700\t600\tc2Vjb25k\n");
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
+
+    let o = h.run(&m, &["reply", "hey:9001:7001", "-m", "On it", "--attach", &path_arg(&files, "notes.txt")], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let call = h.calls().into_iter().find(|c| c.starts_with("reply 9001 --replace-recipients")).unwrap();
+    assert!(call.contains(" --attach ") && call.ends_with("/0/notes.txt"), "{call}");
+}
+
+#[test]
+fn gmail_sends_attachments_as_an_uploaded_multipart_message() {
+    let m = mock(default_handler);
+    let h = gmail_home("attach", GMAIL, true);
+    let _ = std::fs::remove_file(h.home.join("gws.log.upload"));
+    let files = attachment_files("gmail");
+    let o = h.run(&m, &["reply", "gmail:t-a1", "--no-quote", "-m", "Both attached", "--attach", &path_arg(&files, "report.pdf"), "--attach", &path_arg(&files, "notes.txt")], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let call = h.calls().into_iter().find(|c| c.contains("messages send")).unwrap();
+    assert!(call.contains(r#"--json {"threadId":"t-a1"} --upload .outgoing-"#) && call.ends_with("/0/message.eml --upload-content-type message/rfc822"), "{call}");
+    assert!(!call.contains("raw"), "the message is uploaded, not passed as an argument");
+    assert_eq!(std::fs::read_to_string(h.home.join("gws.log.upload")).unwrap(), "700 600\n");
+    assert!(std::fs::read_dir(h.gws_dir()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".outgoing")), "removed after sending");
+
+    let sent = h.sent();
+    let (head, body) = sent.split_once("\r\n\r\n").unwrap();
+    assert!(head.contains("In-Reply-To: <trip-1@example.net>\r\nReferences: <trip-0@example.net> <trip-1@example.net>\r\n"), "{head}");
+    let boundary = head.split("multipart/mixed; boundary=\"").nth(1).expect(head).split('"').next().unwrap();
+    let parts: Vec<&str> = body.split(&format!("--{boundary}")).collect();
+    assert_eq!(parts.len(), 5, "{body}");
+    assert!(parts[1].starts_with("\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nQm90aCBhdHRhY2hlZA==\r\n"), "{}", parts[1]);
+    assert_eq!(parts[2], "\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERgD/EA==\r\n");
+    assert_eq!(parts[3], "\r\nContent-Type: text/plain; name=\"notes.txt\"\r\nContent-Disposition: attachment; filename=\"notes.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nZmlyc3Q=\r\n");
+    assert_eq!(parts[4], "--\r\n");
+    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a Gmail reply never goes through the worker");
+
+    // A body far past what one argument could carry goes through too.
+    std::fs::write(files.join("long.txt"), "x".repeat(300 * 1024)).unwrap();
+    let o = h.run(&m, &["compose", "--from", "me@gmail.example", "--to", "a@b.com", "--subject", "Long", "--message-file", &path_arg(&files, "long.txt")], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(h.sent().len() > 400 * 1024);
+}

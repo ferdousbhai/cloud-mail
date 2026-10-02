@@ -297,6 +297,9 @@ pub struct ComposeArgs {
     pub subject: String,
     #[command(flatten)]
     pub body: BodyArgs,
+    /// Attach a file; repeat for more (the type is guessed from the extension)
+    #[arg(long, value_name = "FILE")]
+    pub attach: Vec<PathBuf>,
     /// Show the request that would be sent, without sending
     #[arg(long)]
     pub dry_run: bool,
@@ -317,6 +320,9 @@ pub struct ReplyArgs {
     /// Don't quote the original message
     #[arg(long)]
     pub no_quote: bool,
+    /// Attach a file; repeat for more (the type is guessed from the extension)
+    #[arg(long, value_name = "FILE")]
+    pub attach: Vec<PathBuf>,
     /// Show the request that would be sent, without sending
     #[arg(long)]
     pub dry_run: bool,

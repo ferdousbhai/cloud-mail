@@ -100,6 +100,7 @@ cloudmail screener approve alice@example.com
 cloudmail inbox --unread
 cloudmail thread read <id>
 cloudmail reply <id> -m "Sounds good."
+cloudmail compose --to a@example.com --subject Invoice -m "Attached." --attach invoice.pdf
 cloudmail watch --folder all  # stream new mail (JSON lines when piped)
 ```
 

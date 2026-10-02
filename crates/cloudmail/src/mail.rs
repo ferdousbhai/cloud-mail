@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use cloudmail_api::text::{bare_email, html_to_text, human_size, quote, reply_subject, short_time, split_addresses, unused_path};
-use cloudmail_api::{ErrorKind, Mail, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
+use cloudmail_api::{ErrorKind, Mail, OutgoingAttachment, SendRequest, ThreadDetail, ThreadQuery, ThreadSummary};
 
 use crate::Ctx;
 use crate::cli::*;
@@ -306,22 +306,44 @@ fn addresses(list: &[String]) -> Vec<String> {
     list.iter().flat_map(|s| split_addresses(s)).collect()
 }
 
+/// The files to send, read before anything else so a wrong path fails early.
+fn attachments(paths: &[PathBuf]) -> CliResult<Vec<OutgoingAttachment>> {
+    Ok(paths.iter().map(|p| OutgoingAttachment::from_path(p)).collect::<cloudmail_api::Result<_>>()?)
+}
+
+/// " with 2 attachments", or nothing.
+fn with_attachments(req: &SendRequest) -> String {
+    if req.attachments.is_empty() { String::new() } else { format!(" with {}", plural(req.attachments.len(), "attachment")) }
+}
+
 fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
     let to_text = req.to.join(", ");
     if dry_run {
-        let summary = format!("Would send \"{}\" to {to_text} (dry run)", req.subject);
+        if !req.attachments.is_empty()
+            && let Ok(mail) = ctx.mail() {
+                let sender = mail.sender_for(&req);
+                cloudmail_api::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
+            }
+        let summary = format!("Would send \"{}\" to {to_text}{} (dry run)", req.subject, with_attachments(&req));
+        let files: Vec<String> = req.attachments.iter().map(|a| format!("{} ({}, {})", a.filename, human_size(a.size() as i64), a.mime_type)).collect();
         let human = format!(
-            "From: {}\nTo: {to_text}{}{}\nSubject: {}\n\n{}\n\n{summary}",
+            "From: {}\nTo: {to_text}{}{}\nSubject: {}{}\n\n{}\n\n{summary}",
             req.from.as_deref().unwrap_or("(default mailbox)"),
             if req.cc.is_empty() { String::new() } else { format!("\nCc: {}", req.cc.join(", ")) },
             if req.bcc.is_empty() { String::new() } else { format!("\nBcc: {}", req.bcc.join(", ")) },
             req.subject,
+            if files.is_empty() { String::new() } else { format!("\nAttachments: {}", files.join(", ")) },
             req.text.trim_end()
         );
-        return Ok(Response::new(json!({ "dry_run": true, "request": req }), summary).human(human));
+        // Files are listed by name, type and size rather than carried whole in the preview.
+        let mut request = serde_json::to_value(&req).unwrap_or_default();
+        if !req.attachments.is_empty() {
+            request["attachments"] = req.attachments.iter().map(|a| json!({ "filename": a.filename, "mime_type": a.mime_type, "size": a.size() })).collect();
+        }
+        return Ok(Response::new(json!({ "dry_run": true, "request": request }), summary).human(human));
     }
     let resp = ctx.mail()?.send(&req)?;
-    let mut summary = format!("Sent \"{}\" to {to_text}", req.subject);
+    let mut summary = format!("Sent \"{}\" to {to_text}{}", req.subject, with_attachments(&req));
     if let Some(w) = &resp.warning {
         // The mail went out: retrying would send it twice.
         summary.push_str(&format!(" (warning: {w})"));
@@ -339,6 +361,7 @@ pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {
     if to.is_empty() {
         return Err(CliError::usage("--to needs at least one address"));
     }
+    let files = attachments(&a.attach)?;
     let (text, _) = body(&a.body, "")?;
     if text.trim().is_empty() {
         return Err(CliError::usage("the message body is empty; nothing sent"));
@@ -351,7 +374,7 @@ pub fn compose(ctx: &Ctx, a: &ComposeArgs) -> CliResult {
         subject: a.subject.clone(),
         text,
         reply_to_message_id: None,
-        attachments: Vec::new(),
+        attachments: files,
     };
     send_or_preview(ctx, req, a.dry_run)
 }
@@ -398,6 +421,7 @@ pub fn build_reply(detail: &ThreadDetail, own: &[String], default_from: Option<&
 }
 
 pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
+    let files = attachments(&a.attach)?;
     let mail = ctx.mail()?;
     let on = mail.provider(&a.thread_id);
     let detail = on.thread(&a.thread_id, false).map_err(missing("thread", &a.thread_id, "list threads with `cloudmail inbox`"))?;
@@ -426,6 +450,7 @@ pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
         return Err(CliError::usage("the reply is empty; nothing sent"));
     }
     req.text = if edited || a.no_quote { text } else { format!("{}{quoted}", text.trim_end()) };
+    req.attachments = files;
     send_or_preview(ctx, req, a.dry_run)
 }
 

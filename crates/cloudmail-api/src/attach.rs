@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn limits_count_every_file() {
         let a = OutgoingAttachment { content: vec![0; 600], ..Default::default() };
-        assert!(check_limit(&[a.clone()], 1000, "x").is_ok());
+        assert!(check_limit(std::slice::from_ref(&a), 1000, "x").is_ok());
         let e = check_limit(&[a.clone(), a], 1000, "Cloudmail").unwrap_err();
         assert_eq!(e.message, "the attachments are too large to send through Cloudmail: 1 KB in all, and it takes at most 1000 B");
     }

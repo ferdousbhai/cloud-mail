@@ -33,6 +33,7 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail compose --to alice@example.com --subject \"Lunch?\" -m \"Tuesday at noon?\"",
             "echo \"Report attached below\" | cloudmail compose --to bob@x.com --subject Report --from support@example.com",
             "cloudmail compose --to a@x.com --subject Test -m hi --dry-run",
+            "cloudmail compose --to bob@x.com --subject Invoice -m \"Attached.\" --attach invoice.pdf --attach notes.txt",
         ],
     ),
     (
@@ -41,6 +42,7 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail reply t_ad7e6e0b172e481aaa3c -m \"Sounds good!\"",
             "cloudmail reply t_ad7e6e0b172e481aaa3c --all --message-file reply.txt",
             "cloudmail reply t_ad7e6e0b172e481aaa3c -m \"Thanks\" --dry-run --json",
+            "cloudmail reply t_ad7e6e0b172e481aaa3c -m \"Here it is\" --attach report.pdf",
         ],
     ),
     ("attachment", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c"]),
@@ -276,6 +278,13 @@ Send new mail:
 
     cloudmail mailbox list --json                   # addresses you can send from
     cloudmail compose --to bob@x.com --subject "Hi" -m "Hello" --from support@example.com
+    cloudmail compose --to bob@x.com --subject "Invoice" -m "Attached." --attach invoice.pdf --dry-run --json
+
+`--attach FILE` (repeatable, on compose and reply) sends files; the type comes from the extension.
+A missing or unreadable file is a usage error before anything is sent. Your worker sends at most
+about 3.5 MiB of attachments (Cloudflare Email Service takes 5 MiB per message once encoded); HEY
+and Gmail 25 MB. Over that is a `bad_request` naming the limit. `--dry-run` lists the files as
+`{filename, mime_type, size}`; a worker send's `message.attachments` lists them as stored.
 
 Watch for new mail (JSONL, one object per new or updated thread):
 
