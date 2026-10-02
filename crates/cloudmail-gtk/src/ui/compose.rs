@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::Ui;
-use crate::api::{Address, SendRequest};
+use crate::api::{Address, OutgoingAttachment, SendRequest};
 use crate::util::{self, Draft};
 
 struct Compose {
@@ -16,6 +16,9 @@ struct Compose {
     body: gtk::TextView,
     error: gtk::Label,
     send: gtk::Button,
+    /// The files to send, each shown as a removable chip in `chips`.
+    attachments: RefCell<Vec<OutgoingAttachment>>,
+    chips: gtk::FlowBox,
     /// To, Cc, Subject and body as the window opened, to tell whether anything was edited.
     initial: RefCell<[String; 4]>,
     reply_to_message_id: Option<String>,
@@ -23,6 +26,12 @@ struct Compose {
 
 fn fields(c: &Compose) -> [String; 4] {
     [c.to.text().to_string(), c.cc.text().to_string(), c.subject.text().to_string(), body_text(c)]
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Open compose windows, for the smoke-test script (which can't drive a file chooser).
+    static OPEN: RefCell<Vec<std::rc::Weak<Compose>>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn open(ui: &Rc<Ui>, draft: Draft) {
@@ -59,20 +68,26 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     let body = gtk::TextView::builder().wrap_mode(gtk::WrapMode::WordChar).accepts_tab(false).vexpand(true).build();
     body.buffer().set_text(&draft.body);
     body.buffer().place_cursor(&body.buffer().start_iter());
+    let chips = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).column_spacing(6).row_spacing(6).max_children_per_line(20).visible(false).build();
+    chips.add_css_class("attachments");
+    grid.attach(&chips, 0, 4, 2, 1);
     let scroller = gtk::ScrolledWindow::builder().child(&body).vexpand(true).hexpand(true).build();
-    grid.attach(&scroller, 0, 4, 2, 1);
+    grid.attach(&scroller, 0, 5, 2, 1);
 
     let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let attach = gtk::Button::with_label("Attach…");
+    attach.set_tooltip_text(Some("Attach files (or drop them on this window)"));
     let error = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
     error.add_css_class("error");
     let hint = gtk::Label::new(Some("Ctrl+Enter to send · Esc to close"));
     hint.add_css_class("dim");
     let send = gtk::Button::with_label("Send");
     send.add_css_class("suggested");
+    bottom.append(&attach);
     bottom.append(&error);
     bottom.append(&hint);
     bottom.append(&send);
-    grid.attach(&bottom, 0, 5, 2, 1);
+    grid.attach(&bottom, 0, 6, 2, 1);
     window.set_child(Some(&grid));
     window.set_default_widget(Some(&send));
 
@@ -86,9 +101,13 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         body,
         error,
         send,
+        attachments: Default::default(),
+        chips,
         initial: Default::default(),
         reply_to_message_id: draft.reply_to_message_id,
     });
+    #[cfg(debug_assertions)]
+    OPEN.with(|o| o.borrow_mut().push(Rc::downgrade(&c)));
 
     *c.initial.borrow_mut() = fields(&c);
     // The title-bar close button and the compositor's close (Super+W) ask first, like Esc.
@@ -123,6 +142,13 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     }
 
     c.send.connect_clicked(clone!(#[weak] ui, #[weak] c, move |_| send_message(&c, &ui)));
+    attach.connect_clicked(clone!(#[weak] c, move |_| choose_files(&c)));
+
+    // Files dropped anywhere on the window are attached (before the body could take them as text).
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    drop.set_propagation_phase(gtk::PropagationPhase::Capture);
+    drop.connect_drop(clone!(#[weak] c, #[upgrade_or] false, move |_, value, _, _| on_drop(&c, value)));
+    c.window.add_controller(drop);
 
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -242,7 +268,7 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
         subject: c.subject.text().to_string(),
         text,
         reply_to_message_id: c.reply_to_message_id.clone(),
-        attachments: Vec::new(),
+        attachments: c.attachments.borrow().clone(),
     };
     c.error.set_label("");
     c.send.set_sensitive(false);
@@ -268,9 +294,120 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
 }
 
 fn is_dirty(c: &Compose) -> bool {
-    let now = fields(c);
-    let initial = c.initial.borrow();
-    now.iter().zip(initial.iter()).any(|(a, b)| a.trim() != b.trim()) && now.iter().any(|f| !f.trim().is_empty())
+    dirty(&fields(c), &c.initial.borrow(), c.attachments.borrow().len())
+}
+
+/// Whether closing would lose something: an edited, non-empty field, or any attached file.
+fn dirty(now: &[String; 4], initial: &[String; 4], attachments: usize) -> bool {
+    attachments > 0 || (now.iter().zip(initial.iter()).any(|(a, b)| a.trim() != b.trim()) && now.iter().any(|f| !f.trim().is_empty()))
+}
+
+/// "report.pdf" and "1.2 MB", for a chip.
+fn chip_text(a: &OutgoingAttachment) -> (String, String) {
+    (a.filename.clone(), util::human_size(a.size() as i64))
+}
+
+fn choose_files(c: &Rc<Compose>) {
+    let dialog = gtk::FileDialog::builder().title("Attach files").accept_label("Attach").modal(true).build();
+    dialog.open_multiple(Some(&c.window), gio::Cancellable::NONE, clone!(#[weak] c, move |result| {
+        if let Ok(model) = result {
+            add_files(&c, (0..model.n_items()).filter_map(|i| model.item(i).and_downcast::<gio::File>()).collect());
+        }
+    }));
+}
+
+fn on_drop(c: &Rc<Compose>, value: &glib::Value) -> bool {
+    match value.get::<gdk::FileList>() {
+        Ok(list) => {
+            add_files(c, list.files());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Reads the files off the main loop and adds a chip for each; the first that can't be read is
+/// reported, the rest are still attached.
+fn add_files(c: &Rc<Compose>, files: Vec<gio::File>) {
+    if files.is_empty() {
+        return;
+    }
+    let paths: Vec<Option<std::path::PathBuf>> = files.iter().map(|f| f.path()).collect();
+    util::run(
+        move || {
+            Ok::<_, String>(
+                paths
+                    .into_iter()
+                    .map(|p| match p {
+                        Some(p) => OutgoingAttachment::from_path(&p).map_err(|e| e.message),
+                        None => Err("only files on this computer can be attached".to_string()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        },
+        clone!(#[weak] c, move |result: Result<Vec<Result<OutgoingAttachment, String>>, String>| {
+            let mut problem = None;
+            for r in result.unwrap_or_else(|e| vec![Err(e)]) {
+                match r {
+                    Ok(a) => c.attachments.borrow_mut().push(a),
+                    Err(e) => problem = problem.or(Some(e)),
+                }
+            }
+            c.error.set_label(&problem.map(|e| format!("Couldn't attach: {e}")).unwrap_or_default());
+            render_chips(&c);
+        }),
+    );
+}
+
+fn render_chips(c: &Rc<Compose>) {
+    c.chips.remove_all();
+    for (i, a) in c.attachments.borrow().iter().enumerate() {
+        let (name, size) = chip_text(a);
+        let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        chip.add_css_class("attachment-chip");
+        chip.set_halign(gtk::Align::Start);
+        chip.set_tooltip_text(Some(&a.mime_type));
+        chip.append(&gtk::Label::builder().label(&name).ellipsize(gtk::pango::EllipsizeMode::Middle).max_width_chars(32).build());
+        let size = gtk::Label::new(Some(&size));
+        size.add_css_class("dim");
+        chip.append(&size);
+        let remove = gtk::Button::with_label("×");
+        remove.add_css_class("flat");
+        remove.set_tooltip_text(Some(&format!("Remove {name}")));
+        remove.connect_clicked(clone!(#[weak] c, move |_| {
+            if i < c.attachments.borrow().len() {
+                c.attachments.borrow_mut().remove(i);
+            }
+            render_chips(&c);
+        }));
+        chip.append(&remove);
+        c.chips.append(&chip);
+    }
+    c.chips.set_visible(!c.attachments.borrow().is_empty());
+}
+
+/// Debug builds: drops `path` on the open compose window, as dragging it there would.
+#[cfg(debug_assertions)]
+pub fn drop_on_open(path: &str) -> bool {
+    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let Some(c) = open else { return false };
+    on_drop(&c, &gdk::FileList::from_array(&[gio::File::for_path(path)]).to_value())
+}
+
+/// Debug builds: clicks the remove button on the open compose window's `i`th chip.
+#[cfg(debug_assertions)]
+pub fn unattach_on_open(i: usize) -> bool {
+    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let button = open.and_then(|c| c.chips.child_at_index(i as i32)).and_then(|chip| chip.child()).and_then(|b| b.last_child()).and_downcast::<gtk::Button>();
+    button.map(|b| b.emit_clicked()).is_some()
+}
+
+/// Debug builds: the open compose window's attachments, and whether it has unsaved changes.
+#[cfg(debug_assertions)]
+pub fn open_state() -> Option<(Vec<String>, bool)> {
+    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()))?;
+    let names = open.attachments.borrow().iter().map(|a| a.filename.clone()).collect();
+    Some((names, is_dirty(&open)))
 }
 
 fn close(c: &Rc<Compose>) {
@@ -279,7 +416,7 @@ fn close(c: &Rc<Compose>) {
         return;
     }
     let dialog = gtk::AlertDialog::builder()
-        .message("Discard this draft?")
+        .message(if c.attachments.borrow().is_empty() { "Discard this draft?" } else { "Discard this draft and its attachments?" })
         .detail("Drafts aren't saved.")
         .buttons(["Keep editing", "Discard"])
         .cancel_button(0)
@@ -292,4 +429,29 @@ fn close(c: &Rc<Compose>) {
             window.destroy();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(to: &str, body: &str) -> [String; 4] {
+        [to.into(), String::new(), String::new(), body.into()]
+    }
+
+    #[test]
+    fn attachments_make_a_draft_worth_keeping() {
+        let initial = f("a@b.c", "");
+        assert!(!dirty(&initial, &initial, 0), "untouched");
+        assert!(dirty(&initial, &initial, 1), "a file was attached");
+        assert!(dirty(&f("a@b.c", "hi"), &initial, 0));
+        assert!(!dirty(&f("", ""), &f("", ""), 0), "empty");
+        assert!(dirty(&f("", ""), &f("", ""), 2), "only files");
+    }
+
+    #[test]
+    fn chips_show_name_and_size() {
+        let a = OutgoingAttachment { filename: "report.pdf".into(), mime_type: "application/pdf".into(), content: vec![0; 1536] };
+        assert_eq!(chip_text(&a), ("report.pdf".to_string(), "2 KB".to_string()));
+    }
 }

@@ -1,6 +1,9 @@
 //! Debug-build-only automation for smoke tests: CLOUDMAIL_SCRIPT="j;shot:/tmp/a.png;quit"
 //! Steps run 1.5s apart. A step is a single key, `enter`, `esc`, `shot:<png>` (main window),
-//! `shotcompose:<png>`, `send` (activates the open compose window's Send), or `quit`.
+//! `shotcompose:<png>`, `send` (activates the open compose window's Send), `drop:<file>` (drops
+//! the file on the open compose window, as dragging it there would), `unattach:<n>` (clicks the
+//! nth chip's remove button), `closecompose` (closes it the way the title bar's close button
+//! does, and reports whether it stayed open), or `quit`.
 
 use gtk::{gdk, glib, prelude::*};
 use std::rc::Rc;
@@ -33,6 +36,19 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
             "send" => {
                 if let Some(b) = compose_window().and_then(|w| w.default_widget()).and_downcast::<gtk::Button>() {
                     b.emit_clicked();
+                }
+            }
+            s if let Some(path) = s.strip_prefix("drop:") => {
+                eprintln!("script: dropped {path}: {}", super::compose::drop_on_open(path));
+            }
+            s if let Some(i) = s.strip_prefix("unattach:").and_then(|i| i.parse().ok()) => {
+                eprintln!("script: removed chip {i}: {}; now {:?}", super::compose::unattach_on_open(i), super::compose::open_state());
+            }
+            "closecompose" => {
+                if let Some(w) = compose_window() {
+                    eprintln!("script: compose before close: {:?}", super::compose::open_state());
+                    w.close();
+                    eprintln!("script: compose still open after close: {}", w.is_visible());
                 }
             }
             s if let Some(path) = s.strip_prefix("shot:") => shot(ui_rc.window.upcast_ref(), path),

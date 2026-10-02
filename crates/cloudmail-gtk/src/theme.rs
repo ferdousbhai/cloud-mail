@@ -133,6 +133,10 @@ entry:focus-within, searchentry:focus-within {{ border-color: {accent}; outline:
 .search {{ margin: 10px 12px 4px 12px; }}
 .compose textview {{ padding: 10px; border-radius: 6px; font-family: "JetBrainsMono Nerd Font", monospace; }}
 .compose .field-label {{ color: {dfg}; }}
+.compose .attachment-chip {{ background: {lbg}; border: 1px solid {muted}; border-radius: 6px; padding: 0 0 0 8px; }}
+.compose .attachment-chip button {{ padding: 0 7px; min-height: 0; }}
+.compose flowboxchild {{ padding: 0; }}
+window.compose:drop(active) {{ box-shadow: inset 0 0 0 2px {accent}; }}
 button {{ background: {lbg}; color: {fg}; border: 1px solid {muted}; border-radius: 6px; box-shadow: none; padding: 3px 10px; }}
 button:hover {{ background: {sel}; color: {bfg}; }}
 button.suggested {{ background: {accent}; color: {dbg}; border-color: {accent}; font-weight: bold; }}
