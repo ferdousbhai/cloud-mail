@@ -310,7 +310,7 @@ impl Gmail {
     }
 
     fn not_signed_in(&self) -> Error {
-        self.fail(ErrorKind::AccountAuth, format!("not signed in; run `cloudmail account add {}`", self.name))
+        self.fail(ErrorKind::AccountAuth, format!("not signed in; run `cloudmail account login {}`", self.name))
     }
 
     fn missing(&self) -> Error {
@@ -479,7 +479,7 @@ impl Gmail {
         }
         let http = err["code"].as_i64().unwrap_or(0);
         let reason = text(&err["reason"]);
-        let again = format!("run `cloudmail account add {}` to sign in again", self.name);
+        let again = format!("run `cloudmail account login {}` to sign in again", self.name);
         match (code, http) {
             (Some(2), _) | (Some(1), 401) => self.fail(ErrorKind::AccountAuth, format!("the Google sign-in expired or was revoked ({message}); {again}")),
             (Some(1), 403) if reason.contains("insufficient") || message.to_ascii_lowercase().contains("insufficient") => {
@@ -744,10 +744,14 @@ impl Provider for Gmail {
         matches!(folder, "inbox" | "archive" | "sent" | "all")
     }
 
+    fn sign_in(&self) -> Result<()> {
+        self.login().map(|_| ())
+    }
+
     fn status(&self) -> AccountStatus {
         let mut status = AccountStatus { name: self.name.clone(), provider: "gmail".into(), label: "Gmail".into(), ..Default::default() };
         if !self.signed_in() {
-            status.detail = format!("not signed in: run `cloudmail account add {}`", self.name);
+            status.detail = format!("not signed in: run `cloudmail account login {}`", self.name);
             return status;
         }
         match self.own_addresses() {
@@ -1067,7 +1071,7 @@ mod tests {
         let g = gmail();
         let e = g.gws_error(Some(2), &json!({ "error": { "code": 401, "message": "Authentication failed: invalid_grant", "reason": "authError" } }), "", "threads list");
         assert_eq!(e.kind, ErrorKind::AccountAuth);
-        assert!(e.message.contains("cloudmail account add gmail"), "{}", e.message);
+        assert!(e.message.contains("cloudmail account login gmail"), "{}", e.message);
         assert_eq!(g.gws_error(Some(1), &json!({ "error": { "code": 404, "message": "Requested entity was not found." } }), "", "x").kind, ErrorKind::NotFound);
         assert_eq!(g.gws_error(Some(1), &json!({ "error": { "code": 401, "message": "Invalid Credentials" } }), "", "x").kind, ErrorKind::AccountAuth);
         let e = g.gws_error(Some(4), &Value::Null, "error[discovery]: dns error", "x");

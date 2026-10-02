@@ -97,7 +97,7 @@ type Part = (Vec<ThreadSummary>, Vec<PendingSender>);
 /// The linked accounts' part of a list, with what went wrong on the way.
 type AccountPart = (Vec<ThreadSummary>, Vec<PendingSender>, Vec<AccountWarning>);
 /// New-mail check: Inbox threads, waiting senders, and the accounts' (Screener, unread) counts.
-type NewMail = (Vec<ThreadSummary>, Vec<PendingSender>, (i64, i64));
+type NewMail = (Vec<ThreadSummary>, Vec<PendingSender>, (i64, i64), Vec<AccountWarning>);
 
 /// Where a thread is, for which of archive / move-to-Inbox applies.
 fn is_archived(folder: &str) -> bool {
@@ -107,6 +107,11 @@ fn is_archived(folder: &str) -> bool {
 /// Folders a thread can be archived from or brought back to the Inbox from.
 fn is_movable(folder: &str) -> bool {
     matches!(folder, "inbox" | "archive" | "paper_trail" | "feed" | "set_aside" | "reply_later")
+}
+
+/// A linked account's warning that its sign-in expired or was revoked.
+fn signed_out(w: &AccountWarning) -> bool {
+    w.code == crate::api::ErrorKind::AccountAuth.code()
 }
 
 struct Seen {
@@ -129,6 +134,12 @@ pub struct Ui {
     /// Waiting senders in the accounts' Screeners and unread threads in their Inboxes, for the sidebar badges.
     account_counts: Cell<(i64, i64)>,
     warning: gtk::Label,
+    /// A "Sign in to …" button for each linked account whose sign-in expired.
+    sign_in: gtk::Box,
+    /// Accounts with a browser sign-in under way.
+    signing_in: RefCell<HashSet<String>>,
+    /// Accounts already announced as signed out, so the desktop notification comes once.
+    signed_out_notified: RefCell<HashSet<String>>,
     /// Open compose windows, so closing the main window goes through their discard prompts.
     pub composes: RefCell<Vec<glib::WeakRef<gtk::Window>>>,
     palette: RefCell<Palette>,
@@ -278,6 +289,10 @@ impl Ui {
         warning.add_css_class("account-warning");
         warning.set_visible(false);
         middle.append(&warning);
+        let sign_in = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        sign_in.add_css_class("account-sign-in");
+        sign_in.set_visible(false);
+        middle.append(&sign_in);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.add_css_class("threadlist");
@@ -376,6 +391,9 @@ impl Ui {
             account_cache: RefCell::new(HashMap::new()),
             account_counts: Cell::new((0, 0)),
             warning,
+            sign_in,
+            signing_in: RefCell::new(HashSet::new()),
+            signed_out_notified: RefCell::new(HashSet::new()),
             composes: RefCell::new(Vec::new()),
             palette: RefCell::new(palette),
             view: Cell::new(View::Inbox),
@@ -738,12 +756,84 @@ impl Ui {
         self.rebuild_rows();
     }
 
-    /// Says which linked account failed and why, or hides the note when none did.
-    fn show_warnings(&self, warnings: &[AccountWarning]) {
-        let text = warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("\n");
+    /// Says which linked account failed and why, or hides the note when none did. An account
+    /// whose sign-in expired gets a button that signs it in again.
+    fn show_warnings(self: &Rc<Self>, warnings: &[AccountWarning]) {
+        let text = warnings
+            .iter()
+            .map(|w| if signed_out(w) { format!("{}: signed out (the sign-in expired or was revoked)", self.account_label(&w.account)) } else { w.message.clone() })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let details = warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("\n");
         self.warning.set_label(&text);
-        self.warning.set_tooltip_text(Some(&text));
+        self.warning.set_tooltip_text(Some(&details));
         self.warning.set_visible(!text.is_empty());
+        while let Some(child) = self.sign_in.first_child() {
+            self.sign_in.remove(&child);
+        }
+        let expired: Vec<&AccountWarning> = warnings.iter().filter(|w| signed_out(w)).collect();
+        for w in &expired {
+            let name = w.account.clone();
+            let label = self.account_label(&name);
+            let button = gtk::Button::with_label(&format!("Sign in to {label}"));
+            if self.signing_in.borrow().contains(&name) {
+                button.set_label("Waiting for the browser…");
+                button.set_sensitive(false);
+            }
+            button.connect_clicked(clone!(#[weak(rename_to = ui)] self, move |b| {
+                b.set_label("Waiting for the browser…");
+                b.set_sensitive(false);
+                ui.sign_in_account(&name);
+            }));
+            self.sign_in.append(&button);
+        }
+        self.sign_in.set_visible(!expired.is_empty());
+    }
+
+    /// A linked account's service name ("Gmail"), or its config name when it isn't open.
+    fn account_label(&self, name: &str) -> String {
+        self.mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.name() == name)).map(|p| p.label().to_string()).unwrap_or_else(|| name.to_string())
+    }
+
+    /// Runs the account's browser sign-in, then reloads so its mail comes back.
+    fn sign_in_account(self: &Rc<Self>, name: &str) {
+        let Some(account) = self.mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.name() == name)).cloned() else { return };
+        if !self.signing_in.borrow_mut().insert(name.to_string()) {
+            return;
+        }
+        let label = account.label().to_string();
+        self.toast(&format!("Finish signing in to {label} in your browser"));
+        let name = name.to_string();
+        util::run(
+            move || account.sign_in(),
+            clone!(#[weak(rename_to = ui)] self, move |result: Result<(), String>| {
+                ui.signing_in.borrow_mut().remove(&name);
+                match result {
+                    Ok(()) => {
+                        ui.signed_out_notified.borrow_mut().remove(&name);
+                        ui.toast(&format!("Signed in to {label}"));
+                        ui.load_identities();
+                    }
+                    Err(e) => ui.toast(&e),
+                }
+                ui.load_list(true);
+                ui.check_new();
+            }),
+        );
+    }
+
+    /// One desktop notification per account when its sign-in stops working (again after it's
+    /// fixed and breaks once more), so a signed-out account isn't missed while the window is away.
+    fn notify_signed_out(&self, warnings: &[AccountWarning]) {
+        let expired: HashSet<&str> = warnings.iter().filter(|w| signed_out(w)).map(|w| w.account.as_str()).collect();
+        let mut notified = self.signed_out_notified.borrow_mut();
+        notified.retain(|n| expired.contains(n.as_str()));
+        for name in expired {
+            if notified.insert(name.to_string()) {
+                let label = self.account_label(name);
+                util::notify(&format!("Sign in to {label} again"), &format!("{label}'s sign-in expired or was revoked, so its mail isn't showing. Open Cloudmail and choose Sign in to {label}."));
+            }
+        }
     }
 
     fn load_more(self: &Rc<Self>) {
@@ -1400,18 +1490,22 @@ impl Ui {
             move || {
                 let (mut inbox, mut screener) = (client.threads("inbox", None, None, 25)?, client.screener()?);
                 let mut counts = (0, 0);
+                let mut warnings = Vec::new();
                 if let Some(mail) = accounts {
-                    let (threads, _, _) = mail.accounts_list(&ThreadQuery { folder: "inbox".into(), limit: 50, ..Default::default() });
-                    let (senders, _) = mail.accounts_screener();
+                    let (threads, list_warnings, _) = mail.accounts_list(&ThreadQuery { folder: "inbox".into(), limit: 50, ..Default::default() });
+                    let (senders, screener_warnings) = mail.accounts_screener();
+                    warnings.extend(list_warnings);
+                    warnings.extend(screener_warnings);
                     let senders = merge_senders(Vec::new(), senders).into_iter().filter(|s| !screener.iter().any(|w| w.email.eq_ignore_ascii_case(&s.email))).collect::<Vec<_>>();
                     counts = (senders.len() as i64, threads.iter().filter(|t| t.unread).count() as i64);
                     inbox.extend(threads);
                     screener.extend(senders);
                 }
-                Ok::<_, cloudmail_api::Error>((inbox, screener, counts))
+                Ok::<_, cloudmail_api::Error>((inbox, screener, counts, warnings))
             },
             clone!(#[weak(rename_to = ui)] self, move |result: Result<NewMail, String>| {
-                let Ok((inbox, screener, counts)) = result else { return };
+                let Ok((inbox, screener, counts, warnings)) = result else { return };
+                ui.notify_signed_out(&warnings);
                 if ui.account_counts.replace(counts) != counts {
                     ui.refresh_counts();
                 }

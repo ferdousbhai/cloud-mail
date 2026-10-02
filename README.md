@@ -183,8 +183,9 @@ Gmail's copy is hidden: Gmail gives out Message-IDs, so a copy is matched exactl
 message, however long after the original it arrived.
 
 **If Gmail is unavailable** (gws not installed, signed out, offline), your own mail loads as usual and
-one line says what's wrong. When Google's sign-in has expired or been revoked, it says to run
-`cloudmail account add gmail` again. Each listing reads Gmail's threads one `gws` run at a time (a
+one line says what's wrong. When a sign-in has expired or been revoked (Gmail or HEY), the app shows a
+**Sign in** button next to that line and sends one desktop notification; from a terminal,
+`cloudmail account login gmail` (or `hey`) signs in again. Each listing reads Gmail's threads one `gws` run at a time (a
 few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
 takes a moment; your own mail doesn't wait for it.
 

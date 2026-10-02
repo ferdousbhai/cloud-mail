@@ -74,6 +74,11 @@ pub trait Provider: Send + Sync {
         id.strip_prefix(self.name()).is_some_and(|rest| rest.starts_with(':'))
     }
     fn status(&self) -> AccountStatus;
+    /// Signs in again in the browser (the provider's own sign-in), for an account whose sign-in
+    /// expired or was revoked. Blocks until the sign-in finishes.
+    fn sign_in(&self) -> Result<()> {
+        Err(Error::new(ErrorKind::BadRequest, format!("{} has no sign-in", self.label())))
+    }
     fn threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>>;
     fn search(&self, query: &str, limit: u32) -> Result<Vec<ThreadSummary>>;
     /// A thread with its messages; `html` asks for the original HTML bodies too.

@@ -628,7 +628,7 @@ fn a_failing_hey_never_breaks_your_own_mail() {
     assert_eq!(o.status.code(), Some(3));
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "account_unauthorized");
-    assert!(v["error"]["message"].as_str().unwrap().contains("hey auth login"));
+    assert!(v["error"]["message"].as_str().unwrap().contains("cloudmail account login hey"));
     let o = h.run(&m, &["thread", "read", "hey:1234"], &[]);
     assert_eq!(o.status.code(), Some(4));
 }
@@ -935,7 +935,7 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
         assert_eq!(v["meta"]["warnings"][0]["code"], code, "{mode}: {v}");
     }
     let v = json_out(&h.run(&m, &["inbox"], &[("FAKE_GWS_MODE", "expired")]));
-    assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains("run `cloudmail account add gmail` to sign in again"), "{v}");
+    assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains("run `cloudmail account login gmail` to sign in again"), "{v}");
     let o = h.run(&m, &["inbox", "--styled"], &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")]);
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("Google's Workspace CLI isn't installed"), "{}", String::from_utf8_lossy(&o.stderr));
@@ -953,7 +953,7 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
     assert_eq!(o.status.code(), Some(3));
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "account_unauthorized");
-    assert!(v["error"]["message"].as_str().unwrap().contains("cloudmail account add gmail"));
+    assert!(v["error"]["message"].as_str().unwrap().contains("cloudmail account login gmail"));
     assert_eq!(h.run(&m, &["thread", "read", "gmail:nope"], &[]).status.code(), Some(4));
     assert_eq!(h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "offline")]).status.code(), Some(5));
 }
@@ -1008,6 +1008,14 @@ fn gmail_account_add_list_remove() {
     let o = h.run(&m, &["account", "add", "gmail"], &[client[0], client[1], ("FAKE_GWS_MODE", "expired")]);
     assert_eq!(o.status.code(), Some(3));
     assert!(json_out(&o)["error"]["message"].as_str().unwrap().contains("needs signing in again"));
+    // `account login` signs a linked account in again, whatever the terminal.
+    let before = logins();
+    let o = h.run(&m, &["account", "login", "gmail"], &client);
+    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(logins(), before + 1);
+    assert!(json_out(&o)["summary"].as_str().unwrap().starts_with("Signed in to Gmail again"));
+    let o = h.run(&m, &["account", "login", "nope"], &[]);
+    assert_eq!(json_out(&o)["error"]["code"], "not_found");
 
     let v = json_out(&h.run(&m, &["account", "list"], &[]));
     assert_eq!(v["data"]["accounts"][0]["name"], "gmail");

@@ -202,7 +202,7 @@ impl Hey {
         let kind = match status.code() {
             Some(2) => ErrorKind::NotFound,
             Some(3) => {
-                return Err(self.fail(ErrorKind::AccountAuth, format!("not signed in ({message}); run `hey auth login` or `cloudmail account add {}`", self.name)));
+                return Err(self.fail(ErrorKind::AccountAuth, format!("not signed in ({message}); run `cloudmail account login {}`", self.name)));
             }
             Some(1 | 4 | 8) => ErrorKind::BadRequest,
             _ => ErrorKind::AccountUnavailable,
@@ -403,6 +403,10 @@ impl Provider for Hey {
         box_for(folder).is_some() || matches!(folder, "screener" | "all")
     }
 
+    fn sign_in(&self) -> Result<()> {
+        self.login()
+    }
+
     fn status(&self) -> AccountStatus {
         let mut status = AccountStatus { name: self.name.clone(), provider: "hey".into(), label: "HEY".into(), ..Default::default() };
         match self.run(&["auth", "status"], None) {
@@ -411,7 +415,7 @@ impl Provider for Hey {
                 status.addresses = self.own_addresses().into_iter().map(|a| a.email).collect();
                 status.detail = format!("signed in via {}", self.command);
             }
-            Ok(_) => status.detail = format!("not signed in: run `hey auth login` or `cloudmail account add {}`", self.name),
+            Ok(_) => status.detail = format!("not signed in: run `cloudmail account login {}`", self.name),
             Err(e) => status.detail = e.message,
         }
         status

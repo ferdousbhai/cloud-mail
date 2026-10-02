@@ -105,6 +105,7 @@ window.cloudmail, window.compose {{
 .account-badge {{ color: {dfg}; font-size: 7.5pt; border: 1px solid {muted}; border-radius: 4px; padding: 0 4px; }}
 .nav-heading {{ color: {dfg}; font-size: 8pt; font-weight: bold; padding: 12px 18px 2px 18px; }}
 .account-warning {{ color: {red}; font-size: 9pt; padding: 0 14px 8px 14px; }}
+.account-sign-in {{ padding: 0 14px 8px 14px; }}
 .column-title {{ font-weight: bold; color: {bfg}; padding: 12px 14px 4px 14px; }}
 .column-sub {{ color: {dfg}; font-size: 9pt; padding: 0 14px 8px 14px; }}
 .threadlist, .threadlist list {{ background: {bg}; }}

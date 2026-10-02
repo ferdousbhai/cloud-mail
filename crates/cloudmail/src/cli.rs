@@ -551,6 +551,11 @@ pub enum AccountCommand {
         #[arg(long)]
         login: bool,
     },
+    /// Sign a linked account in again, when its sign-in expired or was revoked (one browser sign-in)
+    Login {
+        /// Account name (see `cloudmail account list`)
+        name: String,
+    },
     /// Unlink an account (nothing changes in the account itself, and its CLI stays signed in)
     Remove {
         /// Account name (see `cloudmail account list`)

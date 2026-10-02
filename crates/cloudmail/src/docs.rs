@@ -81,6 +81,7 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add hey --no-login --json",
         ],
     ),
+    ("account login", &["cloudmail account login gmail", "cloudmail account login hey"]),
     ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey"]),
     (
         "setup",
@@ -332,8 +333,8 @@ If your worker forwards to a linked address (or Gmail forwards into your worker)
 each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY copies by sender,
 subject and time. A linked account's failure never fails a command about your own mail: the rest is
 returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
-fails with `account_unauthorized` (exit 3: `hey auth login`, or `cloudmail account add gmail` again
-when Google's sign-in expired), `account_unavailable` (exit 5: its CLI missing or failing, or Google
+fails with `account_unauthorized` (exit 3: `cloudmail account login <name>` signs it in again in the
+browser), `account_unavailable` (exit 5: its CLI missing or failing, or Google
 unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
 and `watch` follows your worker only.
 

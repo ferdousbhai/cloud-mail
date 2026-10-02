@@ -31,8 +31,26 @@ pub fn account(ctx: &Ctx, cmd: AccountCommand) -> CliResult {
         AccountCommand::Add { provider, name, command, account, client_id, client_secret, no_login, login } => {
             add(ctx, &provider, name, AddArgs { command, account, client_id, client_secret, no_login, login })
         }
+        AccountCommand::Login { name } => login(&name),
         AccountCommand::Remove { name } => remove(&name),
     }
+}
+
+/// Signs an already linked account in again in the browser, then checks it answers.
+fn login(name: &str) -> CliResult {
+    let file = config::read_file(&config::path())?.unwrap_or_default();
+    let Some(cfg) = file.accounts.get(name) else {
+        return Err(CliError::not_found(format!("no linked account {name}")).hint("see `cloudmail account list`, or link one with `cloudmail account add`"));
+    };
+    let p = provider::open(name, cfg)?;
+    eprintln!("Signing in to {} in your browser…", p.label());
+    p.sign_in()?;
+    let status = p.status();
+    if !status.ok {
+        return Err(CliError::new("not_logged_in", exit::AUTH, format!("{} still isn't signed in: {}", p.label(), status.detail)));
+    }
+    let summary = format!("Signed in to {} again{}", p.label(), if status.addresses.is_empty() { String::new() } else { format!(" ({})", status.addresses.join(", ")) });
+    Ok(Response::new(json!({ "account": name, "addresses": status.addresses }), summary).crumbs(vec![crumb("inbox", "cloudmail inbox", "Your Inbox")]))
 }
 
 fn list() -> CliResult {
