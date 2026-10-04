@@ -191,10 +191,11 @@ pub fn parse_rules(output: &str) -> Vec<Rule> {
         .collect()
 }
 
-/// (name, id) of each account in `cf auth whoami`.
-pub fn parse_accounts(whoami: &Value) -> Vec<(String, String)> {
-    whoami["accounts"]
+/// (name, id) of each account in `cf auth whoami`, or in `cf accounts list`'s plain array.
+pub fn parse_accounts(output: &Value) -> Vec<(String, String)> {
+    output
         .as_array()
+        .or_else(|| output["accounts"].as_array())
         .into_iter()
         .flatten()
         .filter_map(|a| Some((a["name"].as_str()?.to_string(), a["id"].as_str()?.to_string())))
@@ -638,7 +639,11 @@ fn choose_account(w: &Cf, flag: Option<&str>, previous: Option<String>, whoami: 
     if let Some(id) = flag.map(str::to_string).or(previous) {
         return Ok(Some(id));
     }
-    let accounts = parse_accounts(whoami);
+    let mut accounts = parse_accounts(whoami);
+    // A browser (OAuth) login leaves whoami's account list empty; the accounts API still answers.
+    if accounts.is_empty() {
+        accounts = w.query(&["accounts", "list"]).ok().and_then(|o| first_json(&o)).map(|v| parse_accounts(&v)).unwrap_or_default();
+    }
     match accounts.len() {
         // A token that can't list accounts leaves cf unable to pick one either.
         0 if !w.dry_run => Err(CliError::usage("couldn't tell which Cloudflare account to use")
@@ -1034,6 +1039,9 @@ mod tests {
         let whoami = json!({"authenticated": true, "accounts": [{"id": "0123456789abcdef0123456789abcdef", "name": "Me's Account"}, {"id": "11111111111111111111111111111111", "name": "Team"}]});
         assert_eq!(parse_accounts(&whoami), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into()), ("Team".into(), "11111111111111111111111111111111".into())]);
         assert!(parse_accounts(&json!({"authenticated": false})).is_empty());
+        let list = json!([{"id": "0123456789abcdef0123456789abcdef", "name": "Me's Account", "type": "standard"}]);
+        assert_eq!(parse_accounts(&list), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into())]);
+        assert!(parse_accounts(&json!({"authenticated": true, "accounts": []})).is_empty());
         let dests = r#"[{"id": "b51d", "email": "Me@Hey.com", "verified": "2025-12-26T05:50:19Z", "status": "verified"},
                         {"id": "87be", "email": "new@gmail.com", "verified": null, "status": "pending"}]"#;
         assert_eq!(parse_destinations(dests), vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]);

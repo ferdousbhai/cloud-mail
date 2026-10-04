@@ -5,3 +5,5 @@ node_modules/
 install.json
 # Written by cloudmail setup before it moved to cf; setup now reads it once into install.json.
 wrangler.jsonc
+# setup installs with npm; the committed lockfile is bun.lock.
+package-lock.json
