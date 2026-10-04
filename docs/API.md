@@ -137,5 +137,5 @@ sent; malformed attachments get `400`.
 Health check (no auth): `GET /health` → `{ "ok": true }`.
 
 Receiving also needs a Cloudflare Email Routing rule per address pointing at the worker; the API
-cannot create those (they are managed with wrangler / `cloudmail setup` / `cloudmail mailbox add --route`).
+cannot create those (they are managed with `cloudmail setup` / `cloudmail mailbox add --route`, which use Cloudflare's `cf` CLI).
 The forward target must be a verified Email Routing destination address.

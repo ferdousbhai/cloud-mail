@@ -19,7 +19,7 @@ pub mod exit {
         (OK, "success"),
         (GENERIC, "other failure (local I/O, a setup step, a cancelled confirmation or editor)"),
         (USAGE, "invalid arguments, a destructive command run without --yes, or a request the worker rejected"),
-        (AUTH, "not configured, the API token was rejected, wrangler isn't logged in, or a linked account (HEY, Gmail) isn't signed in"),
+        (AUTH, "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in"),
         (NOT_FOUND, "the thread, message, attachment, mailbox or sender does not exist"),
         (API, "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed"),
     ];

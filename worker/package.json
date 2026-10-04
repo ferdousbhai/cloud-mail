@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "types": "wrangler types",
+    "dev": "cf dev --mode development",
+    "db:local": "wrangler d1 migrations apply DB --local -c wrangler.local.jsonc",
+    "deploy": "cf deploy",
+    "types": "wrangler types -c wrangler.local.jsonc",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -13,7 +14,8 @@
     "tldts": "^7.4.16"
   },
   "devDependencies": {
+    "cf": "^1.0.0-beta.12",
     "typescript": "^7.0.2",
-    "wrangler": "^4.143.0"
+    "wrangler": "^4.147.0"
   }
 }

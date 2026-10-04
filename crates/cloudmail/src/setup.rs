@@ -1,6 +1,7 @@
-//! `cloudmail setup` and `mailbox add --route`: drive wrangler to deploy a worker and connect addresses.
+//! `cloudmail setup` and `mailbox add --route`: drive the Cloudflare CLI (cf) to deploy a worker and
+//! connect addresses.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,24 +34,81 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Fills in wrangler.template.jsonc; without an account the `account_id` line is dropped.
-pub fn render_template(template: &str, worker: &str, account: Option<&str>, database: &str, database_id: &str, bucket: &str) -> String {
-    let template = match account {
-        Some(id) => template.replace("__ACCOUNT_ID__", id),
-        None => template.split_inclusive('\n').filter(|l| !l.contains("__ACCOUNT_ID__")).collect(),
-    };
-    template
-        .replace("__WORKER_NAME__", worker)
-        .replace("__DATABASE_NAME__", database)
-        .replace("__DATABASE_ID__", database_id)
-        .replace("__BUCKET_NAME__", bucket)
+/// The first JSON value in a command's output (cf may print notices around it, and they can
+/// contain brackets too, as in "▲ [WARNING] …").
+pub fn first_json(output: &str) -> Option<Value> {
+    output.match_indices(['[', '{']).find_map(|(i, _)| serde_json::Deserializer::from_str(&output[i..]).into_iter::<Value>().next()?.ok())
 }
 
-/// The workers.dev URL printed by `wrangler deploy`.
+/// What `cloudmail setup` records about an install in `install.json`, which cloudflare.config.ts reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Install {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub database: Database,
+    pub bucket: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Database {
+    pub name: String,
+    pub id: String,
+}
+
+pub const INSTALL_FILE: &str = "install.json";
+/// The config setup generated before it used cf (worker name, account, database and bucket).
+pub const LEGACY_FILE: &str = "wrangler.jsonc";
+
+pub fn render_install(install: &Install) -> String {
+    let mut text = serde_json::to_string_pretty(install).expect("an install serializes");
+    text.push('\n');
+    text
+}
+
+/// Names an earlier setup recorded: `install.json`, else the wrangler.jsonc of a setup before cf.
+#[derive(Debug, Default, PartialEq)]
+pub struct Recorded {
+    pub file: Option<&'static str>,
+    pub text: Option<String>,
+    pub worker: Option<String>,
+    pub database: Option<String>,
+    pub bucket: Option<String>,
+    pub account: Option<String>,
+}
+
+pub fn recorded(dir: &Path) -> Recorded {
+    if let Ok(text) = std::fs::read_to_string(dir.join(INSTALL_FILE))
+        && let Ok(i) = serde_json::from_str::<Install>(&text)
+    {
+        return Recorded {
+            file: Some(INSTALL_FILE),
+            worker: Some(i.name),
+            database: Some(i.database.name),
+            bucket: Some(i.bucket),
+            account: i.account_id,
+            text: Some(text),
+        };
+    }
+    match std::fs::read_to_string(dir.join(LEGACY_FILE)) {
+        Ok(text) => Recorded {
+            file: Some(LEGACY_FILE),
+            worker: jsonc_field(&text, "name"),
+            database: jsonc_field(&text, "database_name"),
+            bucket: jsonc_field(&text, "bucket_name"),
+            account: jsonc_field(&text, "account_id"),
+            text: Some(text),
+        },
+        Err(_) => Recorded::default(),
+    }
+}
+
+/// The workers.dev URL printed by `cf deploy`.
 pub fn parse_deploy_url(output: &str) -> Option<String> {
     strip_ansi(output)
         .split_whitespace()
-        .find(|w| w.starts_with("https://") && w.contains(".workers.dev"))
+        .find(|w| w.starts_with("https://") && w.contains(".workers.dev") && !w.contains('<'))
         .map(|w| w.trim_end_matches(['.', ',', ')']).to_string())
 }
 
@@ -77,87 +135,79 @@ pub fn jsonc_field(jsonc: &str, key: &str) -> Option<String> {
     None
 }
 
-pub fn parse_d1_list(json_text: &str, name: &str) -> Option<String> {
-    // Wrangler may print warnings around the JSON, and they contain brackets too
-    // ("▲ [WARNING] …"), so take the first `[` that starts a whole JSON array.
-    let list = json_text.match_indices('[').find_map(|(i, _)| {
-        match serde_json::Deserializer::from_str(&json_text[i..]).into_iter::<Value>().next() {
-            Some(Ok(Value::Array(items))) => Some(items),
-            _ => None,
-        }
-    })?;
-    list.iter().find(|d| d["name"] == name).and_then(|d| d["uuid"].as_str().map(str::to_string))
+/// The id of the D1 database called `name` in `cf d1 list`.
+pub fn parse_d1_list(output: &str, name: &str) -> Option<String> {
+    let list = first_json(output)?;
+    list.as_array()?.iter().find(|d| d["name"] == name).and_then(|d| d["uuid"].as_str().map(str::to_string))
 }
 
+/// Bucket names in `cf r2 buckets list`.
 pub fn parse_r2_buckets(output: &str) -> Vec<String> {
-    strip_ansi(output)
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("name:").map(|n| n.trim().to_string()))
-        .collect()
+    let list = first_json(output).unwrap_or_default();
+    list["buckets"].as_array().into_iter().flatten().filter_map(|b| b["name"].as_str().map(str::to_string)).collect()
 }
 
-/// Rows of a wrangler box-drawing table, as trimmed cells (header row included).
-pub fn parse_table(output: &str) -> Vec<Vec<String>> {
-    strip_ansi(output)
-        .lines()
-        .filter(|l| l.trim_start().starts_with('│'))
-        .map(|l| l.split('│').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect())
-        .collect()
+/// Whether `cf email-routing settings get` says Email Routing is on.
+pub fn routing_enabled(output: &str) -> bool {
+    first_json(output).is_some_and(|v| v["enabled"] == true)
 }
 
-/// Domains listed with enabled = yes in `wrangler email sending list` / `email routing list`.
-pub fn enabled_zones(output: &str) -> Vec<String> {
-    parse_table(output)
+/// Whether `cf email-sending subdomains list` has sending on for `domain` itself.
+pub fn sending_enabled(output: &str, domain: &str) -> bool {
+    first_json(output)
+        .and_then(|v| v.as_array().cloned())
         .into_iter()
-        .filter(|row| row.len() >= 3 && row.iter().any(|c| c == "yes"))
-        .map(|row| row[0].clone())
-        .collect()
+        .flatten()
+        .any(|s| s["enabled"] == true && s["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(domain)))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Rule {
     pub id: String,
+    /// `to:<address>`
     pub matcher: String,
+    /// `worker:<name>`, `forward:<address>`, `drop:`…
     pub action: String,
 }
 
+/// Rules in `cf email-routing rules list-account`, flattened to their first matcher and action.
 pub fn parse_rules(output: &str) -> Vec<Rule> {
-    let mut rules = Vec::new();
-    let mut current: Option<Rule> = None;
-    for line in strip_ansi(output).lines() {
-        let l = line.trim();
-        if let Some(id) = l.strip_prefix("Rule:") {
-            if let Some(r) = current.take() {
-                rules.push(r);
-            }
-            current = Some(Rule { id: id.trim().into(), matcher: String::new(), action: String::new() });
-        } else if let Some(r) = current.as_mut() {
-            if let Some(m) = l.strip_prefix("Matchers:") {
-                r.matcher = m.trim().into();
-            } else if let Some(a) = l.strip_prefix("Actions:") {
-                r.action = a.trim().into();
-            }
-        }
-    }
-    rules.extend(current);
-    rules
-}
-
-/// (name, id) of each account in `wrangler whoami`'s table.
-pub fn parse_accounts(output: &str) -> Vec<(String, String)> {
-    parse_table(output)
+    let text = |v: &Value| match v {
+        Value::Array(items) => items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","),
+        v => v.as_str().unwrap_or_default().to_string(),
+    };
+    first_json(output)
+        .and_then(|v| v.as_array().cloned())
         .into_iter()
-        .filter(|row| row.len() == 2 && row[1].len() == 32 && row[1].chars().all(|c| c.is_ascii_hexdigit()))
-        .map(|row| (row[0].clone(), row[1].clone()))
+        .flatten()
+        .filter_map(|r| {
+            let (m, a) = (&r["matchers"][0], &r["actions"][0]);
+            Some(Rule {
+                id: r["id"].as_str()?.to_string(),
+                matcher: format!("{}:{}", text(&m["field"]), text(&m["value"])),
+                action: format!("{}:{}", text(&a["type"]), text(&a["value"])),
+            })
+        })
         .collect()
 }
 
-/// Destination addresses in `wrangler email routing addresses list`, with whether each is verified.
-pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
-    parse_table(output)
+/// (name, id) of each account in `cf auth whoami`.
+pub fn parse_accounts(whoami: &Value) -> Vec<(String, String)> {
+    whoami["accounts"]
+        .as_array()
         .into_iter()
-        .filter(|row| row.len() >= 3 && row[1].contains('@'))
-        .map(|row| (row[1].to_ascii_lowercase(), row.len() >= 4))
+        .flatten()
+        .filter_map(|a| Some((a["name"].as_str()?.to_string(), a["id"].as_str()?.to_string())))
+        .collect()
+}
+
+/// Destination addresses in `cf email-routing addresses list`, with whether each is verified.
+pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
+    first_json(output)
+        .and_then(|v| v.as_array().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|d| Some((d["email"].as_str()?.to_ascii_lowercase(), d["verified"].as_str().is_some_and(|v| !v.is_empty()))))
         .collect()
 }
 
@@ -223,7 +273,7 @@ fn random_token() -> CliResult<String> {
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-// ---------- running wrangler ----------
+// ---------- running cf ----------
 
 #[derive(Debug, Serialize)]
 pub struct Step {
@@ -235,14 +285,14 @@ pub struct Step {
     pub detail: Option<String>,
 }
 
-/// A command line for display, quoting arguments that contain spaces.
+/// A command line for display, quoting arguments the shell would split or expand.
 fn shell_line(program: &[String], args: &[&str]) -> String {
     let mut parts = program.to_vec();
-    parts.extend(args.iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a.to_string() }));
+    parts.extend(args.iter().map(|a| if a.contains([' ', '"', '[', '{', '*', '$']) { format!("'{a}'") } else { a.to_string() }));
     parts.join(" ")
 }
 
-pub struct Wrangler {
+pub struct Cf {
     program: Vec<String>,
     dir: PathBuf,
     account: Option<String>,
@@ -252,13 +302,13 @@ pub struct Wrangler {
     pub steps: Vec<Step>,
 }
 
-impl Wrangler {
+impl Cf {
     pub fn new(program: &str, dir: PathBuf, dry_run: bool, interactive: bool) -> Self {
         let program = program.split_whitespace().map(str::to_string).collect();
         Self { program, dir, account: None, dry_run, interactive, steps: Vec::new() }
     }
 
-    /// Runs every later wrangler command against this Cloudflare account.
+    /// Runs every later cf command against this Cloudflare account.
     pub fn use_account(&mut self, id: &str) {
         self.account = Some(id.into());
     }
@@ -306,7 +356,7 @@ impl Wrangler {
         Ok(out)
     }
 
-    /// Runs a read-only wrangler command (also during --dry-run, where its result only informs the plan).
+    /// Runs a read-only cf command (also during --dry-run, where its result only informs the plan).
     pub fn query(&self, args: &[&str]) -> CliResult<String> {
         self.exec(&self.program, args, None)
     }
@@ -330,7 +380,7 @@ impl Wrangler {
     }
 
     fn command(&self, program: &[String], args: &[&str]) -> CliResult<Command> {
-        let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --wrangler command"))?;
+        let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --cf command"))?;
         let mut cmd = Command::new(bin);
         cmd.args(pre).args(args).current_dir(&self.dir);
         if let Some(id) = &self.account {
@@ -339,7 +389,7 @@ impl Wrangler {
         Ok(cmd)
     }
 
-    /// Runs wrangler attached to the terminal (for `wrangler login`, which opens a browser).
+    /// Runs cf attached to the terminal (for `cf auth login`, which opens a browser).
     pub fn attached(&self, args: &[&str]) -> CliResult<()> {
         let status = self
             .command(&self.program, args)?
@@ -355,7 +405,7 @@ impl Wrangler {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| CliError::generic(format!("could not run `{}`: {e}", program[0])).hint("install Node.js (npx) or pass --wrangler \"bunx wrangler\""))?;
+            .map_err(|e| CliError::generic(format!("could not run `{}`: {e}", program[0])).hint("install Node.js (npx) or pass --cf \"bunx cf\""))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(input.as_bytes())?;
         }
@@ -375,11 +425,11 @@ impl Wrangler {
 const PACKAGED_WORKER_DIRS: &[&str] = &["/usr/share/cloudmail/worker", "/usr/local/share/cloudmail/worker"];
 
 fn is_worker_dir(dir: &Path) -> bool {
-    dir.join("wrangler.template.jsonc").exists() || dir.join("wrangler.jsonc").exists()
+    dir.join("cloudflare.config.ts").exists()
 }
 
 /// `--worker-dir`, else `./worker` in a clone, else a writable copy of the packaged worker in
-/// `~/.local/share/cloudmail/worker` (refreshed on each run, keeping the generated wrangler.jsonc and node_modules).
+/// `~/.local/share/cloudmail/worker` (refreshed on each run, keeping the generated install.json and node_modules).
 pub fn resolve_worker_dir(flag: Option<&Path>) -> CliResult<PathBuf> {
     let data = dirs::data_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"));
     let packaged: Vec<&Path> = PACKAGED_WORKER_DIRS.iter().map(Path::new).collect();
@@ -456,11 +506,11 @@ pub struct RouteOutcome {
 }
 
 /// Asks for the go-ahead on a change that moves existing mail: `--yes`, else the person at the terminal.
-fn consent(w: &Wrangler, yes: bool, question: &str) -> bool {
+fn consent(w: &Cf, yes: bool, question: &str) -> bool {
     yes || w.ask(question).unwrap_or(false)
 }
 
-fn blocked(w: &mut Wrangler, address: &str, detail: String) -> RouteOutcome {
+fn blocked(w: &mut Cf, address: &str, detail: String) -> RouteOutcome {
     let detail = match (w.interactive, w.dry_run) {
         (true, false) => detail,
         (true, true) => format!("{detail}; setup will ask first"),
@@ -474,17 +524,17 @@ fn blocked(w: &mut Wrangler, address: &str, detail: String) -> RouteOutcome {
 /// address's routing rule points at the worker. Anything that would take mail away from somewhere
 /// else needs `yes` or a yes at the terminal.
 pub fn route_address(
-    w: &mut Wrangler,
+    w: &mut Cf,
     address: &str,
     worker: &str,
     yes: bool,
-    sending_zones: &mut Option<Vec<String>>,
-    routing_zones: &mut Option<Vec<String>>,
+    sending_zones: &mut Vec<String>,
+    routing_zones: &mut Vec<String>,
 ) -> CliResult<RouteOutcome> {
     let domain = domain_of(address).ok_or_else(|| CliError::usage(format!("not an email address: {address}")))?.to_string();
 
-    let routing = zones(w, routing_zones, "routing")?;
-    if !routing.contains(&domain) {
+    let routing_on = |w: &Cf| w.query(&["email-routing", "settings", "get", "-z", &domain]).is_ok_and(|o| routing_enabled(&o));
+    if !routing_zones.contains(&domain) && !routing_on(w) {
         // Enabling Email Routing replaces the domain's MX records: free to do when nothing receives
         // mail there yet, a question when something else does.
         let mx = if yes { None } else { mx_hosts(&domain) };
@@ -497,19 +547,19 @@ pub fn route_address(
                 return Ok(blocked(w, address, format!("{domain} receives mail at {current}; moving it to Cloudflare replaces its MX records")));
             }
         }
-        w.mutate(&format!("enable Email Routing for {domain}"), &["email", "routing", "enable", &domain], None)?;
-        routing.push(domain.clone());
+        w.mutate(&format!("enable Email Routing for {domain}"), &["email-routing", "enable", "-z", &domain], None)?;
     }
+    routing_zones.push(domain.clone());
 
-    let sending = zones(w, sending_zones, "sending")?;
-    if sending.contains(&domain) {
+    let sending_on = |w: &Cf| w.query(&["email-sending", "subdomains", "list", "-z", &domain]).is_ok_and(|o| sending_enabled(&o, &domain));
+    if sending_zones.contains(&domain) || sending_on(w) {
         w.record(&format!("sending for {domain}"), "exists", None, None);
     } else {
-        w.mutate(&format!("enable sending for {domain}"), &["email", "sending", "enable", &domain], None)?;
-        sending.push(domain.clone());
+        w.mutate(&format!("enable sending for {domain}"), &["email-sending", "subdomains", "create", "-z", &domain, "--name", &domain], None)?;
     }
+    sending_zones.push(domain.clone());
 
-    let rules = parse_rules(&w.probe(&["email", "routing", "rules", "list", &domain])?);
+    let rules = parse_rules(&w.probe(&["email-routing", "rules", "list-account", "-z", &domain, "--per-page", "50"])?);
     let target = format!("worker:{worker}");
     let matcher = format!("to:{address}");
     let step = format!("route {address}");
@@ -525,78 +575,72 @@ pub fn route_address(
         Some(r) => ("update", Some(r.id.as_str()), "updated", format!("was {}", r.action)),
         None => ("create", None, "created", target),
     };
-    let mut args = vec!["email", "routing", "rules", verb, &domain];
+    let matchers = json!([{ "type": "literal", "field": "to", "value": address }]).to_string();
+    let actions = json!([{ "type": "worker", "value": [worker] }]).to_string();
+    let mut args = vec!["email-routing", "rules", verb];
     args.extend(id);
-    args.extend(["--match-type", "literal", "--match-field", "to", "--match-value", address, "--action-type", "worker", "--action-value", worker]);
+    args.extend(["-z", &domain, "--matchers", &matchers, "--actions", &actions, "--enabled"]);
     w.mutate(&step, &args, None)?;
     Ok(outcome(if w.dry_run { "planned" } else { status }, detail))
 }
 
-/// The domains with Email Routing or sending (`kind`) enabled, listed once per run.
-fn zones<'a>(w: &Wrangler, cache: &'a mut Option<Vec<String>>, kind: &str) -> CliResult<&'a mut Vec<String>> {
-    if cache.is_none() {
-        *cache = Some(enabled_zones(&w.probe(&["email", kind, "list"])?));
-    }
-    Ok(cache.get_or_insert_with(Vec::new))
-}
-
 pub fn route_for_mailbox(address: &str, args: &RouteArgs, interactive: bool) -> CliResult<Value> {
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
-    let generated = std::fs::read_to_string(dir.join("wrangler.jsonc")).ok();
-    // A worker set up from a clone keeps its wrangler.jsonc there, not in the packaged copy, so
+    let recorded = recorded(&dir);
+    // A worker set up from a clone keeps its install.json there, not in the packaged copy, so
     // fall back to the worker this CLI is configured to talk to.
     let worker = match &args.worker_name {
         Some(n) => n.clone(),
-        None => generated
-            .as_deref()
-            .and_then(|t| jsonc_field(t, "name"))
+        None => recorded
+            .worker
+            .clone()
             .or_else(|| config::load().ok().and_then(|c| worker_name_from_url(&c.api_url)))
             .ok_or_else(|| CliError::usage("couldn't tell which worker to route to").hint("run `cloudmail setup` first"))?,
     };
-    let mut w = Wrangler::new(&args.wrangler, dir, false, interactive);
-    if let Some(account) = generated.as_deref().and_then(|t| jsonc_field(t, "account_id")) {
-        w.use_account(&account);
+    let mut w = Cf::new(&args.cf, dir, false, interactive);
+    if let Some(account) = &recorded.account {
+        w.use_account(account);
     }
-    let outcome = route_address(&mut w, address, &worker, args.yes, &mut None, &mut None)?;
+    let outcome = route_address(&mut w, address, &worker, args.yes, &mut Vec::new(), &mut Vec::new())?;
     Ok(json!({ "status": outcome.status, "detail": outcome.detail, "worker": worker, "steps": w.steps }))
 }
 
 // ---------- setup ----------
 
-/// Makes sure wrangler can reach Cloudflare, logging in through the browser when someone is there
-/// to do it, and returns `wrangler whoami`'s output.
-fn login(w: &mut Wrangler, wrangler: &str) -> CliResult<String> {
-    let whoami = |w: &Wrangler| w.query(&["whoami"]).ok().filter(|o| strip_ansi(o).contains("You are logged in"));
+/// Makes sure cf can reach Cloudflare, logging in through the browser when someone is there to do
+/// it, and returns `cf auth whoami`'s answer.
+fn login(w: &mut Cf, cf: &str) -> CliResult<Value> {
+    let whoami = |w: &Cf| w.query(&["auth", "whoami"]).ok().and_then(|o| first_json(&o)).filter(|v| v["authenticated"] == true && v["tokenValid"] != false);
     if let Some(out) = whoami(w) {
         w.record("Cloudflare login", "ok", None, None);
         return Ok(out);
     }
     if w.dry_run {
-        w.record("Cloudflare login", "planned", Some(format!("{wrangler} login")), Some("opens your browser".into()));
-        return Ok(String::new());
+        w.record("Cloudflare login", "planned", Some(format!("{cf} auth login")), Some("opens your browser".into()));
+        return Ok(Value::Null);
     }
     if w.interactive {
         eprintln!("Log in to Cloudflare in the browser window that opens (create a free account there if you need one).");
-        w.attached(&["login"])?;
+        w.attached(&["auth", "login"])?;
         if let Some(out) = whoami(w) {
             w.record("Cloudflare login", "done", None, None);
             return Ok(out);
         }
     }
     Err(CliError::new("not_logged_in", exit::AUTH, "not logged in to Cloudflare").hint(format!(
-        "run `{wrangler} login`, or set CLOUDFLARE_API_TOKEN to a token with the permissions listed in the README (https://github.com/ferdousbhai/cloud-mail#get-started)"
+        "run `{cf} auth login`, or set CLOUDFLARE_API_TOKEN to a token with the permissions listed in the README (https://github.com/ferdousbhai/cloud-mail#get-started)"
     )))
 }
 
 /// The Cloudflare account to use: --account / CLOUDFLARE_ACCOUNT_ID, the one setup used before,
 /// the only one the login can see, or the person's pick.
-fn choose_account(w: &Wrangler, flag: Option<&str>, previous: Option<String>, whoami: &str) -> CliResult<Option<String>> {
+fn choose_account(w: &Cf, flag: Option<&str>, previous: Option<String>, whoami: &Value) -> CliResult<Option<String>> {
     if let Some(id) = flag.map(str::to_string).or(previous) {
         return Ok(Some(id));
     }
     let accounts = parse_accounts(whoami);
     match accounts.len() {
-        // A token that can't list accounts leaves wrangler unable to pick one either.
+        // A token that can't list accounts leaves cf unable to pick one either.
         0 if !w.dry_run => Err(CliError::usage("couldn't tell which Cloudflare account to use")
             .hint("pass --account <ID> (the Account ID on your Cloudflare dashboard's home page), or set CLOUDFLARE_ACCOUNT_ID")),
         0 => Ok(None),
@@ -634,18 +678,15 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     let mailboxes = specs.iter().map(|m| parse_mailbox_spec(m)).collect::<CliResult<Vec<_>>>()?;
 
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
-    let template_path = dir.join("wrangler.template.jsonc");
-    let template = std::fs::read_to_string(&template_path)
-        .map_err(|e| CliError::generic(format!("could not read {}: {e}", template_path.display())))?;
-    let config_path = dir.join("wrangler.jsonc");
-    let current = std::fs::read_to_string(&config_path).ok();
-    // An existing wrangler.jsonc wins unless --force: reuse its worker, database, bucket and account.
-    let keep = current.is_some() && !args.force;
-    let field = |k: &str| current.as_deref().filter(|_| keep).and_then(|c| jsonc_field(c, k));
-    let worker_name = field("name").unwrap_or_else(|| args.name.clone());
-    let db_name = field("database_name").unwrap_or_else(|| args.name.clone());
-    let bucket_name = field("bucket_name").unwrap_or_else(|| args.name.clone());
-    let mut w = Wrangler::new(&args.wrangler, dir.clone(), args.dry_run, interactive);
+    let install_path = dir.join(INSTALL_FILE);
+    // What an earlier setup recorded wins unless --force: reuse its worker, database, bucket and account.
+    let previous = recorded(&dir);
+    let keep = previous.file.is_some() && !args.force;
+    let previous = if keep { previous } else { Recorded::default() };
+    let worker_name = previous.worker.clone().unwrap_or_else(|| args.name.clone());
+    let db_name = previous.database.clone().unwrap_or_else(|| args.name.clone());
+    let bucket_name = previous.bucket.clone().unwrap_or_else(|| args.name.clone());
+    let mut w = Cf::new(&args.cf, dir.clone(), args.dry_run, interactive);
 
     // 1. dependencies
     if deps_current(&dir) {
@@ -655,50 +696,59 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     }
 
     // 2. login and account
-    let whoami = login(&mut w, &args.wrangler)?;
-    let account = choose_account(&w, args.account.as_deref(), field("account_id"), &whoami)?;
+    let whoami = login(&mut w, &args.cf)?;
+    let account = choose_account(&w, args.account.as_deref(), previous.account.clone(), &whoami)?;
     if let Some(id) = &account {
         w.use_account(id);
         w.record("Cloudflare account", "ok", None, Some(id.clone()));
     }
 
     // 3. D1 + R2
-    let existing_db = w.query(&["d1", "list", "--json"]).ok().and_then(|o| parse_d1_list(&o, &db_name));
-    let database_id = match existing_db {
+    let find_db = |w: &Cf| w.query(&["d1", "list", "--name", &db_name]).map(|o| parse_d1_list(&o, &db_name));
+    let database_id = match find_db(&w).ok().flatten() {
         Some(id) => {
             w.record(&format!("D1 database {db_name}"), "exists", None, Some(id.clone()));
             id
         }
         None => {
-            w.mutate(&format!("create D1 database {db_name}"), &["d1", "create", &db_name], None)?;
+            w.mutate(&format!("create D1 database {db_name}"), &["d1", "create", "--name", &db_name], None)?;
             if args.dry_run {
                 "<new-database-id>".into()
             } else {
-                parse_d1_list(&w.query(&["d1", "list", "--json"])?, &db_name)
-                    .ok_or_else(|| CliError::generic("created the D1 database but could not find its id"))?
+                find_db(&w)?.ok_or_else(|| CliError::generic("created the D1 database but could not find its id"))?
             }
         }
     };
-    let buckets = w.query(&["r2", "bucket", "list"]).map(|o| parse_r2_buckets(&o)).unwrap_or_default();
+    let buckets = w.query(&["r2", "buckets", "list", "--name-contains", &bucket_name]).map(|o| parse_r2_buckets(&o)).unwrap_or_default();
     if buckets.contains(&bucket_name) {
         w.record(&format!("R2 bucket {bucket_name}"), "exists", None, None);
     } else {
-        w.mutate(&format!("create R2 bucket {bucket_name}"), &["r2", "bucket", "create", &bucket_name], None)?;
+        w.mutate(&format!("create R2 bucket {bucket_name}"), &["r2", "buckets", "create", "--name", &bucket_name], None)?;
     }
 
-    // 4. wrangler.jsonc
-    let rendered = render_template(&template, &worker_name, account.as_deref(), &db_name, &database_id, &bucket_name);
-    if keep {
-        let status = if current.as_deref() == Some(rendered.as_str()) { "exists" } else { "kept" };
-        w.record("write wrangler.jsonc", status, None, Some(format!("using the existing file (worker \"{worker_name}\"); --force regenerates it")));
-    } else {
-        w.perform("write wrangler.jsonc", None, Some(config_path.display().to_string()), |_| Ok(std::fs::write(&config_path, &rendered)?))?;
+    // 4. install.json, which cloudflare.config.ts reads
+    let install = Install {
+        name: worker_name.clone(),
+        account_id: account.clone(),
+        database: Database { name: db_name.clone(), id: database_id.clone() },
+        bucket: bucket_name.clone(),
+    };
+    let rendered = render_install(&install);
+    let write_install = |_: &Cf| Ok(std::fs::write(&install_path, &rendered)?);
+    match previous.file {
+        Some(INSTALL_FILE) => {
+            let status = if previous.text.as_deref() == Some(rendered.as_str()) { "exists" } else { "kept" };
+            w.record("write install.json", status, None, Some(format!("using the existing file (worker \"{worker_name}\"); --force regenerates it")));
+        }
+        // A setup from before cf left wrangler.jsonc; its names carry over.
+        Some(legacy) => w.perform("write install.json", None, Some(format!("from {legacy} (worker \"{worker_name}\")")), write_install)?,
+        None => w.perform("write install.json", None, Some(install_path.display().to_string()), write_install)?,
     }
 
     // 5. schema + deploy
-    w.mutate("apply database migrations", &["d1", "migrations", "apply", &db_name, "--remote"], None)?;
-    // A new Cloudflare account has no workers.dev subdomain yet, and wrangler asks for one. With
-    // someone at the terminal, let wrangler ask (it then deploys), and deploy again to read the URL.
+    w.mutate("apply database migrations", &["d1", "migrations", "apply", &database_id], None)?;
+    // A new Cloudflare account has no workers.dev subdomain yet, and cf asks for one. With someone
+    // at the terminal, let cf ask (it then deploys), and deploy again to read the URL.
     let deploy_out = match w.mutate("deploy worker", &["deploy"], None) {
         Err(e) if e.message.contains("workers.dev subdomain") && w.interactive => {
             eprintln!("\nYour Cloudflare account needs a workers.dev subdomain: the address your mail service runs at.");
@@ -713,7 +763,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     let url = if args.dry_run {
         format!("https://{worker_name}.<your-subdomain>.workers.dev")
     } else {
-        parse_deploy_url(&deploy_out).ok_or_else(|| CliError::generic("deployed, but could not find the workers.dev URL in wrangler's output"))?
+        parse_deploy_url(&deploy_out).ok_or_else(|| CliError::generic("deployed, but could not find the workers.dev URL in cf's output"))?
     };
 
     // 6. token + local config
@@ -741,7 +791,12 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
         String::new()
     } else {
         let token = if args.dry_run { "<generated>".to_string() } else { random_token()? };
-        w.mutate("set API_TOKEN secret", &["secret", "put", "API_TOKEN"], Some(&token))?;
+        let secret = json!({ "name": "API_TOKEN", "type": "secret_text", "text": token }).to_string();
+        w.mutate(
+            "set API_TOKEN secret",
+            &["workers", "secrets", "update", "API_TOKEN", "--worker", &worker_name, "--body", "@/dev/stdin"],
+            Some(&secret),
+        )?;
         let file = config::FileConfig {
             api_url: Some(url.clone()),
             api_token: Some(token.clone()),
@@ -762,7 +817,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
 
     // 8. mailboxes and routes
     let mut routes = Vec::new();
-    let (mut sending, mut routing) = (None, None);
+    let (mut sending, mut routing) = (Vec::new(), Vec::new());
     for (addr, screen) in &mailboxes {
         let kind = if *screen { "screened" } else { "direct" };
         w.perform(&format!("mailbox {addr}"), None, Some(kind.into()), |_| {
@@ -775,13 +830,13 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
     // 9. forwarding: Email Routing only forwards to verified destinations, and Cloudflare verifies
     // one by emailing it a link
     if let Some(fwd) = args.forward_to.as_deref().map(str::to_ascii_lowercase).filter(|f| !f.is_empty()) {
-        let known = parse_destinations(&w.probe(&["email", "routing", "addresses", "list"])?).into_iter().find(|(a, _)| *a == fwd);
+        let known = parse_destinations(&w.probe(&["email-routing", "addresses", "list", "--per-page", "50"])?).into_iter().find(|(a, _)| *a == fwd);
         let pending = format!("Cloudflare emailed {fwd} a verification link; forwarding starts once it's clicked");
         match known {
             Some((_, true)) => {}
             Some((_, false)) => w.record(&format!("verify {fwd}"), "pending", None, Some(pending)),
             None => {
-                w.mutate(&format!("add forwarding destination {fwd}"), &["email", "routing", "addresses", "create", &fwd], None)?;
+                w.mutate(&format!("add forwarding destination {fwd}"), &["email-routing", "addresses", "create", "--email", &fwd], None)?;
                 w.record(&format!("verify {fwd}"), "pending", None, Some(pending));
             }
         }
@@ -854,10 +909,11 @@ mod tests {
     }
 
     #[test]
-    fn d1_list_survives_wrangler_warnings_around_the_json() {
+    fn json_survives_notices_around_it() {
         let out = "\u{1b}[33m▲ [WARNING]\u{1b}[0m update available\n[{\"uuid\":\"abc\",\"name\":\"cloudmail\"}]\n▲ [WARNING] trailing note\n";
         assert_eq!(parse_d1_list(out, "cloudmail").as_deref(), Some("abc"));
         assert_eq!(parse_d1_list(out, "other"), None);
+        assert_eq!(first_json("no json [here]"), None);
     }
 
     #[test]
@@ -866,7 +922,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let packaged = tmp.join("usr/share/cloudmail/worker");
         std::fs::create_dir_all(packaged.join("src")).unwrap();
-        std::fs::write(packaged.join("wrangler.template.jsonc"), "{}").unwrap();
+        std::fs::write(packaged.join("cloudflare.config.ts"), "export default {}").unwrap();
         std::fs::write(packaged.join("src/index.ts"), "v1").unwrap();
         let data = tmp.join("data");
 
@@ -875,21 +931,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("src/index.ts")).unwrap(), "v1");
 
         // A later package version replaces the source but keeps what setup generated.
-        std::fs::write(dir.join("wrangler.jsonc"), "generated").unwrap();
+        std::fs::write(dir.join(INSTALL_FILE), "generated").unwrap();
         std::fs::write(packaged.join("src/index.ts"), "v2").unwrap();
         let dir = resolve_worker_dir_in(None, &tmp.join("no-clone"), &[&packaged], &data).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("src/index.ts")).unwrap(), "v2");
-        assert_eq!(std::fs::read_to_string(dir.join("wrangler.jsonc")).unwrap(), "generated");
+        assert_eq!(std::fs::read_to_string(dir.join(INSTALL_FILE)).unwrap(), "generated");
 
         // A clone's worker/ wins over the package; nothing at all is a usage error.
         std::fs::create_dir_all(tmp.join("clone/worker")).unwrap();
-        std::fs::write(tmp.join("clone/worker/wrangler.template.jsonc"), "{}").unwrap();
+        std::fs::write(tmp.join("clone/worker/cloudflare.config.ts"), "export default {}").unwrap();
         assert_eq!(resolve_worker_dir_in(None, &tmp.join("clone/worker"), &[&packaged], &data).unwrap(), tmp.join("clone/worker"));
         assert!(resolve_worker_dir_in(None, &tmp.join("no-clone"), &[], &data).is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    const RULES: &str = "\n \u{1b}[33m▲ WARNING\u{1b}[0m open beta\n\nRule: 6b4a6ac1f8d643999a3a6111c0583125\n  Name:     Rule created at 2025\n  Enabled:  true\n  Matchers: to:hi@example.com\n  Actions:  forward:me@elsewhere.com\n  Priority: 0\n\nRule: 06bae9a8c2794e41a8fd99679a84f310\n  Name:     (none)\n  Enabled:  true\n  Matchers: to:hello@example.com\n  Actions:  worker:cloudmail\n  Priority: 0\n\n\nCatch-all rule: disabled, action: drop\n";
+    const RULES: &str = r#"[
+      {"id": "6b4a6ac1f8d643999a3a6111c0583125", "name": "", "matchers": [{"type": "literal", "field": "to", "value": "hi@example.com"}],
+       "actions": [{"type": "forward", "value": ["me@elsewhere.com"]}], "enabled": true, "priority": 0},
+      {"id": "06bae9a8c2794e41a8fd99679a84f310", "name": "", "matchers": [{"type": "literal", "field": "to", "value": "hello@example.com"}],
+       "actions": [{"type": "worker", "value": ["cloudmail"]}], "enabled": true, "priority": 0}
+    ]"#;
 
     #[test]
     fn parses_rules() {
@@ -899,6 +960,7 @@ mod tests {
         assert_eq!(r[0].action, "forward:me@elsewhere.com");
         assert_eq!(r[1].id, "06bae9a8c2794e41a8fd99679a84f310");
         assert_eq!(r[1].action, "worker:cloudmail");
+        assert!(parse_rules("").is_empty());
     }
 
     #[test]
@@ -911,20 +973,49 @@ mod tests {
     }
 
     #[test]
-    fn renders_template() {
-        let t = "{ \"name\": \"__WORKER_NAME__\", \"database_name\": \"__DATABASE_NAME__\", \"database_id\": \"__DATABASE_ID__\", \"bucket_name\": \"__BUCKET_NAME__\" }";
-        let r = render_template(t, "cloudmail", None, "cloudmail-db", "abc-123", "cloudmail-bucket");
-        assert_eq!(r, "{ \"name\": \"cloudmail\", \"database_name\": \"cloudmail-db\", \"database_id\": \"abc-123\", \"bucket_name\": \"cloudmail-bucket\" }");
-        assert!(!r.contains("__"));
-        let t = "{\n  \"name\": \"__WORKER_NAME__\",\n  \"account_id\": \"__ACCOUNT_ID__\",\n  \"main\": \"src/index.ts\"\n}";
-        assert_eq!(render_template(t, "cm", Some("0af9"), "", "", ""), "{\n  \"name\": \"cm\",\n  \"account_id\": \"0af9\",\n  \"main\": \"src/index.ts\"\n}");
-        assert_eq!(render_template(t, "cm", None, "", "", ""), "{\n  \"name\": \"cm\",\n  \"main\": \"src/index.ts\"\n}");
+    fn renders_install() {
+        let mut install = Install {
+            name: "cloudmail".into(),
+            account_id: None,
+            database: Database { name: "cloudmail-db".into(), id: "abc-123".into() },
+            bucket: "cloudmail-bucket".into(),
+        };
+        let text = render_install(&install);
+        assert_eq!(text, "{\n  \"name\": \"cloudmail\",\n  \"database\": {\n    \"name\": \"cloudmail-db\",\n    \"id\": \"abc-123\"\n  },\n  \"bucket\": \"cloudmail-bucket\"\n}\n");
+        install.account_id = Some("0af9".into());
+        let text = render_install(&install);
+        assert!(text.contains("\"accountId\": \"0af9\""));
+        assert_eq!(serde_json::from_str::<Install>(&text).unwrap(), install);
+    }
+
+    #[test]
+    fn reads_what_an_earlier_setup_recorded() {
+        let dir = std::env::temp_dir().join(format!("cloudmail-recorded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(recorded(&dir), Recorded::default());
+
+        // A wrangler.jsonc from a setup before cf.
+        let legacy = "{\n  \"name\": \"cloud-mail\",\n  \"account_id\": \"0af9\",\n  \"d1_databases\": [{ \"binding\": \"DB\", \"database_name\": \"cloud-mail-db\", \"database_id\": \"x\" }],\n  \"r2_buckets\": [{ \"binding\": \"BUCKET\", \"bucket_name\": \"mail\" }]\n  // Secret: API_TOKEN\n}";
+        std::fs::write(dir.join(LEGACY_FILE), legacy).unwrap();
+        let r = recorded(&dir);
+        assert_eq!(r.file, Some(LEGACY_FILE));
+        assert_eq!((r.worker.as_deref(), r.database.as_deref(), r.bucket.as_deref(), r.account.as_deref()), (Some("cloud-mail"), Some("cloud-mail-db"), Some("mail"), Some("0af9")));
+
+        // install.json wins over it.
+        let install = Install { name: "cm".into(), account_id: None, database: Database { name: "cm-db".into(), id: "u".into() }, bucket: "cm-r2".into() };
+        std::fs::write(dir.join(INSTALL_FILE), render_install(&install)).unwrap();
+        let r = recorded(&dir);
+        assert_eq!(r.file, Some(INSTALL_FILE));
+        assert_eq!((r.worker.as_deref(), r.database.as_deref(), r.bucket.as_deref(), r.account), (Some("cm"), Some("cm-db"), Some("cm-r2"), None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn parses_deploy_output() {
-        let out = "Uploaded cloudmail (4.39 sec)\nDeployed cloudmail triggers (2.15 sec)\n  https://cloudmail.example-sub.workers.dev\nCurrent Version ID: x";
+        let out = "│  Uploaded cloudmail (4.39 sec)\n│  Deployed cloudmail triggers (2.15 sec)\n│    https://cloudmail.example-sub.workers.dev\n│  Current Version ID: x";
         assert_eq!(parse_deploy_url(out).as_deref(), Some("https://cloudmail.example-sub.workers.dev"));
+        assert_eq!(parse_deploy_url("It will be accessible at https://<subdomain>.workers.dev"), None);
         assert_eq!(parse_deploy_url("no url here"), None);
     }
 
@@ -934,19 +1025,17 @@ mod tests {
         assert_eq!(jsonc_field(j, "database_name").as_deref(), Some("cloud-mail-db"));
         assert_eq!(jsonc_field(j, "bucket_name").as_deref(), Some("mail"));
         assert_eq!(jsonc_field(j, "missing"), None);
-    }
-
-    #[test]
-    fn parses_worker_name() {
         let j = "{\n  \"$schema\": \"x\",\n  \"name\": \"cloud-mail\",\n  \"main\": \"src/index.ts\",";
         assert_eq!(jsonc_field(j, "name").as_deref(), Some("cloud-mail"));
     }
 
     #[test]
     fn parses_accounts_destinations_and_mx() {
-        let whoami = "┌──┐\n│ Account Name │ Account ID │\n├──┤\n│ Me's Account │ 0123456789abcdef0123456789abcdef │\n│ Team │ 11111111111111111111111111111111 │\n└──┘\n";
-        assert_eq!(parse_accounts(whoami), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into()), ("Team".into(), "11111111111111111111111111111111".into())]);
-        let dests = "│ id │ email │ verified │ created │\n│ b51d │ Me@Hey.com │ 2025-12-26T05:50:19Z │ 2025-12-26T04:33:43Z │\n│ 87be │ new@gmail.com │  │ 2026-01-01T00:00:00Z │\n";
+        let whoami = json!({"authenticated": true, "accounts": [{"id": "0123456789abcdef0123456789abcdef", "name": "Me's Account"}, {"id": "11111111111111111111111111111111", "name": "Team"}]});
+        assert_eq!(parse_accounts(&whoami), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into()), ("Team".into(), "11111111111111111111111111111111".into())]);
+        assert!(parse_accounts(&json!({"authenticated": false})).is_empty());
+        let dests = r#"[{"id": "b51d", "email": "Me@Hey.com", "verified": "2025-12-26T05:50:19Z", "status": "verified"},
+                        {"id": "87be", "email": "new@gmail.com", "verified": null, "status": "pending"}]"#;
         assert_eq!(parse_destinations(dests), vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]);
         let mx = json!({"Answer": [{"type": 15, "data": "20 route2.mx.cloudflare.net."}, {"type": 5, "data": "x."}, {"type": 15, "data": "10 ASPMX.L.Google.com."}]});
         assert_eq!(parse_mx_answer(&mx), vec!["aspmx.l.google.com", "route2.mx.cloudflare.net"]);
@@ -955,13 +1044,18 @@ mod tests {
 
     #[test]
     fn parses_lists() {
-        let d1 = "[{\"uuid\":\"u1\",\"name\":\"other\"},{\"uuid\":\"u2\",\"name\":\"cloudmail\"}]";
+        let d1 = "[{\"uuid\":\"u1\",\"name\":\"cloudmail-old\"},{\"uuid\":\"u2\",\"name\":\"cloudmail\"}]";
         assert_eq!(parse_d1_list(d1, "cloudmail").as_deref(), Some("u2"));
         assert_eq!(parse_d1_list(d1, "nope"), None);
-        let r2 = "Listing buckets...\nname:           cloud-mail\ncreation_date:  2026\n\nname:           cloudmail\n";
+        let r2 = "{\"buckets\": [{\"name\": \"cloud-mail\", \"creation_date\": \"2026\"}, {\"name\": \"cloudmail\"}]}";
         assert_eq!(parse_r2_buckets(r2), vec!["cloud-mail", "cloudmail"]);
-        let table = "┌──┐\n│ zone │ name │ enabled │ tag │\n├──┤\n│ example.com │ example.com │ yes │ c0 │\n├──┤\n│ other.com │ other.com │ no │ c1 │\n";
-        assert_eq!(enabled_zones(table), vec!["example.com"]);
+        assert!(parse_r2_buckets("").is_empty());
+        assert!(routing_enabled("{\"name\": \"example.com\", \"enabled\": true, \"status\": \"ready\"}"));
+        assert!(!routing_enabled("{\"name\": \"example.com\", \"enabled\": false}"));
+        let sending = "[{\"name\": \"example.com\", \"enabled\": true}, {\"name\": \"news.other.com\", \"enabled\": true}, {\"name\": \"off.com\", \"enabled\": false}]";
+        assert!(sending_enabled(sending, "example.com"));
+        assert!(!sending_enabled(sending, "other.com"));
+        assert!(!sending_enabled(sending, "off.com"));
     }
 
     #[test]
@@ -972,37 +1066,66 @@ mod tests {
         assert!(parse_mailbox_spec("a@b.com:weird").is_err());
     }
 
-    #[test]
-    fn dry_run_setup_plans_without_running() {
-        let dir = std::env::temp_dir().join(format!("cloudmail-setup-test-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
-        std::fs::write(dir.join("node_modules/.package-lock.json"), "{}").unwrap();
-        std::fs::write(dir.join("wrangler.template.jsonc"), "{ \"name\": \"__WORKER_NAME__\" }").unwrap();
-        // A fake wrangler that fails every command proves nothing mutating runs in --dry-run.
-        let args = SetupArgs {
-            worker_dir: Some(dir.clone()),
+    fn dry_run_args(dir: &Path, force: bool) -> SetupArgs {
+        SetupArgs {
+            worker_dir: Some(dir.to_path_buf()),
             name: "cloudmail".into(),
             mailboxes: vec!["hi@example.com".into()],
             mailbox_flags: vec!["support@example.com:direct".into()],
             yes: true,
             account: None,
             forward_to: Some("me@elsewhere.com".into()),
-            force: true,
+            force,
             dry_run: true,
-            wrangler: "false".into(),
-        };
-        let resp = run(&args, false).unwrap();
+            // A fake cf that fails every command proves nothing mutating runs in --dry-run.
+            cf: "false".into(),
+        }
+    }
+
+    fn worker_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cloudmail-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("node_modules/.package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.join("cloudflare.config.ts"), "export default {}").unwrap();
+        dir
+    }
+
+    #[test]
+    fn dry_run_setup_plans_without_running() {
+        let dir = worker_dir("setup-test");
+        let resp = run(&dry_run_args(&dir, true), false).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
         let planned: Vec<&str> = steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
-        assert!(planned.contains(&"false d1 create cloudmail"));
+        assert!(planned.contains(&"false d1 create --name cloudmail"));
+        assert!(planned.contains(&"false r2 buckets create --name cloudmail"));
+        assert!(planned.contains(&"false d1 migrations apply <new-database-id>"));
         assert!(planned.contains(&"false deploy"));
-        assert!(planned.iter().any(|c| c.contains("routing rules create example.com") && c.contains("--match-value hi@example.com")));
-        assert!(planned.iter().any(|c| c.contains("email sending enable example.com")));
-        assert!(planned.iter().any(|c| c.contains("email routing enable example.com")));
-        assert!(planned.contains(&"false email routing addresses create me@elsewhere.com"));
-        assert!(planned.contains(&"false login"));
-        assert!(!dir.join("wrangler.jsonc").exists());
+        assert!(planned.iter().any(|c| c.starts_with("false email-routing rules create -z example.com") && c.contains(r#""value":"hi@example.com""#)));
+        assert!(planned.contains(&"false email-sending subdomains create -z example.com --name example.com"));
+        assert!(planned.contains(&"false email-routing enable -z example.com"));
+        assert!(planned.contains(&"false email-routing addresses create --email me@elsewhere.com"));
+        assert!(planned.contains(&"false auth login"));
+        assert!(steps.iter().any(|s| s["step"] == "write install.json" && s["status"] == "planned"));
+        assert!(!dir.join(INSTALL_FILE).exists());
         assert_eq!(resp.data["dry_run"], true);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dry_run_carries_over_a_wrangler_jsonc_from_before_cf() {
+        let dir = worker_dir("setup-legacy");
+        std::fs::write(dir.join(LEGACY_FILE), "{ \"name\": \"cloud-mail\", \"database_name\": \"cm-db\", \"bucket_name\": \"cm-r2\" }").unwrap();
+        let resp = run(&dry_run_args(&dir, false), false).unwrap();
+        let steps = resp.data["steps"].as_array().unwrap();
+        let planned: Vec<&str> = steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
+        assert_eq!(resp.data["worker"], "cloud-mail");
+        assert!(planned.contains(&"false d1 create --name cm-db"));
+        assert!(planned.contains(&"false r2 buckets create --name cm-r2"));
+        let write = steps.iter().find(|s| s["step"] == "write install.json").unwrap();
+        assert_eq!(write["status"], "planned");
+        assert!(write["detail"].as_str().unwrap().starts_with("from wrangler.jsonc"));
+        assert!(!dir.join(INSTALL_FILE).exists());
         std::fs::remove_dir_all(dir).ok();
     }
 }

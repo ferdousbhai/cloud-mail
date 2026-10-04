@@ -1,4 +1,7 @@
 node_modules/
 .wrangler/
+.cloudflare/
 .dev.vars
+install.json
+# Written by cloudmail setup before it moved to cf; setup now reads it once into install.json.
 wrangler.jsonc

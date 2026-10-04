@@ -388,22 +388,22 @@ impl WatchFolder {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct RouteArgs {
-    /// Also point this address's Cloudflare Email Routing rule at the worker (runs wrangler)
+    /// Also point this address's Cloudflare Email Routing rule at the worker (runs cf)
     #[arg(long)]
     pub route: bool,
     /// Don't ask before moving the domain's mail (MX) to Cloudflare or replacing a rule that sends
     /// this address elsewhere (with --route)
     #[arg(long, short = 'y', alias = "take-over-route", requires = "route")]
     pub yes: bool,
-    /// Worker directory holding wrangler.jsonc (with --route)
+    /// Worker directory holding install.json (with --route)
     #[arg(long, hide = true)]
     pub worker_dir: Option<PathBuf>,
-    /// Worker name (with --route; default: "name" from wrangler.jsonc)
+    /// Worker name (with --route; default: "name" from install.json)
     #[arg(long, hide = true)]
     pub worker_name: Option<String>,
-    /// Command used to run wrangler
-    #[arg(long, default_value = "npx wrangler", hide = true)]
-    pub wrangler: String,
+    /// Command used to run the Cloudflare CLI (cf)
+    #[arg(long = "cf", default_value = "npx cf", hide = true)]
+    pub cf: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -504,7 +504,7 @@ pub struct SetupArgs {
     /// Show what would happen without changing anything
     #[arg(long)]
     pub dry_run: bool,
-    /// Regenerate wrangler.jsonc and the local config, rotating the API token
+    /// Regenerate install.json and the local config, rotating the API token
     #[arg(long)]
     pub force: bool,
     /// Same as the ADDRESS arguments (older spelling)
@@ -513,12 +513,12 @@ pub struct SetupArgs {
     /// Name for the worker, D1 database and R2 bucket
     #[arg(long, default_value = "cloudmail", hide = true)]
     pub name: String,
-    /// Worker directory (contains wrangler.template.jsonc)
+    /// Worker directory (contains cloudflare.config.ts)
     #[arg(long, hide = true)]
     pub worker_dir: Option<PathBuf>,
-    /// Command used to run wrangler
-    #[arg(long, default_value = "npx wrangler", hide = true)]
-    pub wrangler: String,
+    /// Command used to run the Cloudflare CLI (cf)
+    #[arg(long = "cf", default_value = "npx cf", hide = true)]
+    pub cf: String,
 }
 
 #[derive(Subcommand, Debug)]

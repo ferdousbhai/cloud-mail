@@ -251,7 +251,7 @@ Set up a new instance (one command; safe to re-run, and re-running also updates 
 
     CLOUDFLARE_API_TOKEN=... cloudmail setup you@example.com support@example.com:direct --yes
 
-It needs the domain's DNS on Cloudflare and wrangler logged in (`npx wrangler login`) or
+It needs the domain's DNS on Cloudflare and the Cloudflare CLI logged in (`npx cf auth login`) or
 CLOUDFLARE_API_TOKEN set. Without `--yes`, a domain that already receives mail elsewhere is left
 alone and its step reports `blocked`; `--yes` moves it (replaces its MX records). With several
 Cloudflare accounts, pass `--account <id>`. Check `data.routes[].status` in the result.

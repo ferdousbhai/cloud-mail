@@ -1,0 +1,13 @@
+// Local development only; cloudflare.config.ts is the worker's config. cf 1.0 beta can't apply D1
+// migrations to the local database `cf dev` uses, so `bun run db:local` applies them with wrangler,
+// and `bun run types` regenerates worker-configuration.d.ts from these bindings (keep them in step
+// with cloudflare.config.ts). No IDs: nothing here reaches Cloudflare.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudmail",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [{ "binding": "DB", "database_name": "cloudmail", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "cloudmail" }],
+  "send_email": [{ "name": "EMAIL" }]
+}

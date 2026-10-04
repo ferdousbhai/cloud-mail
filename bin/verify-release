@@ -19,7 +19,7 @@ check="
   [[ \$(cloudmail --version) == \"cloudmail $version\" ]] || { echo \"cloudmail --version says \$(cloudmail --version), expected $version\" >&2; exit 1; }
   cmail --version >/dev/null
   test -x /usr/bin/cloudmail-gtk
-  for f in wrangler.template.jsonc package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
+  for f in cloudflare.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
     test -f /usr/share/cloudmail/worker/\$f || { echo \"the package is missing worker/\$f\" >&2; exit 1; }
   done
   echo \"verified: cloudmail \$installed from the signed repository\"

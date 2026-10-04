@@ -48,7 +48,7 @@ package() {
   # Worker source for `cloudmail setup` (copied to ~/.local/share/cloudmail/worker when run).
   local w="$pkgdir/usr/share/cloudmail/worker"
   install -Dm644 -t "$w" worker/package.json worker/bun.lock worker/tsconfig.json \
-    worker/wrangler.template.jsonc worker/worker-configuration.d.ts
+    worker/cloudflare.config.ts worker/worker-configuration.d.ts
   install -Dm644 -t "$w/src" worker/src/*.ts
   install -Dm644 -t "$w/migrations" worker/migrations/*.sql
 
