@@ -35,7 +35,7 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 You need a domain whose DNS is on Cloudflare and a Cloudflare account on the Workers Paid plan
 (about $5/month, with 3,000 emails/month included; needed to send to anyone).
 
-On Omarchy or any Arch Linux:
+On Omarchy or Arch Linux (x86_64 and aarch64):
 
 ```sh
 curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
@@ -211,14 +211,23 @@ git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
 ```
 
 Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
-It drafts the GitHub release from the tag's message, then runs `bin/release`, which builds the
-package with makepkg, signs it and the `[cloudmail]` repository database with the
-package-signing key (gpg asks for its passphrase in a desktop prompt), attaches them with
-`install.sh`, and has `bin/verify-release` install it with the public one-liner in a clean Arch
-container, and then moves the omarchy-pkgs pull request to the new version (while it is open).
+It drafts the GitHub release from the tag's message, then runs `bin/release`. The native
+package workflow builds and tests unsigned x86_64 and aarch64 packages. The release command
+waits for that exact commit's successful CI run, verifies each artifact's source commit and
+package metadata, and signs the packages and both repository databases locally. The private
+signing key never goes to GitHub. `[cloudmail]` serves x86_64; `[cloudmail-aarch64]` serves ARM,
+and the installer chooses the native repository automatically.
+
+After publication, GitHub verifies the exact release on native Arch and Arch Linux ARM
+runners. Failed verification reports an error without deleting a release or tag. Run
+`bin/verify-release <version> <architecture>` manually on a matching native host; ARM requires
+`ARM_BUILD_IMAGE` pointing to an Arch Linux ARM Docker image. `bin/build-package <architecture>`
+builds an unsigned package locally with the same native-container process used by CI.
+
+The release hook then moves the omarchy-pkgs pull request to the new version (while open).
 A desktop notification reports the outcome; the log is in
-`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version>` still works by hand,
-and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
+`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version> [CI-run-id]` also works
+by hand, and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
 
 ## Development
 

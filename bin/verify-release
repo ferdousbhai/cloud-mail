@@ -1,39 +1,31 @@
 #!/bin/bash
-# Install a published release the way users do, in a clean Arch container:
-#
-#   bin/verify-release 0.1.0
-#
-# Runs the public one-liner against GitHub's releases/latest/download and
-# checks that cloudmail $version is installed and runs.
+# Verify exactly one published release on its native architecture. No automatic deletion.
 set -euo pipefail
-
-version="${1:?usage: bin/verify-release <version>}"
-url="${CLOUDMAIL_INSTALL_URL:-https://github.com/ferdousbhai/cloud-mail/releases/latest/download/install.sh}"
-
-check="
-  pacman-key --init >/dev/null 2>&1
-  pacman-key --populate archlinux >/dev/null 2>&1
-  curl -fsSL '$url' | bash
-  installed=\$(pacman -Q cloudmail | cut -d' ' -f2)
-  [[ \$installed == $version-* ]] || { echo \"expected cloudmail $version, found \$installed\" >&2; exit 1; }
-  [[ \$(cloudmail --version) == \"cloudmail $version\" ]] || { echo \"cloudmail --version says \$(cloudmail --version), expected $version\" >&2; exit 1; }
-  cmail --version >/dev/null
-  test -x /usr/bin/cloudmail-gtk
-  for f in cloudflare.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
-    test -f /usr/share/cloudmail/worker/\$f || { echo \"the package is missing worker/\$f\" >&2; exit 1; }
-  done
-  echo \"verified: cloudmail \$installed from the signed repository\"
-"
-
-# The container's network sometimes fails right after it starts ("Could not resolve host"); a
-# network error retries, anything else fails at once.
-for attempt in 1 2 3; do
-  if out="$(docker run --rm docker.io/archlinux:latest bash -euo pipefail -c "$check" 2>&1)"; then
-    echo "$out"
-    exit 0
-  fi
-  echo "$out"
-  grep -qE "Could not resolve host|Temporary failure in name resolution|Failed to connect|Connection timed out" <<<"$out" || exit 1
-  ((attempt < 3)) && { echo "network error in the container; retrying ($attempt/3)" >&2; sleep 10; }
-done
-exit 1
+version=${1:?usage: bin/verify-release <version> [x86_64|aarch64]}
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid version' >&2; exit 1; }
+arch=${2:-$(uname -m)}
+case "$arch" in
+  x86_64) image=archlinux:base-devel; platform=linux/amd64 ;;
+  aarch64) image=${ARM_BUILD_IMAGE:?Set ARM_BUILD_IMAGE to a native Arch Linux ARM image}; platform=linux/arm64 ;;
+  *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
+esac
+[[ $(uname -m) == "$arch" ]] || { echo 'A native runner is required.' >&2; exit 1; }
+releases=https://github.com/ferdousbhai/cloud-mail/releases/download/v$version
+docker run --rm --platform "$platform" -e EXPECTED_VERSION="$version" -e EXPECTED_ARCH="$arch" \
+  -e CLOUDMAIL_RELEASES_URL="$releases" "$image" bash -euo pipefail -c '
+    [[ $(uname -m) == "$EXPECTED_ARCH" ]]
+    sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
+    pacman-key --init
+    if [[ $EXPECTED_ARCH == aarch64 ]]; then pacman-key --populate archlinuxarm; else pacman-key --populate archlinux; fi
+    curl --fail --location --retry 3 "$CLOUDMAIL_RELEASES_URL/install.sh" -o /tmp/install.sh
+    bash /tmp/install.sh
+    [[ $(pacman -Q cloudmail | cut -d" " -f2) == "$EXPECTED_VERSION-1" ]]
+    [[ $(cloudmail --version) == "cloudmail $EXPECTED_VERSION" ]]
+    cmail --version
+    test -x /usr/bin/cloudmail-gtk
+    ldd /usr/bin/cloudmail-gtk > /tmp/gtk-libraries
+    ! grep -q "not found" /tmp/gtk-libraries
+    for f in cloudflare.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
+      test -f "/usr/share/cloudmail/worker/$f"
+    done
+  '
