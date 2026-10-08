@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: CLI and API crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # cloudmail-gtk needs GTK 4.16+, newer than Ubuntu's, so CI covers the CLI and API crates;
+      # the Arch package build (bin/release) compiles the app.
+      - run: cargo test --locked -p cloudmail -p cloudmail-api
+      - run: cargo clippy --locked -p cloudmail -p cloudmail-api --all-targets
+
+  msrv:
+    name: CLI on Rust 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - run: cargo build --locked -p cloudmail
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bunx tsc --noEmit
