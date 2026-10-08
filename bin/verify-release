@@ -17,6 +17,7 @@ docker run --rm --platform "$platform" -e EXPECTED_VERSION="$version" -e EXPECTE
     sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
     pacman-key --init
     if [[ $EXPECTED_ARCH == aarch64 ]]; then pacman-key --populate archlinuxarm; else pacman-key --populate archlinux; fi
+    pacman -Syu --needed --noconfirm curl gnupg
     curl --fail --location --retry 3 "$CLOUDMAIL_RELEASES_URL/install.sh" -o /tmp/install.sh
     bash /tmp/install.sh
     [[ $(pacman -Q cloudmail | cut -d" " -f2) == "$EXPECTED_VERSION-1" ]]
