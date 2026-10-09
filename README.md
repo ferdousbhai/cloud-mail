@@ -268,7 +268,7 @@ git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
 
 Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
 It drafts the GitHub release from the tag's message, then runs `bin/release`. The native
-package workflow builds and tests unsigned x86_64 and aarch64 packages. The release command
+package workflow, which runs only for version tags, builds and tests unsigned x86_64 and aarch64 packages. The release command
 waits for that exact commit's successful CI run, verifies each artifact's source commit and
 package metadata, and signs the packages and both repository databases locally. The private
 signing key never goes to GitHub. `[cloudmail]` serves x86_64; `[cloudmail-aarch64]` serves ARM,
@@ -295,8 +295,12 @@ bun run dev --port 8799              # cf dev --mode development: local resource
 curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
 bun test && bunx tsc --noEmit
 
-cargo test --workspace && cargo clippy --workspace --all-targets
+bin/check                            # everything: clippy, Rust tests, worker tests and types, packaging
 ```
+
+Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
+runs `bin/check` first and stops if it fails (`CLOUDMAIL_NO_CHECK=1` skips it). GitHub only builds
+the release packages, on a version tag.
 
 Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
 `Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls

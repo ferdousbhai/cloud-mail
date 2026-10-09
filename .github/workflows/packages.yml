@@ -1,9 +1,9 @@
 name: Native packages
+# Builds the release packages on native runners for both architectures; bin/release signs and
+# publishes them. Everyday checks run locally with bin/check (and before every push), not here.
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read

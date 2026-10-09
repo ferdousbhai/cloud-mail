@@ -1,15 +1,29 @@
 #!/bin/bash
-# Pushing a version tag (refs/tags/vX.Y.Z) releases it: this starts bin/release-on-tag in the
-# background, which waits for the push to land and then publishes. Enable once per clone with
+# Enable once per clone with
 #   git config core.hooksPath .githooks
-# Set CLOUDMAIL_NO_AUTO_RELEASE=1 to push a tag without releasing it.
-[[ ${CLOUDMAIL_NO_AUTO_RELEASE:-} == 1 ]] && exit 0
-
+#
+# Pushing a branch runs bin/check first and stops the push if it fails; set
+# CLOUDMAIL_NO_CHECK=1 to push without it. Pushing a version tag (refs/tags/vX.Y.Z) releases it:
+# this starts bin/release-on-tag in the background, which waits for the push to land and then
+# publishes. Set CLOUDMAIL_NO_AUTO_RELEASE=1 to push a tag without releasing it.
 top="$(git rev-parse --show-toplevel)"
+branches=0
+versions=()
 while read -r _ local_sha remote_ref _; do
-  [[ $local_sha =~ ^0+$ ]] && continue # a deleted tag
-  [[ $remote_ref =~ ^refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || continue
-  version="${BASH_REMATCH[1]}"
+  [[ $local_sha =~ ^0+$ ]] && continue # a deleted ref
+  [[ $remote_ref == refs/heads/* ]] && branches=1
+  [[ $remote_ref =~ ^refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] && versions+=("${BASH_REMATCH[1]}")
+done
+
+if ((branches)) && [[ ${CLOUDMAIL_NO_CHECK:-} != 1 ]]; then
+  # The checks run on the working tree, which is what's being pushed unless it has changes.
+  [[ -z $(git -C "$top" status --porcelain --untracked-files=no) ]] \
+    || echo "note: the working tree has uncommitted changes; bin/check sees them, the push doesn't" >&2
+  "$top/bin/check" >&2 || { echo "bin/check failed; not pushing (CLOUDMAIL_NO_CHECK=1 skips it)" >&2; exit 1; }
+fi
+
+[[ ${CLOUDMAIL_NO_AUTO_RELEASE:-} == 1 ]] && exit 0
+for version in "${versions[@]}"; do
   setsid -f "$top/bin/release-on-tag" "$version" </dev/null >/dev/null 2>&1
   echo "Releasing $version in the background; log: ${XDG_STATE_HOME:-$HOME/.local/state}/cloudmail/release-$version.log" >&2
 done
