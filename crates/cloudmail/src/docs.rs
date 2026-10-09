@@ -79,10 +79,13 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add hey",
             "cloudmail account add hey --command ~/.local/bin/hey",
             "cloudmail account add hey --no-login --json",
+            "cloudmail account add icloud --email you@icloud.com",
+            "cloudmail account add icloud --email you@icloud.com --alias you@example.com",
+            "printf '%s\\n' \"$APP_PASSWORD\" | cloudmail account add icloud --email you@icloud.com --password-stdin --json",
         ],
     ),
-    ("account login", &["cloudmail account login gmail", "cloudmail account login hey"]),
-    ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey"]),
+    ("account login", &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"]),
+    ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey", "cloudmail account remove icloud"]),
     (
         "setup",
         &[
@@ -284,7 +287,7 @@ Send new mail:
 `--attach FILE` (repeatable, on compose and reply) sends files; the type comes from the extension.
 A missing or unreadable file is a usage error before anything is sent. Your worker sends at most
 about 3.5 MiB of attachments (Cloudflare Email Service takes 5 MiB per message once encoded); HEY
-and Gmail 25 MB. Over that is a `bad_request` naming the limit. `--dry-run` lists the files as
+and Gmail 25 MB; iCloud Mail 14 MiB (20 MB per message once encoded). Over that is a `bad_request` naming the limit. `--dry-run` lists the files as
 `{filename, mime_type, size}`; a worker send's `message.attachments` lists them as stored.
 
 Watch for new mail (JSONL, one object per new or updated thread):
@@ -292,7 +295,7 @@ Watch for new mail (JSONL, one object per new or updated thread):
     cloudmail watch --folder all --interval 30
     # {"event":"thread","thread":{"id":"t_…","folder":"screener","from":{…},"subject":"…",…}}
 
-## Linked accounts (HEY, Gmail)
+## Linked accounts (HEY, Gmail, iCloud Mail)
 
 Optional. `cloudmail account add hey` links a HEY account through the official `hey` CLI (it must be
 installed and signed in; on a terminal, add runs `hey auth login` for you, otherwise it fails with
@@ -301,10 +304,15 @@ installed and signed in; on a terminal, add runs `hey auth login` for you, other
 in the browser (Gmail access only, kept in cloudmail's own gws directory, apart from any gws of yours),
 otherwise it fails with `not_logged_in`; `--login` signs in without a terminal. A build without
 cloudmail's Google client fails with `not_configured` until CLOUDMAIL_GOOGLE_CLIENT_ID/SECRET or
-`--client-id/--client-secret` name one. `cloudmail account list --json` shows each account and whether
-it works.
+`--client-id/--client-secret` name one. `cloudmail account add icloud --email you@icloud.com` links
+iCloud Mail over IMAP and SMTP with an app-specific password (made at account.apple.com: Sign-In and
+Security → App-Specific Passwords): on a terminal it opens that page and asks for the password,
+otherwise pass it on stdin with `--password-stdin` (else `not_logged_in`). It is checked by signing in,
+then kept in `~/.config/cloudmail/icloud/<name>`, readable only by you. `--alias` adds an address you
+also send from (Hide My Email, a custom domain). `cloudmail account list --json` shows each account and
+whether it works.
 
-Once linked, their mail appears next to yours with `"account": "hey"` / `"account": "gmail"` on threads
+Once linked, their mail appears next to yours with `"account": "hey"` / `"gmail"` / `"icloud"` on threads
 and HEY's Screener senders (your worker's own mail has no `account` key). IDs are prefixed and go back
 to their account:
 
@@ -313,11 +321,16 @@ to their account:
     hey:<topic>/<entry>      a message        hey:<id>   an attachment or a Screener sender
     gmail:<thread>           a Gmail thread   gmail:<thread>/<message>   a message (also for `raw`)
     gmail:<message>:<part>   a Gmail attachment
+    icloud:t<root>           an iCloud Mail thread (grouped by Message-ID/References; <root> is the
+                             first message's Message-ID in base64url, so it survives archiving)
+    icloud:t<root>/<box>.<uidvalidity>.<uid>   a message (also for `raw`)
+    icloud:<box>.<uidvalidity>.<uid>#<n>       an iCloud Mail attachment
 
-Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's Inbox; `archive` = your Archive + HEY's Paper
-Trail + Gmail threads out of the Inbox (archiving a HEY thread moves it to Paper Trail, a Gmail thread
-loses its Inbox label; unarchive undoes either); `sent` = yours + Gmail's; `screener` = yours + HEY's
-(a sender waiting in both shows once; Gmail has no Screener, its mail goes straight to the Inbox);
+Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's and iCloud's Inboxes; `archive` = your Archive +
+HEY's Paper Trail + Gmail threads out of the Inbox + iCloud's Archive mailbox (archiving a HEY thread
+moves it to Paper Trail, a Gmail thread loses its Inbox label, an iCloud thread moves to Archive;
+unarchive undoes each); `sent` = yours + Gmail's + iCloud's; `screener` = yours + HEY's (a sender
+waiting in both shows once; Gmail and iCloud Mail have no Screener, their mail goes straight to the Inbox);
 `blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
 feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads its own search syntax).
 
@@ -330,12 +343,12 @@ feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads 
     cloudmail screener approve hey:5001              # only in HEY
 
 If your worker forwards to a linked address (or Gmail forwards into your worker), the account's copy of
-each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY copies by sender,
+each message is hidden (`meta.duplicates_hidden`): Gmail and iCloud copies by Message-ID, HEY copies by sender,
 subject and time. A linked account's failure never fails a command about your own mail: the rest is
 returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
 fails with `account_unauthorized` (exit 3: `cloudmail account login <name>` signs it in again in the
-browser), `account_unavailable` (exit 5: its CLI missing or failing, or Google
-unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
+browser, or for iCloud with a new app-specific password), `account_unavailable` (exit 5: its CLI
+missing or failing, or Google or iCloud unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
 and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.

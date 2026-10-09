@@ -275,7 +275,7 @@ fn sign_in_url(line: &str) -> Option<String> {
     line.split_whitespace().find(|w| w.starts_with("https://accounts.google.com/")).map(str::to_string)
 }
 
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     let program = nonblank(std::env::var(BROWSER_ENV).ok()).unwrap_or_else(|| if cfg!(target_os = "macos") { "open".into() } else { "xdg-open".into() });
     let _ = Command::new(program).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }

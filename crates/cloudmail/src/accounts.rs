@@ -1,4 +1,4 @@
-//! `cloudmail account`: link other mail accounts (HEY, Gmail) next to your worker. Opt-in;
+//! `cloudmail account`: link other mail accounts (HEY, Gmail, iCloud Mail) next to your worker. Opt-in;
 //! nothing changes for anyone who never runs `account add`.
 
 use serde_json::json;
@@ -6,12 +6,14 @@ use serde_json::json;
 use cloudmail_api::config::{self, AccountConfig};
 use cloudmail_api::gmail::{self, Gmail};
 use cloudmail_api::hey::Hey;
+use cloudmail_api::icloud::{self, Icloud};
 use cloudmail_api::provider::{self, KNOWN_PROVIDERS, Provider};
+use cloudmail_api::text::bare_email;
 use cloudmail_api::{AccountStatus, ErrorKind};
 
 use crate::Ctx;
 use crate::cli::AccountCommand;
-use crate::output::{Breadcrumb, CliError, CliResult, Response, crumb, dim, exit};
+use crate::output::{Breadcrumb, CliError, CliResult, Response, crumb, dim, exit, prompt};
 
 const HEY_INSTALL: &str = "install the hey CLI (https://github.com/basecamp/hey-cli, e.g. `mise use -g github:basecamp/hey-cli`), or pass --command <path>";
 
@@ -21,6 +23,9 @@ struct AddArgs {
     account: Option<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+    email: Option<String>,
+    aliases: Vec<String>,
+    password_stdin: bool,
     no_login: bool,
     login: bool,
 }
@@ -28,20 +33,26 @@ struct AddArgs {
 pub fn account(ctx: &Ctx, cmd: AccountCommand) -> CliResult {
     match cmd {
         AccountCommand::List => list(),
-        AccountCommand::Add { provider, name, command, account, client_id, client_secret, no_login, login } => {
-            add(ctx, &provider, name, AddArgs { command, account, client_id, client_secret, no_login, login })
+        AccountCommand::Add { provider, name, command, account, client_id, client_secret, email, aliases, password_stdin, no_login, login } => {
+            add(ctx, &provider, name, AddArgs { command, account, client_id, client_secret, email, aliases, password_stdin, no_login, login })
         }
-        AccountCommand::Login { name } => login(&name),
+        AccountCommand::Login { name, password_stdin } => login(ctx, &name, password_stdin),
         AccountCommand::Remove { name } => remove(&name),
     }
 }
 
-/// Signs an already linked account in again in the browser, then checks it answers.
-fn login(name: &str) -> CliResult {
+/// Signs an already linked account in again in the browser (iCloud: with a new app-specific
+/// password), then checks it answers.
+fn login(ctx: &Ctx, name: &str, password_stdin: bool) -> CliResult {
     let file = config::read_file(&config::path())?.unwrap_or_default();
     let Some(cfg) = file.accounts.get(name) else {
         return Err(CliError::not_found(format!("no linked account {name}")).hint("see `cloudmail account list`, or link one with `cloudmail account add`"));
     };
+    if cfg.provider(name) == "icloud" {
+        let addresses = sign_in_icloud(ctx, name, cfg, password_stdin, &format!("cloudmail account login {name}"))?;
+        let summary = format!("Signed in to iCloud Mail again ({})", addresses.join(", "));
+        return Ok(Response::new(json!({ "account": name, "addresses": addresses }), summary).crumbs(vec![crumb("inbox", "cloudmail inbox", "Your Inbox")]));
+    }
     let p = provider::open(name, cfg)?;
     eprintln!("Signing in to {} in your browser…", p.label());
     p.sign_in()?;
@@ -77,14 +88,18 @@ fn list() -> CliResult {
         human.push_str(&format!("\n{:<10} {} ({state}){addrs}\n           {}", s.name, s.label, dim(&s.detail)));
     }
     if statuses.is_empty() {
-        human.push_str(&format!("\n\n{}", dim("No linked accounts. `cloudmail account add gmail` or `cloudmail account add hey` shows that mail here too.")));
+        human.push_str(&format!("\n\n{}", dim("No linked accounts. `cloudmail account add gmail`, `… add icloud` or `… add hey` shows that mail here too.")));
     }
     let summary = match statuses.len() {
         0 => "No linked accounts".to_string(),
         n => format!("{n} linked account{}; {} signed in", if n == 1 { "" } else { "s" }, statuses.iter().filter(|s| s.ok).count()),
     };
     let ids = statuses.iter().map(|s| s.name.clone()).collect();
-    let mut crumbs = vec![crumb("add-gmail", "cloudmail account add gmail", "Link your Gmail account"), crumb("add-hey", "cloudmail account add hey", "Link your HEY account")];
+    let mut crumbs = vec![
+        crumb("add-gmail", "cloudmail account add gmail", "Link your Gmail account"),
+        crumb("add-icloud", "cloudmail account add icloud --email <you@icloud.com>", "Link your iCloud Mail account"),
+        crumb("add-hey", "cloudmail account add hey", "Link your HEY account"),
+    ];
     if !statuses.is_empty() {
         crumbs = vec![crumb("inbox", "cloudmail inbox", "Your Inbox with the linked accounts' merged in")];
         if statuses.iter().any(|s| s.provider == "hey") {
@@ -106,15 +121,35 @@ fn add(ctx: &Ctx, provider_name: &str, name: Option<String>, a: AddArgs) -> CliR
         return Err(CliError::usage(format!("\"{name}\" can't be an account name")).hint("use lowercase letters, digits and dashes (it prefixes the account's IDs)"));
     }
     let gmail = provider_name == "gmail";
-    if gmail && a.account.is_some() {
-        return Err(CliError::usage("--account picks one of HEY's linked accounts; for another Gmail account, add it under another --name"));
+    let icloud = provider_name == "icloud";
+    if provider_name != "hey" && a.account.is_some() {
+        return Err(CliError::usage(format!("--account picks one of HEY's linked accounts; for another {} account, add it under another --name", provider::account_label(&provider_name))));
     }
     if !gmail && a.client_id.is_some() {
         return Err(CliError::usage("--client-id and --client-secret are for Gmail"));
     }
-    let cfg = AccountConfig { provider: (name != provider_name).then(|| provider_name.clone()), command: a.command.clone(), account: a.account.clone(), client_id: a.client_id.clone(), client_secret: a.client_secret.clone() };
+    if icloud && a.command.is_some() {
+        return Err(CliError::usage("--command is for HEY and Gmail; iCloud Mail needs no other program"));
+    }
+    if !icloud && (a.email.is_some() || !a.aliases.is_empty() || a.password_stdin) {
+        return Err(CliError::usage("--email, --alias and --password-stdin are for iCloud Mail"));
+    }
+    let mut cfg = AccountConfig {
+        provider: (name != provider_name).then(|| provider_name.clone()),
+        command: a.command.clone(),
+        account: a.account.clone(),
+        client_id: a.client_id.clone(),
+        client_secret: a.client_secret.clone(),
+        ..Default::default()
+    };
     let can_login = !a.no_login && (a.login || ctx.interactive());
-    let (label, version, addresses, extra) = if gmail { link_gmail(&name, &cfg, can_login)? } else { link_hey(&cfg, &name, &provider_name, can_login)? };
+    let (label, version, addresses, extra) = if gmail {
+        link_gmail(&name, &cfg, can_login)?
+    } else if icloud {
+        link_icloud(ctx, &name, &mut cfg, &a)?
+    } else {
+        link_hey(&cfg, &name, &provider_name, can_login)?
+    };
 
     let path = config::path();
     let mut file = config::read_file(&path)?.unwrap_or_default();
@@ -133,8 +168,8 @@ fn add(ctx: &Ctx, provider_name: &str, name: Option<String>, a: AddArgs) -> CliR
         if replaced { "Updated" } else { "Linked" },
         if addresses.is_empty() { String::new() } else { format!(" ({})", addresses.join(", ")) }
     );
-    if gmail {
-        summary.push_str(". Gmail has no Screener, so its mail goes straight to your Inbox");
+    if gmail || icloud {
+        summary.push_str(&format!(". {label} has no Screener, so its mail goes straight to your Inbox"));
     }
     if let Some(f) = &forwarding {
         summary.push_str(&format!(". Your worker forwards to {f}, so {label}'s copies of that mail are hidden"));
@@ -143,10 +178,14 @@ fn add(ctx: &Ctx, provider_name: &str, name: Option<String>, a: AddArgs) -> CliR
     for (k, v) in extra {
         data[k] = v;
     }
-    data[if gmail { "gws_version" } else { "hey_version" }] = json!(version);
+    if !icloud {
+        data[if gmail { "gws_version" } else { "hey_version" }] = json!(version);
+    }
     let mut crumbs: Vec<Breadcrumb> = vec![crumb("inbox", "cloudmail inbox", &format!("Your Inbox with {label}'s merged in"))];
     if gmail {
         crumbs.push(crumb("search", "cloudmail search <words>", "Search your mail and Gmail together (Gmail reads its own search syntax)"));
+    } else if icloud {
+        crumbs.push(crumb("search", "cloudmail search <words>", "Search your mail and iCloud Mail together"));
     } else {
         crumbs.push(crumb("screener", "cloudmail screener", "Both Screeners"));
         crumbs.push(crumb("feed", "cloudmail threads list --folder feed", "HEY's The Feed (also paper-trail, set-aside, reply-later)"));
@@ -207,6 +246,51 @@ fn link_gmail(name: &str, cfg: &AccountConfig, can_login: bool) -> CliResult<Lin
     Ok(("Gmail", version, addresses, vec![("gws_dir", json!(g.dir()))]))
 }
 
+/// Checks the iCloud address, gets an app-specific password (stdin, or asked at the terminal after
+/// opening the page that makes one), signs in with it and keeps it.
+fn link_icloud(ctx: &Ctx, name: &str, cfg: &mut AccountConfig, a: &AddArgs) -> CliResult<Linked> {
+    let email = match a.email.as_deref().map(bare_email).filter(|e| !e.is_empty()) {
+        Some(e) => e,
+        None if ctx.interactive() && !a.password_stdin => bare_email(&prompt("Your iCloud Mail address (…@icloud.com, …@me.com or …@mac.com):")?),
+        None => return Err(CliError::usage("which iCloud Mail address? Pass --email you@icloud.com")),
+    };
+    if !icloud::is_icloud_address(&email) {
+        return Err(CliError::usage(format!("{email} isn't an iCloud Mail address"))
+            .hint("sign in with your …@icloud.com (or @me.com, @mac.com) address, and add the addresses you also send from (Hide My Email, a custom domain) with --alias"));
+    }
+    cfg.email = Some(email);
+    cfg.aliases = a.aliases.iter().map(|x| bare_email(x)).filter(|x| x.contains('@')).collect();
+    let addresses = sign_in_icloud(ctx, name, cfg, a.password_stdin, &format!("cloudmail account add icloud --email {} --password-stdin", cfg.email.as_deref().unwrap_or_default()))?;
+    Ok(("iCloud Mail", String::new(), addresses, vec![("password_file", json!(icloud::password_path(name)))]))
+}
+
+/// Reads an app-specific password, checks it signs in, and keeps it; the account's addresses.
+fn sign_in_icloud(ctx: &Ctx, name: &str, cfg: &AccountConfig, password_stdin: bool, retry: &str) -> CliResult<Vec<String>> {
+    let password = if password_stdin {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim().to_string()
+    } else if ctx.interactive() {
+        eprintln!("iCloud Mail signs in with an app-specific password, not your Apple Account password.");
+        eprintln!("Opening {} : sign in, then Sign-In and Security → App-Specific Passwords → +, and name it Cloudmail.", icloud::PASSWORD_URL);
+        icloud::open_password_page();
+        rpassword::prompt_password("App-specific password (xxxx-xxxx-xxxx-xxxx): ")?.trim().to_string()
+    } else {
+        return Err(CliError::new("not_logged_in", exit::AUTH, "iCloud Mail needs an app-specific password")
+            .hint(format!("make one at {} (Sign-In and Security → App-Specific Passwords), then pipe it to `{retry}`, or run this at a terminal", icloud::PASSWORD_URL)));
+    };
+    if password.is_empty() {
+        return Err(CliError::usage("no app-specific password was given"));
+    }
+    let addresses = Icloud::new(name, cfg).with_password(&password).verify().map_err(|e| {
+        let refused = e.kind == ErrorKind::AccountAuth;
+        let err: CliError = e.into();
+        if refused { err.hint(format!("check the address, and make a new app-specific password at {} if this one was revoked", icloud::PASSWORD_URL)) } else { err }
+    })?;
+    icloud::save_password(name, &password).map_err(|e| CliError::generic(format!("signed in, but could not save the password in {}: {e}", icloud::password_path(name).display())))?;
+    Ok(addresses)
+}
+
 fn remove(name: &str) -> CliResult {
     let path = config::path();
     let mut file = config::read_file(&path)?.unwrap_or_default();
@@ -223,6 +307,15 @@ fn remove(name: &str) -> CliResult {
         } else {
             format!("Unlinked {name}; nothing changed in Gmail itself")
         };
+        return Ok(Response::new(json!({ "account": name, "removed": true, "signed_out": removed }), summary));
+    }
+    if cfg.provider(name) == "icloud" {
+        let removed = icloud::forget_password(name).map_err(|e| CliError::generic(format!("unlinked {name}, but could not remove {}: {e}", icloud::password_path(name).display())))?;
+        let summary = format!(
+            "Unlinked {name}{}; nothing changed in iCloud itself. To withdraw the password too, revoke it at {}",
+            if removed { " and removed its saved app-specific password" } else { "" },
+            icloud::PASSWORD_URL
+        );
         return Ok(Response::new(json!({ "account": name, "removed": true, "signed_out": removed }), summary));
     }
     Ok(Response::new(json!({ "account": name, "removed": true }), format!("Unlinked {name}; nothing changed in the account itself, and its CLI is still signed in")))

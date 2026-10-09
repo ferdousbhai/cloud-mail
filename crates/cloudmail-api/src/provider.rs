@@ -1,4 +1,4 @@
-//! Mail providers: your Cloudmail worker, and linked accounts (HEY, Gmail).
+//! Mail providers: your Cloudmail worker, and linked accounts (HEY, Gmail, iCloud Mail).
 //!
 //! A provider speaks in cloudmail's own types. A linked account prefixes every ID it hands out
 //! with its name (`hey:…`), so any later action on that ID goes back to it; the worker's own IDs
@@ -191,8 +191,11 @@ impl Provider for Client {
 }
 
 /// Providers cloudmail knows how to link, for `account add` and its help.
-pub const KNOWN_PROVIDERS: &[(&str, &str)] =
-    &[("hey", "HEY (hey.com), through the official `hey` CLI"), ("gmail", "Gmail, through Google's Workspace CLI `gws`")];
+pub const KNOWN_PROVIDERS: &[(&str, &str)] = &[
+    ("hey", "HEY (hey.com), through the official `hey` CLI"),
+    ("gmail", "Gmail, through Google's Workspace CLI `gws`"),
+    ("icloud", "iCloud Mail, over IMAP and SMTP with an app-specific password"),
+];
 
 /// How an account is named on screen: its provider's name for the usual account names, else the
 /// name it was given.
@@ -200,6 +203,7 @@ pub fn account_label(account: &str) -> String {
     match account {
         "hey" => "HEY".into(),
         "gmail" => "Gmail".into(),
+        "icloud" => "iCloud".into(),
         other => other.to_string(),
     }
 }
@@ -209,6 +213,7 @@ pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
     match cfg.provider(name) {
         "hey" => Ok(Arc::new(crate::hey::Hey::new(name, cfg))),
         "gmail" => Ok(Arc::new(crate::gmail::Gmail::new(name, cfg))),
+        "icloud" => Ok(Arc::new(crate::icloud::Icloud::new(name, cfg))),
         other => Err(Error::new(
             ErrorKind::Config,
             format!("account {name}: unknown provider \"{other}\" (known: {})", KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")),

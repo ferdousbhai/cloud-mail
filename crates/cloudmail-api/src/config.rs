@@ -33,6 +33,13 @@ pub struct AccountConfig {
     pub client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
+    /// iCloud: the iCloud Mail address (…@icloud.com) that signs in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// iCloud: more addresses you send from (Hide My Email, custom-domain addresses), which IMAP
+    /// can't list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 impl AccountConfig {
@@ -97,7 +104,7 @@ pub fn save(file: &FileConfig) -> Result<PathBuf> {
 }
 
 /// Writes a file readable only by the current user (it holds the API token).
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);

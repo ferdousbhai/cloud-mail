@@ -14,6 +14,9 @@ pub const WORKER_LIMIT: u64 = 3584 * 1024;
 pub const GMAIL_LIMIT: u64 = 25 * 1024 * 1024;
 /// HEY, like most mail services, takes 25 MB per message.
 pub const HEY_LIMIT: u64 = 25 * 1024 * 1024;
+/// iCloud Mail takes messages of up to 20 MB once encoded, and base64 makes files a third bigger,
+/// so about 14 MiB of files fit; this leaves the body room.
+pub const ICLOUD_LIMIT: u64 = 14 * 1024 * 1024;
 
 const TYPES: &[(&str, &str)] = &[
     ("pdf", "application/pdf"),

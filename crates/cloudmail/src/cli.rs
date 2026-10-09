@@ -88,7 +88,7 @@ pub enum Command {
     /// View or change the local config file
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Link other mail accounts (HEY, Gmail) so their mail shows next to yours; opt-in
+    /// Link other mail accounts (HEY, Gmail, iCloud Mail) so their mail shows next to yours; opt-in
     #[command(subcommand)]
     Account(AccountCommand),
 
@@ -186,7 +186,7 @@ pub struct SearchArgs {
 pub enum ThreadCommand {
     /// Show every message in a thread (does not mark it read unless --mark-read)
     Read {
-        /// Thread ID (t_…, or hey:… / gmail:… for a linked account)
+        /// Thread ID (t_…, or hey:… / gmail:… / icloud:… for a linked account)
         id: String,
         /// Output the original HTML bodies instead of plain text
         #[arg(long)]
@@ -307,7 +307,7 @@ pub struct ComposeArgs {
 
 #[derive(Args, Debug)]
 pub struct ReplyArgs {
-    /// Thread ID (t_…, or hey:… / gmail:… to reply through that account)
+    /// Thread ID (t_…, or hey:… / gmail:… / icloud:… to reply through that account)
     pub thread_id: String,
     /// Reply to everyone on the latest message (your own addresses are left out)
     #[arg(long, short = 'a')]
@@ -337,7 +337,7 @@ pub enum AttachmentCommand {
     },
     /// Download an attachment
     Save {
-        /// Attachment ID (a_…, hey:… or gmail:…)
+        /// Attachment ID (a_…, hey:…, gmail:… or icloud:…)
         id: String,
         /// Output file or directory (- for stdout); defaults to the attachment's name in the current directory
         #[arg(long, short = 'o')]
@@ -525,9 +525,9 @@ pub struct SetupArgs {
 pub enum AccountCommand {
     /// Show your worker and every linked account, with whether each is signed in
     List,
-    /// Link an account: `cloudmail account add hey` or `cloudmail account add gmail` (one browser sign-in if needed)
+    /// Link an account: `cloudmail account add hey`, `… add gmail` (one browser sign-in if needed) or `… add icloud` (an app-specific password)
     Add {
-        /// Provider to link (hey, gmail)
+        /// Provider to link (hey, gmail, icloud)
         provider: String,
         /// Name for the account, which prefixes its IDs (default: the provider)
         #[arg(long)]
@@ -544,6 +544,15 @@ pub enum AccountCommand {
         /// Gmail: the secret of --client-id
         #[arg(long, value_name = "SECRET", requires = "client_id")]
         client_secret: Option<String>,
+        /// iCloud: your iCloud Mail address (…@icloud.com, …@me.com or …@mac.com), which signs in
+        #[arg(long, value_name = "ADDRESS")]
+        email: Option<String>,
+        /// iCloud: another address you send from (Hide My Email, a custom domain); repeat for more
+        #[arg(long = "alias", value_name = "ADDRESS")]
+        aliases: Vec<String>,
+        /// iCloud: read the app-specific password from stdin instead of asking at the terminal
+        #[arg(long)]
+        password_stdin: bool,
         /// Don't start a browser sign-in even on a terminal; fail if not signed in
         #[arg(long, conflicts_with = "login")]
         no_login: bool,
@@ -551,12 +560,15 @@ pub enum AccountCommand {
         #[arg(long)]
         login: bool,
     },
-    /// Sign a linked account in again, when its sign-in expired or was revoked (one browser sign-in)
+    /// Sign a linked account in again, when its sign-in expired or was revoked (one browser sign-in; iCloud: a new app-specific password)
     Login {
         /// Account name (see `cloudmail account list`)
         name: String,
+        /// iCloud: read the new app-specific password from stdin instead of asking at the terminal
+        #[arg(long)]
+        password_stdin: bool,
     },
-    /// Unlink an account (nothing changes in the account itself, and its CLI stays signed in)
+    /// Unlink an account (nothing changes in the account itself; Gmail's sign-in and iCloud's saved password are removed)
     Remove {
         /// Account name (see `cloudmail account list`)
         name: String,
