@@ -14,13 +14,12 @@ pub const APP_ID: &str = "com.ferdousbhai.Cloudmail";
 pub static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() -> glib::ExitCode {
-    let app = gtk::Application::builder()
-        .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_OPEN)
-        .build();
+    let app = gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
 
     let main_ui: Rc<OnceCell<Rc<ui::Ui>>> = Rc::default();
-    let ensure = move |app: &gtk::Application| main_ui.get_or_init(|| ui::Ui::new(app, config::load().map_err(|e| setup_hint(&e)))).clone();
+    let ensure = move |app: &gtk::Application| {
+        main_ui.get_or_init(|| ui::Ui::new(app, config::load().map_err(|e| setup_hint(&e)))).clone()
+    };
 
     app.connect_activate({
         let ensure = ensure.clone();

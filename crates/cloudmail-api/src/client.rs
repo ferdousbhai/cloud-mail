@@ -47,11 +47,7 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(60)))
             .build()
             .into();
-        Self {
-            base: config.api_url.trim_end_matches('/').to_string(),
-            token: config.api_token.clone(),
-            agent,
-        }
+        Self { base: config.api_url.trim_end_matches('/').to_string(), token: config.api_token.clone(), agent }
     }
 
     pub fn base_url(&self) -> &str {
@@ -109,7 +105,11 @@ impl Client {
         Self::finish(self.agent.get(self.url(path)).header("Authorization", self.auth()).call())
     }
 
-    fn send_json<T: DeserializeOwned>(&self, req: ureq::RequestBuilder<ureq::typestate::WithBody>, body: &impl Serialize) -> Result<T> {
+    fn send_json<T: DeserializeOwned>(
+        &self,
+        req: ureq::RequestBuilder<ureq::typestate::WithBody>,
+        body: &impl Serialize,
+    ) -> Result<T> {
         Self::decode(Self::finish(req.header("Authorization", self.auth()).send_json(body))?)
     }
 
@@ -137,8 +137,20 @@ impl Client {
         self.get("/api/counts")
     }
 
-    pub fn threads(&self, folder: &str, query: Option<&str>, before: Option<i64>, limit: u32) -> Result<Vec<ThreadSummary>> {
-        self.list_threads(&ThreadQuery { folder: folder.to_string(), q: query.map(str::to_string), before, limit, ..Default::default() })
+    pub fn threads(
+        &self,
+        folder: &str,
+        query: Option<&str>,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<ThreadSummary>> {
+        self.list_threads(&ThreadQuery {
+            folder: folder.to_string(),
+            q: query.map(str::to_string),
+            before,
+            limit,
+            ..Default::default()
+        })
     }
 
     pub fn list_threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>> {
@@ -203,11 +215,8 @@ impl Client {
             #[serde(default)]
             moved: i64,
         }
-        self.post::<Decided>(
-            &format!("/api/senders/{}", Self::enc(email)),
-            &serde_json::json!({ "status": status }),
-        )
-        .map(|d| d.moved)
+        self.post::<Decided>(&format!("/api/senders/{}", Self::enc(email)), &serde_json::json!({ "status": status }))
+            .map(|d| d.moved)
     }
 
     /// The decisions recorded for these addresses (by lowercased address): "approved", "blocked"
@@ -239,7 +248,12 @@ impl Client {
         let mut changed = 0;
         for chunk in senders.chunks(1000) {
             let list: Vec<_> = chunk.iter().map(|a| serde_json::json!({ "email": a.email, "name": a.name })).collect();
-            changed += self.post::<Changed>("/api/senders/batch", &serde_json::json!({ "senders": list, "status": status, "only_undecided": only_undecided }))?.changed;
+            changed += self
+                .post::<Changed>(
+                    "/api/senders/batch",
+                    &serde_json::json!({ "senders": list, "status": status, "only_undecided": only_undecided }),
+                )?
+                .changed;
         }
         Ok(changed)
     }

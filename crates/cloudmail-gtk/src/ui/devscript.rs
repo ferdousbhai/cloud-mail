@@ -24,7 +24,9 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
         eprintln!("script: {step}");
         match step.as_str() {
             "quit" => {
-                if let Some(a) = ui_rc.window.application() { a.quit() }
+                if let Some(a) = ui_rc.window.application() {
+                    a.quit()
+                }
                 return;
             }
             "enter" => {
@@ -42,7 +44,11 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                 eprintln!("script: dropped {path}: {}", super::compose::drop_on_open(path));
             }
             s if let Some(i) = s.strip_prefix("unattach:").and_then(|i| i.parse().ok()) => {
-                eprintln!("script: removed chip {i}: {}; now {:?}", super::compose::unattach_on_open(i), super::compose::open_state());
+                eprintln!(
+                    "script: removed chip {i}: {}; now {:?}",
+                    super::compose::unattach_on_open(i),
+                    super::compose::open_state()
+                );
             }
             "closecompose" => {
                 if let Some(w) = compose_window() {

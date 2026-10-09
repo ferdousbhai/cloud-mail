@@ -1,4 +1,7 @@
-pub use cloudmail_api::text::{format_addresses, html_to_text, human_size, long_time, quote, reply_subject, short_time, split_addresses, unused_path};
+pub use cloudmail_api::text::{
+    format_addresses, html_to_text, human_size, long_time, quote, reply_subject, short_time, split_addresses,
+    unused_path,
+};
 use gtk::{gio, glib};
 
 /// Runs `work` on a worker thread and hands its result to `done` on the GTK main loop.
@@ -31,11 +34,7 @@ pub fn parse_mailto(uri: &str) -> Draft {
     // GIO hands us "mailto:///a@b.com" for URIs passed on the command line.
     let rest = uri.strip_prefix("mailto:").unwrap_or(uri).trim_start_matches('/');
     let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
-    let decode = |s: &str| {
-        urlencoding::decode(s)
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|_| s.to_string())
-    };
+    let decode = |s: &str| urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string());
     let mut draft = Draft { to: decode(addr), ..Default::default() };
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -80,10 +79,7 @@ pub fn subject_or_placeholder(subject: &str) -> &str {
 }
 
 pub fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 #[cfg(test)]

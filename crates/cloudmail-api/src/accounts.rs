@@ -36,7 +36,10 @@ impl From<Error> for LinkError {
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkError::Usage { message, .. } | LinkError::NotInstalled { message, .. } | LinkError::NotSignedIn { message, .. } | LinkError::NotConfigured(message) => f.write_str(message),
+            LinkError::Usage { message, .. }
+            | LinkError::NotInstalled { message, .. }
+            | LinkError::NotSignedIn { message, .. }
+            | LinkError::NotConfigured(message) => f.write_str(message),
             LinkError::Failed(e) => f.write_str(&e.message),
         }
     }
@@ -90,7 +93,8 @@ pub fn account_config(name: &str) -> std::result::Result<Option<AccountConfig>, 
 
 /// Opens a linked account by name.
 pub fn open(name: &str) -> std::result::Result<Arc<dyn Provider>, Error> {
-    let cfg = account_config(name)?.ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no linked account {name}")))?;
+    let cfg =
+        account_config(name)?.ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no linked account {name}")))?;
     provider::open(name, &cfg)
 }
 
@@ -104,11 +108,20 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     }
     let name = req.name.clone().unwrap_or_else(|| provider_name.clone());
     if !provider::valid_name(&name) {
-        return Err(usage(format!("\"{name}\" can't be an account name"), Some("use lowercase letters, digits and dashes (it prefixes the account's IDs)")));
+        return Err(usage(
+            format!("\"{name}\" can't be an account name"),
+            Some("use lowercase letters, digits and dashes (it prefixes the account's IDs)"),
+        ));
     }
     let (hey, gmail, icloud) = (provider_name == "hey", provider_name == "gmail", provider_name == "icloud");
     if !hey && req.account.is_some() {
-        return Err(usage(format!("--account picks one of HEY's linked accounts; for another {} account, add it under another --name", provider::account_label(&provider_name)), None));
+        return Err(usage(
+            format!(
+                "--account picks one of HEY's linked accounts; for another {} account, add it under another --name",
+                provider::account_label(&provider_name)
+            ),
+            None,
+        ));
     }
     if !gmail && req.client_id.is_some() {
         return Err(usage("--client-id and --client-secret are for Gmail", None));
@@ -134,7 +147,11 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     };
 
     if let Some(secret) = cfg.client_secret.take().filter(|s| !s.trim().is_empty()) {
-        crate::keyring::set(&config::client_secret_name(&name), &format!("Cloudmail {name} OAuth client secret"), secret.trim())?;
+        crate::keyring::set(
+            &config::client_secret_name(&name),
+            &format!("Cloudmail {name} OAuth client secret"),
+            secret.trim(),
+        )?;
     }
     let path = config::path();
     let mut file = config::read_file(&path)?.unwrap_or_default();
@@ -151,20 +168,33 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     Ok(Linked { name, provider: provider_name, label, addresses, version, gws_dir, replaced, config_path, screened_in })
 }
 
-fn link_hey(name: &str, cfg: &AccountConfig, provider_name: &str, can_sign_in: bool, notice: &dyn Fn(&str)) -> std::result::Result<(String, Vec<String>), LinkError> {
+fn link_hey(
+    name: &str,
+    cfg: &AccountConfig,
+    provider_name: &str,
+    can_sign_in: bool,
+    notice: &dyn Fn(&str),
+) -> std::result::Result<(String, Vec<String>), LinkError> {
     let hey = Hey::new(name, cfg);
-    let version = hey.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: HEY_INSTALL.into() })?;
+    let version =
+        hey.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: HEY_INSTALL.into() })?;
     if !hey.signed_in()? {
         if !can_sign_in {
             return Err(LinkError::NotSignedIn {
                 message: "HEY isn't signed in on this computer".into(),
-                hint: format!("run `{} auth login` (one browser sign-in), then `cloudmail account add {provider_name}` again", hey.command()),
+                hint: format!(
+                    "run `{} auth login` (one browser sign-in), then `cloudmail account add {provider_name}` again",
+                    hey.command()
+                ),
             });
         }
         notice(&format!("Signing in to HEY in your browser (`{} auth login`)…", hey.command()));
         hey.login()?;
         if !hey.signed_in()? {
-            return Err(LinkError::NotSignedIn { message: "HEY still isn't signed in".into(), hint: format!("run `{} auth login` and try again", hey.command()) });
+            return Err(LinkError::NotSignedIn {
+                message: "HEY still isn't signed in".into(),
+                hint: format!("run `{} auth login` and try again", hey.command()),
+            });
         }
     }
     Ok((version, hey.identities().unwrap_or_default().into_iter().map(|a| a.email).collect()))
@@ -172,18 +202,29 @@ fn link_hey(name: &str, cfg: &AccountConfig, provider_name: &str, can_sign_in: b
 
 /// Checks gws, signs in when needed (or when the saved sign-in no longer works) and reads the
 /// account's addresses.
-fn link_gmail(name: &str, cfg: &AccountConfig, can_sign_in: bool, notice: &dyn Fn(&str)) -> std::result::Result<(String, Vec<String>, PathBuf), LinkError> {
+fn link_gmail(
+    name: &str,
+    cfg: &AccountConfig,
+    can_sign_in: bool,
+    notice: &dyn Fn(&str),
+) -> std::result::Result<(String, Vec<String>, PathBuf), LinkError> {
     let g = Gmail::new(name, cfg);
-    let version = g.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: gmail::INSTALL_HINT.into() })?;
+    let version =
+        g.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: gmail::INSTALL_HINT.into() })?;
     let sign_in = |why: &str| -> std::result::Result<(), LinkError> {
         if !g.client_configured() {
             return Err(LinkError::NotConfigured(Gmail::no_client_error().message));
         }
         if !can_sign_in {
-            return Err(LinkError::NotSignedIn { message: format!("Gmail {why}"), hint: format!("run `cloudmail account add {name}` at a terminal: one Google sign-in in your browser") });
+            return Err(LinkError::NotSignedIn {
+                message: format!("Gmail {why}"),
+                hint: format!("run `cloudmail account add {name}` at a terminal: one Google sign-in in your browser"),
+            });
         }
         notice("Signing in to Google in your browser, for Gmail only (read, label, archive and send).");
-        notice("While Cloudmail's Google app is unverified, Google says so: choose Advanced, then \"Go to Cloudmail\".");
+        notice(
+            "While Cloudmail's Google app is unverified, Google says so: choose Advanced, then \"Go to Cloudmail\".",
+        );
         g.login()?;
         Ok(())
     };
@@ -203,20 +244,33 @@ fn link_gmail(name: &str, cfg: &AccountConfig, can_sign_in: bool, notice: &dyn F
 
 /// Checks icloud-session is there and signed in (opening its sign-in window when allowed), then
 /// reads the account's addresses from Mail.
-fn link_icloud(name: &str, cfg: &AccountConfig, can_sign_in: bool, notice: &dyn Fn(&str)) -> std::result::Result<Vec<String>, LinkError> {
+fn link_icloud(
+    name: &str,
+    cfg: &AccountConfig,
+    can_sign_in: bool,
+    notice: &dyn Fn(&str),
+) -> std::result::Result<Vec<String>, LinkError> {
     let ic = Icloud::new(name, cfg);
-    let status = ic.session().status().map_err(|e| LinkError::NotInstalled { message: e.message, hint: ICLOUD_SESSION_INSTALL.into() })?;
+    let status = ic
+        .session()
+        .status()
+        .map_err(|e| LinkError::NotInstalled { message: e.message, hint: ICLOUD_SESSION_INSTALL.into() })?;
     if !status.signed_in {
         if !can_sign_in {
             return Err(LinkError::NotSignedIn {
                 message: "iCloud isn't signed in on this computer".into(),
-                hint: format!("run `cloudmail account add {name}` at a terminal (it opens icloud-session's sign-in window), or `icloud-session sign-in`"),
+                hint: format!(
+                    "run `cloudmail account add {name}` at a terminal (it opens icloud-session's sign-in window), or `icloud-session sign-in`"
+                ),
             });
         }
         notice("Opening icloud-session's sign-in window: sign in to iCloud there.");
         ic.session().sign_in()?;
         if !session::wait_for_sign_in(ic.session(), SIGN_IN_TIMEOUT)? {
-            return Err(LinkError::NotSignedIn { message: "iCloud still isn't signed in".into(), hint: "finish the sign-in in icloud-session's window, then try again".into() });
+            return Err(LinkError::NotSignedIn {
+                message: "iCloud still isn't signed in".into(),
+                hint: "finish the sign-in in icloud-session's window, then try again".into(),
+            });
         }
     }
     Ok(ic.identities()?.into_iter().map(|a| a.email).collect())
@@ -229,7 +283,10 @@ pub fn sign_in(name: &str) -> std::result::Result<AccountStatus, LinkError> {
     p.sign_in()?;
     let status = p.status();
     if !status.ok {
-        return Err(LinkError::NotSignedIn { message: format!("{} still isn't signed in: {}", p.label(), status.detail), hint: format!("try `cloudmail account login {name}` again") });
+        return Err(LinkError::NotSignedIn {
+            message: format!("{} still isn't signed in: {}", p.label(), status.detail),
+            hint: format!("try `cloudmail account login {name}` again"),
+        });
     }
     Ok(status)
 }
@@ -248,7 +305,10 @@ pub struct Unlinked {
 pub fn unlink(name: &str) -> std::result::Result<Unlinked, Error> {
     let path = config::path();
     let mut file = config::read_file(&path)?.unwrap_or_default();
-    let cfg = file.accounts.remove(name).ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no linked account {name}")))?;
+    let cfg = file
+        .accounts
+        .remove(name)
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no linked account {name}")))?;
     config::save(&file)?;
     if cfg.client_id.is_some() {
         crate::keyring::delete(&config::client_secret_name(name))?;
@@ -256,7 +316,9 @@ pub fn unlink(name: &str) -> std::result::Result<Unlinked, Error> {
     let provider = cfg.provider(name).to_string();
     if provider == "gmail" {
         let g = Gmail::new(name, &cfg);
-        let removed = g.forget().map_err(|e| Error::new(ErrorKind::Config, format!("unlinked {name}, but could not remove {}: {e}", g.dir().display())))?;
+        let removed = g.forget().map_err(|e| {
+            Error::new(ErrorKind::Config, format!("unlinked {name}, but could not remove {}: {e}", g.dir().display()))
+        })?;
         return Ok(Unlinked { provider, signed_out: Some(removed), gws_dir: Some(g.dir().to_path_buf()) });
     }
     Ok(Unlinked { provider, signed_out: None, gws_dir: None })

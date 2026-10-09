@@ -1,11 +1,11 @@
 //! End-to-end tests: the real `cloudmail` binary against an in-process mock worker.
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 mod support;
@@ -43,7 +43,8 @@ fn mock(handler: impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + '
                         return;
                     }
                     let mut parts = line.split_whitespace();
-                    let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+                    let (method, path) =
+                        (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
                     let (mut len, mut auth) = (0usize, String::new());
                     loop {
                         let mut h = String::new();
@@ -115,7 +116,12 @@ fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
     match (req.method.as_str(), p) {
         // Every linked account's sender is approved, unless a test decides otherwise.
         ("POST", "/api/senders/lookup") => {
-            let all: Vec<Value> = req.body["emails"].as_array().into_iter().flatten().map(|e| json!({ "email": e, "status": "approved" })).collect();
+            let all: Vec<Value> = req.body["emails"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| json!({ "email": e, "status": "approved" }))
+                .collect();
             ok(json!({ "senders": all }))
         }
         ("POST", "/api/senders/batch") => ok(json!({ "ok": true, "changed": 0 })),
@@ -136,14 +142,20 @@ fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
             "identities": [{ "name": "Me", "email": "hi@example.com" }, { "name": "Support", "email": "support@example.org" }],
             "default": { "name": "Me", "email": "hi@example.com" }
         })),
-        ("GET", "/api/screener") => ok(json!({ "senders": [{ "email": "new@y.com", "name": "New", "thread_count": 2, "last_subject": "Hello", "last_at": 5 }] })),
-        ("GET", "/api/mailboxes") => ok(json!({ "mailboxes": [{ "email": "hi@example.com", "name": "Me", "screen": true, "position": 0 }] })),
+        ("GET", "/api/screener") => ok(
+            json!({ "senders": [{ "email": "new@y.com", "name": "New", "thread_count": 2, "last_subject": "Hello", "last_at": 5 }] }),
+        ),
+        ("GET", "/api/mailboxes") => {
+            ok(json!({ "mailboxes": [{ "email": "hi@example.com", "name": "Me", "screen": true, "position": 0 }] }))
+        }
         ("GET", "/api/settings") => ok(json!({ "settings": { "forward_to": "" } })),
         ("GET", "/api/attachments/a_1") => (200, b"%PDF".to_vec(), "application/pdf"),
         ("POST", "/api/threads/t_1/move") | ("POST", "/api/threads/t_1/read") => ok(json!({ "ok": true })),
         ("POST", "/api/senders/new%40y.com") => ok(json!({ "ok": true, "moved": 2 })),
         ("POST", "/api/send") => ok(json!({ "ok": true, "thread_id": "t_1", "message": null })),
-        ("PUT", "/api/mailboxes/support%40x.com") => ok(json!({ "ok": true, "mailbox": { "email": "support@x.com", "name": "X", "screen": false, "position": 1 } })),
+        ("PUT", "/api/mailboxes/support%40x.com") => ok(
+            json!({ "ok": true, "mailbox": { "email": "support@x.com", "name": "X", "screen": false, "position": 1 } }),
+        ),
         ("PATCH", "/api/settings") => ok(json!({ "ok": true, "settings": { "forward_to": req.body["forward_to"] } })),
         _ => (404, br#"{"error":"not found"}"#.to_vec(), "application/json"),
     }
@@ -190,7 +202,9 @@ fn cloudmail_env(m: &Mock, args: &[&str], stdin: Option<&str>, env: &[(&str, Opt
 }
 
 fn json_out(o: &Output) -> Value {
-    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| {
+        panic!("not JSON ({e}): {}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    })
 }
 
 fn requests(m: &Mock) -> Vec<Req> {
@@ -290,7 +304,8 @@ fn reply_uses_receiving_mailbox_and_threads() {
 #[test]
 fn compose_from_stdin_and_mailbox_settings() {
     let m = mock(default_handler);
-    let o = cloudmail(&m, &["compose", "--to", "a@b.com, \"Last, First\" <c@d.com>", "--subject", "Hi"], Some("Body\n"));
+    let o =
+        cloudmail(&m, &["compose", "--to", "a@b.com, \"Last, First\" <c@d.com>", "--subject", "Hi"], Some("Body\n"));
     assert!(o.status.success());
     let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
     assert_eq!(sent.body["to"], json!(["a@b.com", "\"Last, First\" <c@d.com>"]));
@@ -311,7 +326,8 @@ fn watch_streams_jsonl_from_newest_activity() {
     let m = mock(default_handler);
     let o = cloudmail(&m, &["watch", "--interval", "0", "--max-polls", "2"], None);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let lines: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let lines: Vec<Value> =
+        String::from_utf8_lossy(&o.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0]["event"], "thread");
     assert_eq!(lines[0]["thread"]["id"], "t_new");
@@ -340,9 +356,13 @@ fn watch_pages_back_through_a_burst_larger_than_one_page() {
     // 250 threads changed after `since`; the worker returns at most `limit` per request, newest first.
     let m = mock(|req: &Req| {
         let q = |k: &str| {
-            req.path.split(['?', '&']).find_map(|kv| kv.strip_prefix(&format!("{k}="))).and_then(|v| v.parse::<i64>().ok())
+            req.path
+                .split(['?', '&'])
+                .find_map(|kv| kv.strip_prefix(&format!("{k}=")))
+                .and_then(|v| v.parse::<i64>().ok())
         };
-        let (since, before, limit) = (q("since").unwrap_or(0), q("before").unwrap_or(i64::MAX), q("limit").unwrap_or(50));
+        let (since, before, limit) =
+            (q("since").unwrap_or(0), q("before").unwrap_or(i64::MAX), q("limit").unwrap_or(50));
         let threads: Vec<Value> = (1..=250i64)
             .rev()
             .filter(|at| *at > since && *at < before)
@@ -389,7 +409,12 @@ fn errors_have_codes_and_exit_statuses() {
     assert_eq!(json_out(&o)["error"]["code"], "not_configured");
 
     // A preview works unconfigured, and says nothing can be sent yet.
-    let o = cloudmail_env(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "x", "--dry-run"], None, &[("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)]);
+    let o = cloudmail_env(
+        &m,
+        &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "x", "--dry-run"],
+        None,
+        &[("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)],
+    );
     assert_eq!(o.status.code(), Some(0));
     let v = json_out(&o);
     assert!(v["summary"].as_str().unwrap().ends_with("nothing can be sent until `cloudmail setup` has run"), "{v}");
@@ -404,8 +429,17 @@ fn errors_have_codes_and_exit_statuses() {
 fn self_documentation() {
     let m = mock(default_handler);
     let v = json_out(&cloudmail(&m, &["commands"], None));
-    let cmds: Vec<&str> = v["data"]["commands"].as_array().unwrap().iter().map(|c| c["command"].as_str().unwrap()).collect();
-    for c in ["cloudmail inbox", "cloudmail thread read", "cloudmail screener approve", "cloudmail reply", "cloudmail watch", "cloudmail setup", "cloudmail mailbox add"] {
+    let cmds: Vec<&str> =
+        v["data"]["commands"].as_array().unwrap().iter().map(|c| c["command"].as_str().unwrap()).collect();
+    for c in [
+        "cloudmail inbox",
+        "cloudmail thread read",
+        "cloudmail screener approve",
+        "cloudmail reply",
+        "cloudmail watch",
+        "cloudmail setup",
+        "cloudmail mailbox add",
+    ] {
         assert!(cmds.contains(&c), "missing {c}");
     }
     let o = cloudmail(&m, &["reply", "--help"], None);
@@ -537,7 +571,10 @@ fn hey_thread_read_attachments_and_reply() {
     // Reading changes nothing in HEY, and never sends.
     let calls = h.calls();
     assert!(calls.iter().any(|c| c == "thread read 9001"), "{calls:?}");
-    assert!(!calls.iter().any(|c| c.starts_with("seen") || (c.starts_with("reply") && !c.contains("--dry-run"))), "{calls:?}");
+    assert!(
+        !calls.iter().any(|c| c.starts_with("seen") || (c.starts_with("reply") && !c.contains("--dry-run"))),
+        "{calls:?}"
+    );
 
     let v = json_out(&h.run(&m, &["attachment", "list", "hey:9001:7001"], &[]));
     assert_eq!(v["data"].as_array().unwrap().len(), 1, "inline images aren't listed");
@@ -555,7 +592,11 @@ fn hey_thread_read_attachments_and_reply() {
 
     let o = h.run(&m, &["reply", "hey:9001:7001", "-m", "On it"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
-    let sent = h.calls().into_iter().find(|c| c.starts_with("reply 9001 --replace-recipients")).expect("sent through hey reply");
+    let sent = h
+        .calls()
+        .into_iter()
+        .find(|c| c.starts_with("reply 9001 --replace-recipients"))
+        .expect("sent through hey reply");
     assert!(sent.contains("--to carol@example.net") && sent.contains("--message-html <div>On it<br><br>On "), "{sent}");
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a HEY reply never goes through the worker");
 }
@@ -564,7 +605,12 @@ fn hey_thread_read_attachments_and_reply() {
 fn hey_moves_marks_and_composes() {
     let m = mock(default_handler);
     let h = hey_home("actions");
-    for args in [&["thread", "archive", "hey:9001:7001"][..], &["thread", "unarchive", "hey:9003:7003"], &["thread", "markread", "hey:9001:7001"], &["thread", "unread", "hey:9001:7001"]] {
+    for args in [
+        &["thread", "archive", "hey:9001:7001"][..],
+        &["thread", "unarchive", "hey:9003:7003"],
+        &["thread", "markread", "hey:9001:7001"],
+        &["thread", "unread", "hey:9001:7001"],
+    ] {
         let o = h.run(&m, args, &[]);
         assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stdout));
     }
@@ -583,9 +629,20 @@ fn hey_moves_marks_and_composes() {
     let o = h.run(&m, &["thread", "delete", "hey:9001:7001", "--yes"], &[]);
     assert_eq!(o.status.code(), Some(2));
 
-    let o = h.run(&m, &["compose", "--from", "me@hey.example", "--to", "Al <a@b.com>, c@d.com", "--subject", "Hi", "-m", "Hello"], &[]);
+    let o = h.run(
+        &m,
+        &["compose", "--from", "me@hey.example", "--to", "Al <a@b.com>, c@d.com", "--subject", "Hi", "-m", "Hello"],
+        &[],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
-    assert!(h.calls().iter().any(|c| c == "compose --to a@b.com,c@d.com --subject Hi --from me@hey.example --message-html <div>Hello</div>"), "{:?}", h.calls());
+    assert!(
+        h.calls()
+            .iter()
+            .any(|c| c
+                == "compose --to a@b.com,c@d.com --subject Hi --from me@hey.example --message-html <div>Hello</div>"),
+        "{:?}",
+        h.calls()
+    );
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
     let o = h.run(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello"], &[]);
     assert!(o.status.success());
@@ -605,7 +662,10 @@ fn hey_screener_merges_and_decides_by_address_or_id() {
     let o = h.run(&m, &["screener", "approve", "hey:5001"], &[]);
     assert!(o.status.success());
     assert!(h.calls().iter().any(|c| c == "screener approve 5001"));
-    assert!(!requests(&m).iter().any(|r| r.path.starts_with("/api/senders/")), "a HEY-only decision leaves the worker alone");
+    assert!(
+        !requests(&m).iter().any(|r| r.path.starts_with("/api/senders/")),
+        "a HEY-only decision leaves the worker alone"
+    );
 
     // An address is decided everywhere it waits.
     let o = h.run(&m, &["screener", "block", "new@y.com"], &[]);
@@ -630,7 +690,9 @@ fn hey_search_spans_accounts() {
 fn a_failing_hey_never_breaks_your_own_mail() {
     let m = mock(default_handler);
     let h = hey_home("isolation");
-    for (mode, code) in [("logged_out", "account_unauthorized"), ("crash", "account_unavailable"), ("garbage", "account_unavailable")] {
+    for (mode, code) in
+        [("logged_out", "account_unauthorized"), ("crash", "account_unavailable"), ("garbage", "account_unavailable")]
+    {
         let o = h.run(&m, &["inbox"], &[("FAKE_HEY_MODE", mode)]);
         assert!(o.status.success(), "{mode}: {}", String::from_utf8_lossy(&o.stdout));
         let v = json_out(&o);
@@ -642,7 +704,11 @@ fn a_failing_hey_never_breaks_your_own_mail() {
     }
     let o = h.run(&m, &["inbox", "--styled"], &[("CLOUDMAIL_HEY_COMMAND", "/nonexistent/hey")]);
     assert!(o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("the hey CLI isn't installed"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("the hey CLI isn't installed"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     assert!(String::from_utf8_lossy(&o.stdout).contains("t_1"));
 
     // Asking HEY itself for something does fail, with HEY's reason and exit code.
@@ -813,13 +879,30 @@ fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
     assert_eq!(g["subject"], "Trip itinerary");
     assert_eq!(g["to_address"], "me@gmail.example");
     let calls = h.calls();
-    assert!(calls.iter().any(|c| c.starts_with("gmail users threads list --params") && c.contains(r#""labelIds":["INBOX"]"#) && c.contains(r#""maxResults":25"#)), "{calls:?}");
-    assert!(calls.iter().any(|c| c.contains("threads get") && c.contains(r#""format":"metadata""#) && c.contains("Message-ID")), "{calls:?}");
+    assert!(
+        calls.iter().any(|c| c.starts_with("gmail users threads list --params")
+            && c.contains(r#""labelIds":["INBOX"]"#)
+            && c.contains(r#""maxResults":25"#)),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("threads get") && c.contains(r#""format":"metadata""#) && c.contains("Message-ID")),
+        "{calls:?}"
+    );
     assert!(!calls.iter().any(|c| c.contains("modify") || c.contains("messages send")), "listing changes nothing");
     // Every run is confined to cloudmail's own gws directory and sign-in.
     let dir = h.gws_dir().display().to_string();
     for e in h.envs() {
-        assert!(e.contains(&format!("config_dir={dir} ")) && e.contains("keyring=file") && e.contains("token=unset") && e.contains(&format!("adc={dir}/")) && e.ends_with(&format!("cwd={dir}")), "{e}");
+        assert!(
+            e.contains(&format!("config_dir={dir} "))
+                && e.contains("keyring=file")
+                && e.contains("token=unset")
+                && e.contains(&format!("adc={dir}/"))
+                && e.ends_with(&format!("cwd={dir}")),
+            "{e}"
+        );
     }
 
     // Without the worker's message to compare, the sender + subject + time match decides.
@@ -897,10 +980,20 @@ fn gmail_thread_read_attachments_raw_and_reply() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert_eq!(json_out(&o)["data"]["thread_id"], "gmail:t-a1");
     let sent = h.sent();
-    for want in ["From: Sam Sample <me@gmail.example>\r\n", "To: Ana Alvarez <ana@example.net>\r\n", "Subject: Re: Trip itinerary\r\n", "In-Reply-To: <trip-1@example.net>\r\n", "References: <trip-0@example.net> <trip-1@example.net>\r\n"] {
+    for want in [
+        "From: Sam Sample <me@gmail.example>\r\n",
+        "To: Ana Alvarez <ana@example.net>\r\n",
+        "Subject: Re: Trip itinerary\r\n",
+        "In-Reply-To: <trip-1@example.net>\r\n",
+        "References: <trip-0@example.net> <trip-1@example.net>\r\n",
+    ] {
         assert!(sent.contains(want), "missing {want:?} in\n{sent}");
     }
-    assert!(h.calls().iter().any(|c| c.contains("messages send") && c.contains(r#""threadId":"t-a1""#)), "{:?}", h.calls());
+    assert!(
+        h.calls().iter().any(|c| c.contains("messages send") && c.contains(r#""threadId":"t-a1""#)),
+        "{:?}",
+        h.calls()
+    );
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a Gmail reply never goes through the worker");
 }
 
@@ -922,12 +1015,35 @@ fn gmail_moves_marks_and_composes() {
     assert!(o.status.success());
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
     assert_eq!(h.run(&m, &["thread", "archive", "gmail:nope"], &[]).status.code(), Some(4));
-    assert_eq!(h.run(&m, &["thread", "delete", "gmail:t-a1", "--yes"], &[]).status.code(), Some(2), "deleting stays a worker-only action");
+    assert_eq!(
+        h.run(&m, &["thread", "delete", "gmail:t-a1", "--yes"], &[]).status.code(),
+        Some(2),
+        "deleting stays a worker-only action"
+    );
 
-    let o = h.run(&m, &["compose", "--from", "sam@alias.example", "--to", "Lee <lee@example.org>", "--subject", "Lunch", "-m", "Thursday?"], &[]);
+    let o = h.run(
+        &m,
+        &[
+            "compose",
+            "--from",
+            "sam@alias.example",
+            "--to",
+            "Lee <lee@example.org>",
+            "--subject",
+            "Lunch",
+            "-m",
+            "Thursday?",
+        ],
+        &[],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let sent = h.sent();
-    assert!(sent.contains("From: Sam at Alias <sam@alias.example>\r\n") && sent.contains("To: Lee <lee@example.org>\r\n") && !sent.contains("In-Reply-To"), "{sent}");
+    assert!(
+        sent.contains("From: Sam at Alias <sam@alias.example>\r\n")
+            && sent.contains("To: Lee <lee@example.org>\r\n")
+            && !sent.contains("In-Reply-To"),
+        "{sent}"
+    );
     assert!(!h.calls().iter().any(|c| c.contains("threadId")), "a new message starts its own thread");
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
     let o = h.run(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello"], &[]);
@@ -941,14 +1057,24 @@ fn gmail_search_uses_gmail_queries() {
     let h = gmail_home("search", GMAIL, true);
     let v = json_out(&h.run(&m, &["search", "trip", "from:ana"], &[]));
     assert_eq!(ids(&v), ["gmail:t-a1", "gmail:t-a6", "t_1", "t_2"]);
-    assert!(h.calls().iter().any(|c| c.contains("threads list") && c.contains(r#""q":"trip from:ana""#)), "{:?}", h.calls());
+    assert!(
+        h.calls().iter().any(|c| c.contains("threads list") && c.contains(r#""q":"trip from:ana""#)),
+        "{:?}",
+        h.calls()
+    );
 }
 
 #[test]
 fn a_failing_gmail_never_breaks_your_own_mail() {
     let m = mock(default_handler);
     let h = gmail_home("isolation", GMAIL, true);
-    for (mode, code) in [("expired", "account_unauthorized"), ("revoked", "account_unauthorized"), ("offline", "account_unavailable"), ("crash", "account_unavailable"), ("garbage", "account_unavailable")] {
+    for (mode, code) in [
+        ("expired", "account_unauthorized"),
+        ("revoked", "account_unauthorized"),
+        ("offline", "account_unavailable"),
+        ("crash", "account_unavailable"),
+        ("garbage", "account_unavailable"),
+    ] {
         let o = h.run(&m, &["inbox"], &[("FAKE_GWS_MODE", mode)]);
         assert!(o.status.success(), "{mode}: {}", String::from_utf8_lossy(&o.stdout));
         let v = json_out(&o);
@@ -957,10 +1083,20 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
         assert_eq!(v["meta"]["warnings"][0]["code"], code, "{mode}: {v}");
     }
     let v = json_out(&h.run(&m, &["inbox"], &[("FAKE_GWS_MODE", "expired")]));
-    assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains("run `cloudmail account login gmail` to sign in again"), "{v}");
+    assert!(
+        v["meta"]["warnings"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("run `cloudmail account login gmail` to sign in again"),
+        "{v}"
+    );
     let o = h.run(&m, &["inbox", "--styled"], &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")]);
     assert!(o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("Google's Workspace CLI isn't installed"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("Google's Workspace CLI isn't installed"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 
     // Signed out: gws isn't even run.
     let h = gmail_home("signed-out", GMAIL, false);
@@ -985,7 +1121,10 @@ fn gmail_account_add_list_remove() {
     let m = mock(default_handler);
     let h = gmail_home("accounts", "poll_seconds = 30\n", false);
     let cfg = h.home.join("config/cloudmail/config.toml");
-    let client = [("CLOUDMAIL_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com"), ("CLOUDMAIL_GOOGLE_CLIENT_SECRET", "test-secret")];
+    let client = [
+        ("CLOUDMAIL_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com"),
+        ("CLOUDMAIL_GOOGLE_CLIENT_SECRET", "test-secret"),
+    ];
 
     // The build's own client needs nothing set: without a terminal it goes straight to the sign-in hint.
     let o = h.run(&m, &["account", "add", "gmail"], &[]);
@@ -1010,17 +1149,29 @@ fn gmail_account_add_list_remove() {
     let o = h.run(&m, &["account", "add", "gmail", "--login"], &client);
     assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     let v = json_out(&o);
-    assert_eq!(v["data"]["addresses"], json!(["me@gmail.example", "sam@alias.example"]), "verified send-as addresses, default first");
+    assert_eq!(
+        v["data"]["addresses"],
+        json!(["me@gmail.example", "sam@alias.example"]),
+        "verified send-as addresses, default first"
+    );
     assert!(v["summary"].as_str().unwrap().contains("Your Screener decides its new senders"), "{v}");
-    let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("its correspondents are screened in");
+    let batch =
+        requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("its correspondents are screened in");
     assert_eq!((batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()), (Some("approved"), Some(true)));
     let calls = h.calls();
     assert!(calls.iter().any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify"), "{calls:?}");
-    assert!(calls.iter().any(|c| c.starts_with("browser https://accounts.google.com/o/oauth2/auth?") && c.contains("client_id=test-client")), "the link opens in the browser: {calls:?}");
+    assert!(
+        calls.iter().any(|c| c.starts_with("browser https://accounts.google.com/o/oauth2/auth?")
+            && c.contains("client_id=test-client")),
+        "the link opens in the browser: {calls:?}"
+    );
     assert!(h.envs().iter().any(|e| e.contains("client_id=test-client.apps.googleusercontent.com")));
     assert!(h.gws_dir().join("credentials.enc").is_file());
     let text = std::fs::read_to_string(&cfg).unwrap();
-    assert!(text.contains("poll_seconds = 30") && text.contains("[accounts.gmail]") && !text.contains("client"), "{text}");
+    assert!(
+        text.contains("poll_seconds = 30") && text.contains("[accounts.gmail]") && !text.contains("client"),
+        "{text}"
+    );
 
     // Already signed in: nothing to do in the browser, even with no client configured.
     let logins = || h.calls().iter().filter(|c| c.starts_with("auth login")).count();
@@ -1053,10 +1204,31 @@ fn gmail_account_add_list_remove() {
     let mut bus = support::Bus::start(&h.home.join("bus"));
     let keyring = support::keyring(&mut bus, &[]);
     let on_bus = [("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str())];
-    let o = h.run(&m, &["account", "add", "gmail", "--name", "work", "--client-id", "own-id", "--client-secret", "own-secret", "--login"], &on_bus);
+    let o = h.run(
+        &m,
+        &[
+            "account",
+            "add",
+            "gmail",
+            "--name",
+            "work",
+            "--client-id",
+            "own-id",
+            "--client-secret",
+            "own-secret",
+            "--login",
+        ],
+        &on_bus,
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let text = std::fs::read_to_string(&cfg).unwrap();
-    assert!(text.contains("[accounts.work]") && text.contains("provider = \"gmail\"") && text.contains("client_id = \"own-id\"") && !text.contains("own-secret"), "{text}");
+    assert!(
+        text.contains("[accounts.work]")
+            && text.contains("provider = \"gmail\"")
+            && text.contains("client_id = \"own-id\"")
+            && !text.contains("own-secret"),
+        "{text}"
+    );
     assert_eq!(support::secret(&keyring, "client_secret:work").as_deref(), Some("own-secret"));
     assert!(h.home.join("config/cloudmail/gws/work/credentials.enc").is_file());
     let v = json_out(&h.run(&m, &["inbox"], &on_bus));
@@ -1071,7 +1243,10 @@ fn gmail_account_add_list_remove() {
     assert!(!h.gws_dir().exists(), "cloudmail's own Gmail sign-in goes with the account");
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("[accounts.gmail]"));
     assert_eq!(h.run(&m, &["account", "remove", "gmail"], &[]).status.code(), Some(4));
-    assert!(!h.calls().iter().any(|c| c.starts_with("auth logout")), "signing out is removing cloudmail's own directory");
+    assert!(
+        !h.calls().iter().any(|c| c.starts_with("auth logout")),
+        "signing out is removing cloudmail's own directory"
+    );
 }
 
 #[test]
@@ -1105,7 +1280,11 @@ fn compose_and_reply_attach_files_through_the_worker() {
     let m = mock(default_handler);
     let files = attachment_files("worker");
     let (pdf, notes) = (path_arg(&files, "report.pdf"), path_arg(&files, "notes.txt"));
-    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "Attached", "--attach", &pdf, "--attach", &notes], None);
+    let o = cloudmail(
+        &m,
+        &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "Attached", "--attach", &pdf, "--attach", &notes],
+        None,
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert_eq!(json_out(&o)["summary"], "Sent \"Files\" to a@b.com with 2 attachments");
     let sent = requests(&m).into_iter().find(|r| r.path == "/api/send").unwrap();
@@ -1118,8 +1297,15 @@ fn compose_and_reply_attach_files_through_the_worker() {
     );
 
     // A dry run lists the files instead of carrying them.
-    let v = json_out(&cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "x", "--attach", &pdf, "--dry-run"], None));
-    assert_eq!(v["data"]["request"]["attachments"], json!([{ "filename": "report.pdf", "mime_type": "application/pdf", "size": 7 }]));
+    let v = json_out(&cloudmail(
+        &m,
+        &["compose", "--to", "a@b.com", "--subject", "Files", "-m", "x", "--attach", &pdf, "--dry-run"],
+        None,
+    ));
+    assert_eq!(
+        v["data"]["request"]["attachments"],
+        json!([{ "filename": "report.pdf", "mime_type": "application/pdf", "size": 7 }])
+    );
     assert_eq!(v["summary"], "Would send \"Files\" to a@b.com with 1 attachment (dry run)");
 
     let o = cloudmail(&m, &["reply", "t_1", "--no-quote", "-m", "Here", "--attach", &notes], None);
@@ -1151,19 +1337,33 @@ fn bad_attachments_fail_before_anything_is_sent() {
     let big = files.join("big.bin");
     std::fs::write(&big, vec![0u8; 3700 * 1024]).unwrap();
     for extra in [&[][..], &["--dry-run"]] {
-        let mut args = vec!["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", big.to_str().unwrap()];
+        let mut args =
+            vec!["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", big.to_str().unwrap()];
         args.extend(extra);
         let o = cloudmail(&m, &args, None);
         assert_eq!(o.status.code(), Some(2), "{extra:?}");
         let v = json_out(&o);
         assert_eq!(v["error"]["code"], "bad_request");
-        assert_eq!(v["error"]["message"], "the attachments are too large to send through Cloudmail: 3.6 MB in all, and it takes at most 3.5 MB");
+        assert_eq!(
+            v["error"]["message"],
+            "the attachments are too large to send through Cloudmail: 3.6 MB in all, and it takes at most 3.5 MB"
+        );
     }
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
 
     // The worker's own refusal (413) is a bad request too.
-    let m = mock(|req| if req.path == "/api/send" { (413, br#"{"error":"the attachments are too large"}"#.to_vec(), "application/json") } else { default_handler(req) });
-    let o = cloudmail(&m, &["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", &path_arg(&files, "notes.txt")], None);
+    let m = mock(|req| {
+        if req.path == "/api/send" {
+            (413, br#"{"error":"the attachments are too large"}"#.to_vec(), "application/json")
+        } else {
+            default_handler(req)
+        }
+    });
+    let o = cloudmail(
+        &m,
+        &["compose", "--to", "a@b.com", "--subject", "x", "-m", "x", "--attach", &path_arg(&files, "notes.txt")],
+        None,
+    );
     assert_eq!(o.status.code(), Some(2));
     assert_eq!(json_out(&o)["error"]["message"], "the attachments are too large");
 }
@@ -1174,16 +1374,47 @@ fn hey_sends_attachments_by_path_from_a_private_directory() {
     let h = hey_home("attach");
     let files = attachment_files("hey");
     let _ = std::fs::remove_file(h.home.join("hey.log.attached"));
-    let o = h.run(&m, &["compose", "--from", "me@hey.example", "--to", "a@b.com", "--subject", "Hi", "-m", "Hello", "--attach", &path_arg(&files, "report.pdf"), "--attach", &path_arg(&files, "notes.txt"), "--attach", &path_arg(&files, "other/notes.txt")], &[]);
+    let o = h.run(
+        &m,
+        &[
+            "compose",
+            "--from",
+            "me@hey.example",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "Hi",
+            "-m",
+            "Hello",
+            "--attach",
+            &path_arg(&files, "report.pdf"),
+            "--attach",
+            &path_arg(&files, "notes.txt"),
+            "--attach",
+            &path_arg(&files, "other/notes.txt"),
+        ],
+        &[],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let call = h.calls().into_iter().find(|c| c.starts_with("compose ")).unwrap();
-    assert!(call.starts_with("compose --to a@b.com --subject Hi --from me@hey.example --message-html <div>Hello</div> --attach "), "{call}");
+    assert!(
+        call.starts_with(
+            "compose --to a@b.com --subject Hi --from me@hey.example --message-html <div>Hello</div> --attach "
+        ),
+        "{call}"
+    );
     let paths: Vec<&str> = call.split(" --attach ").skip(1).collect();
     assert_eq!(paths.len(), 3);
-    assert!(paths[0].ends_with("/0/report.pdf") && paths[1].ends_with("/1/notes.txt") && paths[2].ends_with("/2/notes.txt"), "{paths:?}");
+    assert!(
+        paths[0].ends_with("/0/report.pdf") && paths[1].ends_with("/1/notes.txt") && paths[2].ends_with("/2/notes.txt"),
+        "{paths:?}"
+    );
     assert!(paths.iter().all(|p| !std::path::Path::new(p).exists()), "removed once hey has run");
     let attached = std::fs::read_to_string(h.home.join("hey.log.attached")).unwrap();
-    assert_eq!(attached, "report.pdf\t700\t600\tJVBERgD/EA==\nnotes.txt\t700\t600\tZmlyc3Q=\nnotes.txt\t700\t600\tc2Vjb25k\n");
+    assert_eq!(
+        attached,
+        "report.pdf\t700\t600\tJVBERgD/EA==\nnotes.txt\t700\t600\tZmlyc3Q=\nnotes.txt\t700\t600\tc2Vjb25k\n"
+    );
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"));
 
     let o = h.run(&m, &["reply", "hey:9001:7001", "-m", "On it", "--attach", &path_arg(&files, "notes.txt")], &[]);
@@ -1198,29 +1429,77 @@ fn gmail_sends_attachments_as_an_uploaded_multipart_message() {
     let h = gmail_home("attach", GMAIL, true);
     let _ = std::fs::remove_file(h.home.join("gws.log.upload"));
     let files = attachment_files("gmail");
-    let o = h.run(&m, &["reply", "gmail:t-a1", "--no-quote", "-m", "Both attached", "--attach", &path_arg(&files, "report.pdf"), "--attach", &path_arg(&files, "notes.txt")], &[]);
+    let o = h.run(
+        &m,
+        &[
+            "reply",
+            "gmail:t-a1",
+            "--no-quote",
+            "-m",
+            "Both attached",
+            "--attach",
+            &path_arg(&files, "report.pdf"),
+            "--attach",
+            &path_arg(&files, "notes.txt"),
+        ],
+        &[],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let call = h.calls().into_iter().find(|c| c.contains("messages send")).unwrap();
-    assert!(call.contains(r#"--json {"threadId":"t-a1"} --upload .outgoing-"#) && call.ends_with("/0/message.eml --upload-content-type message/rfc822"), "{call}");
+    assert!(
+        call.contains(r#"--json {"threadId":"t-a1"} --upload .outgoing-"#)
+            && call.ends_with("/0/message.eml --upload-content-type message/rfc822"),
+        "{call}"
+    );
     assert!(!call.contains("raw"), "the message is uploaded, not passed as an argument");
     assert_eq!(std::fs::read_to_string(h.home.join("gws.log.upload")).unwrap(), "700 600\n");
-    assert!(std::fs::read_dir(h.gws_dir()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".outgoing")), "removed after sending");
+    assert!(
+        std::fs::read_dir(h.gws_dir()).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".outgoing")),
+        "removed after sending"
+    );
 
     let sent = h.sent();
     let (head, body) = sent.split_once("\r\n\r\n").unwrap();
-    assert!(head.contains("In-Reply-To: <trip-1@example.net>\r\nReferences: <trip-0@example.net> <trip-1@example.net>\r\n"), "{head}");
+    assert!(
+        head.contains("In-Reply-To: <trip-1@example.net>\r\nReferences: <trip-0@example.net> <trip-1@example.net>\r\n"),
+        "{head}"
+    );
     let boundary = head.split("multipart/mixed; boundary=\"").nth(1).expect(head).split('"').next().unwrap();
     let parts: Vec<&str> = body.split(&format!("--{boundary}")).collect();
     assert_eq!(parts.len(), 5, "{body}");
     assert!(parts[1].starts_with("\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\nQm90aCBhdHRhY2hlZA==\r\n"), "{}", parts[1]);
-    assert_eq!(parts[2], "\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERgD/EA==\r\n");
-    assert_eq!(parts[3], "\r\nContent-Type: text/plain; name=\"notes.txt\"\r\nContent-Disposition: attachment; filename=\"notes.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nZmlyc3Q=\r\n");
+    assert_eq!(
+        parts[2],
+        "\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERgD/EA==\r\n"
+    );
+    assert_eq!(
+        parts[3],
+        "\r\nContent-Type: text/plain; name=\"notes.txt\"\r\nContent-Disposition: attachment; filename=\"notes.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nZmlyc3Q=\r\n"
+    );
     assert_eq!(parts[4], "--\r\n");
     assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "a Gmail reply never goes through the worker");
 
     // A body far past what one argument could carry goes through too.
     std::fs::write(files.join("long.txt"), "x".repeat(300 * 1024)).unwrap();
-    let o = h.run(&m, &["compose", "--from", "me@gmail.example", "--to", "a@b.com", "--subject", "Long", "--message-file", &path_arg(&files, "long.txt")], &[]);
+    let o = h.run(
+        &m,
+        &[
+            "compose",
+            "--from",
+            "me@gmail.example",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "Long",
+            "--message-file",
+            &path_arg(&files, "long.txt"),
+        ],
+        &[],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert!(h.sent().len() > 400 * 1024);
 }
@@ -1245,7 +1524,8 @@ const HOUR: i64 = 3_600_000;
 /// from a sender nobody decided on, mail from a blocked sender, and an archived receipt.
 fn icloud_messages() -> Vec<FMessage> {
     let bob = "Bob Lee <bob@example.com>";
-    let mut reply = FMessage::new("11", "Sent Messages", "t-lunch", "Ann Example <ann@icloud.com>", "Re: Lunch?", T0 + HOUR);
+    let mut reply =
+        FMessage::new("11", "Sent Messages", "t-lunch", "Ann Example <ann@icloud.com>", "Re: Lunch?", T0 + HOUR);
     reply.to = vec![bob.into()];
     let mut answer = FMessage::new("12", "INBOX", "t-lunch", bob, "Re: Lunch?", T0 + 2 * HOUR);
     answer.seen = false;
@@ -1277,10 +1557,14 @@ fn icloud_home(tag: &str, linked: bool, signed_in: bool) -> IcloudHome {
 }
 
 /// Your worker's Screener: Bob and the shop approved, the spammer blocked, the newsletter undecided.
-fn screening(decisions: Arc<Mutex<HashMap<String, String>>>) -> impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + 'static {
+fn screening(
+    decisions: Arc<Mutex<HashMap<String, String>>>,
+) -> impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + 'static {
     {
         let mut d = decisions.lock().unwrap();
-        for (e, s) in [("bob@example.com", "approved"), ("shop@example.com", "approved"), ("spam@bad.example", "blocked")] {
+        for (e, s) in
+            [("bob@example.com", "approved"), ("shop@example.com", "approved"), ("spam@bad.example", "blocked")]
+        {
             d.insert(e.into(), s.into());
         }
     }
@@ -1289,7 +1573,13 @@ fn screening(decisions: Arc<Mutex<HashMap<String, String>>>) -> impl Fn(&Req) ->
         match (req.method.as_str(), p) {
             ("POST", "/api/senders/lookup") => {
                 let d = decisions.lock().unwrap();
-                let found: Vec<Value> = req.body["emails"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).filter_map(|e| d.get(e).map(|s| json!({ "email": e, "status": s }))).collect();
+                let found: Vec<Value> = req.body["emails"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.as_str())
+                    .filter_map(|e| d.get(e).map(|s| json!({ "email": e, "status": s })))
+                    .collect();
                 ok(json!({ "senders": found }))
             }
             ("POST", "/api/senders/batch") => {
@@ -1339,7 +1629,12 @@ impl IcloudHome {
 
     fn json(&self, m: &Mock, args: &[&str]) -> Value {
         let o = self.run(m, args);
-        assert!(o.status.success(), "{args:?}: {}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "{args:?}: {}\n{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
         json_out(&o)
     }
 
@@ -1349,7 +1644,15 @@ impl IcloudHome {
 }
 
 fn id_of(v: &Value, subject: &str) -> String {
-    v["data"].as_array().unwrap().iter().find(|t| t["subject"] == subject).unwrap_or_else(|| panic!("no {subject} in {v}"))["id"].as_str().unwrap().to_string()
+    v["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["subject"] == subject)
+        .unwrap_or_else(|| panic!("no {subject} in {v}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 fn subjects(v: &Value) -> Vec<String> {
@@ -1384,12 +1687,22 @@ fn icloud_links_through_icloud_session() {
     // Its correspondents (Inbox senders, recipients of sent mail) are screened in, a no kept.
     let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").unwrap();
     assert_eq!(batch.body["only_undecided"], true);
-    let emails: Vec<&str> = batch.body["senders"].as_array().unwrap().iter().map(|s| s["email"].as_str().unwrap()).collect();
-    assert!(emails.contains(&"news@example.org") && emails.contains(&"bob@example.com") && !emails.iter().any(|e| e.ends_with("icloud.com")), "{emails:?}");
+    let emails: Vec<&str> =
+        batch.body["senders"].as_array().unwrap().iter().map(|s| s["email"].as_str().unwrap()).collect();
+    assert!(
+        emails.contains(&"news@example.org")
+            && emails.contains(&"bob@example.com")
+            && !emails.iter().any(|e| e.ends_with("icloud.com")),
+        "{emails:?}"
+    );
     assert_eq!(decisions.lock().unwrap()["spam@bad.example"], "blocked");
 
     let v = h.json(&m, &["account", "list"]);
-    assert_eq!((v["data"]["accounts"][0]["label"].as_str(), v["data"]["accounts"][0]["ok"].as_bool()), (Some("iCloud Mail"), Some(true)), "{v}");
+    assert_eq!(
+        (v["data"]["accounts"][0]["label"].as_str(), v["data"]["accounts"][0]["ok"].as_bool()),
+        (Some("iCloud Mail"), Some(true)),
+        "{v}"
+    );
     h.json(&m, &["account", "remove", "icloud"]);
     assert!(!h.calls().contains(&"SignOut".to_string()), "icloud-session stays signed in for the other apps");
     assert!(h.keyring.lock().unwrap().is_empty(), "no secret of cloudmail's own");
@@ -1403,22 +1716,39 @@ fn icloud_mail_is_screened_by_your_worker() {
     let v = h.json(&m, &["inbox"]);
     assert_eq!(subjects(&v), ["Lunch?", "Subject t_1", "Subject t_2"], "the newsletter waits, the spammer is out");
     let lunch = &v["data"][0];
-    assert_eq!((lunch["account"].as_str(), lunch["folder"].as_str(), lunch["unread"].as_bool(), lunch["has_attachments"].as_bool()), (Some("icloud"), Some("inbox"), Some(true), Some(true)));
+    assert_eq!(
+        (
+            lunch["account"].as_str(),
+            lunch["folder"].as_str(),
+            lunch["unread"].as_bool(),
+            lunch["has_attachments"].as_bool()
+        ),
+        (Some("icloud"), Some("inbox"), Some(true), Some(true))
+    );
     assert_eq!(lunch["from"]["email"], "bob@example.com");
     let search = h.mail.log("/mailws2/v1/thread/search");
     let r = &search[0];
     assert_eq!(r.cookie, support::COOKIE);
     assert_eq!((r.query["dsid"].as_str(), r.query["clientBuildNumber"].as_str()), ("1234", "2636Hotfix65"));
-    assert_eq!(r.body["sessionHeaders"], json!({ "folder": "INBOX", "modseq": null, "threadmodseq": null, "condstore": 1, "qresync": 1, "threadmode": 1 }));
+    assert_eq!(
+        r.body["sessionHeaders"],
+        json!({ "folder": "INBOX", "modseq": null, "threadmodseq": null, "condstore": 1, "qresync": 1, "threadmode": 1 })
+    );
     assert_eq!(r.body["responseType"], "THREAD_DIGEST");
     assert!(h.mail.log("/thread/flag").is_empty() && !h.mail.seen("12"), "listing leaves mail unread");
 
     let v = h.json(&m, &["screener"]);
     let waiting: Vec<&Value> = v["data"].as_array().unwrap().iter().filter(|s| s["account"] == "icloud").collect();
     assert_eq!(waiting.len(), 1, "{v}");
-    assert_eq!((waiting[0]["email"].as_str(), waiting[0]["last_subject"].as_str()), (Some("news@example.org"), Some("Weekly news")));
+    assert_eq!(
+        (waiting[0]["email"].as_str(), waiting[0]["last_subject"].as_str()),
+        (Some("news@example.org"), Some("Weekly news"))
+    );
     let v = h.json(&m, &["threads", "list", "--folder", "screener"]);
-    assert!(v["data"].as_array().unwrap().iter().any(|t| t["subject"] == "Weekly news" && t["folder"] == "screener"), "{v}");
+    assert!(
+        v["data"].as_array().unwrap().iter().any(|t| t["subject"] == "Weekly news" && t["folder"] == "screener"),
+        "{v}"
+    );
     let v = h.json(&m, &["search", "win"]);
     assert!(!subjects(&v).contains(&"Win big".to_string()), "a blocked sender stays out of search");
     let v = h.json(&m, &["archive"]);
@@ -1429,7 +1759,10 @@ fn icloud_mail_is_screened_by_your_worker() {
     assert_eq!(decisions.lock().unwrap()["news@example.org"], "blocked");
     let mv = h.mail.log("/thread/move");
     assert_eq!(mv.len(), 1);
-    assert_eq!((mv[0].body["destFolder"].as_str(), mv[0].body["threadIds"][0].as_str()), (Some("Archive"), Some("t-news")));
+    assert_eq!(
+        (mv[0].body["destFolder"].as_str(), mv[0].body["threadIds"][0].as_str()),
+        (Some("Archive"), Some("t-news"))
+    );
     assert_eq!(h.mail.folder_of("20"), "Archive");
 }
 
@@ -1441,10 +1774,17 @@ fn icloud_threads_read_and_reply_like_the_web_app() {
     let id = id_of(&h.json(&m, &["inbox"]), "Lunch?");
     let v = h.json(&m, &["thread", "read", &id, "--html"]);
     let msgs = v["data"]["messages"].as_array().unwrap();
-    assert_eq!(msgs.iter().map(|m| m["outgoing"].as_bool().unwrap()).collect::<Vec<_>>(), [false, true, false], "your reply from Sent Messages in between");
+    assert_eq!(
+        msgs.iter().map(|m| m["outgoing"].as_bool().unwrap()).collect::<Vec<_>>(),
+        [false, true, false],
+        "your reply from Sent Messages in between"
+    );
     assert_eq!(msgs[2]["html"], "<p>See the <b>menu</b>.</p>");
     let att = &msgs[2]["attachments"][0];
-    assert_eq!((att["filename"].as_str(), att["mime_type"].as_str(), att["size"].as_i64()), (Some("menu.pdf"), Some("application/pdf"), Some(13)));
+    assert_eq!(
+        (att["filename"].as_str(), att["mime_type"].as_str(), att["size"].as_i64()),
+        (Some("menu.pdf"), Some("application/pdf"), Some(13))
+    );
     assert!(h.mail.log("/message/get").iter().all(|r| r.body["dontMarkAsRead"] == true), "reading never marks read");
     assert!(!h.mail.seen("12"), "`thread read` leaves it unread");
 
@@ -1464,15 +1804,39 @@ fn icloud_threads_read_and_reply_like_the_web_app() {
     assert_eq!((d["subject"].as_str(), d["textBody"].as_str()), (Some("Re: Lunch?"), Some("Friday it is")));
     assert_eq!(st.sent.len(), 1, "sent by draft/send of Drafts/<uid>");
     drop(st);
-    let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("whoever you write to is screened in");
-    assert_eq!((batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()), (Some("approved"), Some(false)));
+    let batch =
+        requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("whoever you write to is screened in");
+    assert_eq!(
+        (batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()),
+        (Some("approved"), Some(false))
+    );
 
     let file = h.home.join("plan.txt");
     std::fs::write(&file, "the plan").unwrap();
-    h.json(&m, &["compose", "--from", "hi@ann.dev", "--to", "carol@z.com", "--bcc", "dave@w.com", "--subject", "Plan", "-m", "Attached.", "--attach", file.to_str().unwrap()]);
+    h.json(
+        &m,
+        &[
+            "compose",
+            "--from",
+            "hi@ann.dev",
+            "--to",
+            "carol@z.com",
+            "--bcc",
+            "dave@w.com",
+            "--subject",
+            "Plan",
+            "-m",
+            "Attached.",
+            "--attach",
+            file.to_str().unwrap(),
+        ],
+    );
     let st = h.mail.state.lock().unwrap();
     let (q, bytes) = &st.uploads[0];
-    assert_eq!((q["X-name"].as_str(), q["X-type"].as_str(), bytes.as_slice()), ("plan.txt", "text/plain", &b"the plan"[..]));
+    assert_eq!(
+        (q["X-name"].as_str(), q["X-type"].as_str(), bytes.as_slice()),
+        ("plan.txt", "text/plain", &b"the plan"[..])
+    );
     let d = &st.drafts[1];
     assert_eq!(d["from"], "Ann at Home <hi@ann.dev>");
     assert_eq!((d["bcc"].clone(), d["attachments"][0]["guid"].clone()), (json!(["dave@w.com"]), json!("cachedpart:1")));
@@ -1486,16 +1850,27 @@ fn icloud_moves_and_marks() {
     let id = id_of(&h.json(&m, &["inbox"]), "Lunch?");
     h.json(&m, &["thread", "markread", &id]);
     let flag = h.mail.log("/thread/flag");
-    assert_eq!((flag[0].body["method"].as_str(), flag[0].body["sessionHeaders"]["folder"].as_str()), (Some("ADD"), Some("INBOX")));
+    assert_eq!(
+        (flag[0].body["method"].as_str(), flag[0].body["sessionHeaders"]["folder"].as_str()),
+        (Some("ADD"), Some("INBOX"))
+    );
     assert!(h.mail.seen("12"));
     h.json(&m, &["thread", "unread", &id]);
     assert!(!h.mail.seen("12"));
     h.json(&m, &["thread", "archive", &id]);
-    assert_eq!((h.mail.folder_of("10"), h.mail.folder_of("12"), h.mail.folder_of("11")), ("Archive".into(), "Archive".into(), "Sent Messages".into()), "your reply stays in Sent");
+    assert_eq!(
+        (h.mail.folder_of("10"), h.mail.folder_of("12"), h.mail.folder_of("11")),
+        ("Archive".into(), "Archive".into(), "Sent Messages".into()),
+        "your reply stays in Sent"
+    );
     let archived = id_of(&h.json(&m, &["archive"]), "Lunch?");
     h.json(&m, &["thread", "unarchive", &archived]);
     assert_eq!(h.mail.folder_of("12"), "INBOX");
-    assert_eq!(h.run(&m, &["thread", "delete", &id, "--yes"]).status.code(), Some(2), "deleting stays a worker-only action");
+    assert_eq!(
+        h.run(&m, &["thread", "delete", &id, "--yes"]).status.code(),
+        Some(2),
+        "deleting stays a worker-only action"
+    );
 }
 
 #[test]
@@ -1512,7 +1887,10 @@ fn a_failing_icloud_never_breaks_your_own_mail() {
     };
     h.mail.state.lock().unwrap().rotate_cookie = true;
     h.json(&m, &["inbox"]);
-    assert!(h.session.lock().unwrap().merged.iter().any(|c| c.starts_with("X-APPLE-WEBAUTH-TOKEN=rotated")), "rotated cookies go back to icloud-session");
+    assert!(
+        h.session.lock().unwrap().merged.iter().any(|c| c.starts_with("X-APPLE-WEBAUTH-TOKEN=rotated")),
+        "rotated cookies go back to icloud-session"
+    );
 
     h.session.lock().unwrap().keyring_locked = true;
     let w = warning(&h);
@@ -1547,7 +1925,11 @@ fn secrets_live_in_the_keyring() {
     let no_env = [("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)];
     let o = h.run_env(&m, &["inbox"], &no_env);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
-    assert_eq!(support::secret(&h.keyring, "api_token").as_deref(), Some("test-token"), "an older config's token moves to the keyring");
+    assert_eq!(
+        support::secret(&h.keyring, "api_token").as_deref(),
+        Some("test-token"),
+        "an older config's token moves to the keyring"
+    );
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("api_token"));
     assert!(h.run_env(&m, &["inbox"], &no_env).status.success(), "and is read from there");
 

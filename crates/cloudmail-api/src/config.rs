@@ -101,7 +101,8 @@ pub fn read_file(path: &Path) -> Result<Option<FileConfig>> {
 pub fn save(file: &FileConfig) -> Result<PathBuf> {
     let p = path();
     let text = toml::to_string(file).map_err(|e| Error::new(ErrorKind::Config, e.to_string()))?;
-    write_private(&p, &text).map_err(|e| Error::new(ErrorKind::Config, format!("could not write {}: {e}", p.display())))?;
+    write_private(&p, &text)
+        .map_err(|e| Error::new(ErrorKind::Config, format!("could not write {}: {e}", p.display())))?;
     Ok(p)
 }
 
@@ -165,13 +166,23 @@ pub fn migrate_secrets(file: &mut FileConfig) -> Result<bool> {
     if !tokens {
         return Ok(false);
     }
-    let moving = |e: Error| Error::new(e.kind, format!("{} still holds secrets that belong in the keyring: {}", path().display(), e.message));
+    let moving = |e: Error| {
+        Error::new(
+            e.kind,
+            format!("{} still holds secrets that belong in the keyring: {}", path().display(), e.message),
+        )
+    };
     if let Some(token) = file.api_token.take().filter(|t| !t.trim().is_empty()) {
         crate::keyring::set(crate::keyring::API_TOKEN, "Cloudmail API token", token.trim()).map_err(moving)?;
     }
     for (name, account) in &mut file.accounts {
         if let Some(secret) = account.client_secret.take().filter(|s| !s.trim().is_empty()) {
-            crate::keyring::set(&client_secret_name(name), &format!("Cloudmail {name} OAuth client secret"), secret.trim()).map_err(moving)?;
+            crate::keyring::set(
+                &client_secret_name(name),
+                &format!("Cloudmail {name} OAuth client secret"),
+                secret.trim(),
+            )
+            .map_err(moving)?;
         }
     }
     save(file)?;
@@ -217,7 +228,11 @@ pub fn load() -> Result<Config> {
             ErrorKind::Config,
             format!(
                 "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail setup` sets both",
-                if url.is_none() { format!("api_url is missing from {}", path().display()) } else { "the API token isn't in the keyring".to_string() }
+                if url.is_none() {
+                    format!("api_url is missing from {}", path().display())
+                } else {
+                    "the API token isn't in the keyring".to_string()
+                }
             ),
         )),
     }
@@ -229,8 +244,15 @@ mod tests {
 
     #[test]
     fn secrets_are_read_but_never_written() {
-        let old: FileConfig = toml::from_str("api_url = \"https://x\"\napi_token = \"t\"\n[accounts.gmail]\nclient_id = \"i\"\nclient_secret = \"s\"\n").unwrap();
-        assert_eq!((old.api_token.as_deref(), old.accounts["gmail"].client_secret.as_deref()), (Some("t"), Some("s")), "an older file's secrets can be moved");
+        let old: FileConfig = toml::from_str(
+            "api_url = \"https://x\"\napi_token = \"t\"\n[accounts.gmail]\nclient_id = \"i\"\nclient_secret = \"s\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (old.api_token.as_deref(), old.accounts["gmail"].client_secret.as_deref()),
+            (Some("t"), Some("s")),
+            "an older file's secrets can be moved"
+        );
         let text = toml::to_string(&old).unwrap();
         assert!(!text.contains("api_token") && !text.contains("client_secret"), "{text}");
     }

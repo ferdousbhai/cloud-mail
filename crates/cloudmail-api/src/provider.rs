@@ -99,7 +99,10 @@ pub trait Provider: Send + Sync {
     fn download_attachment(&self, id: &str) -> Result<Download>;
     /// A message's original .eml, when the provider gives it out.
     fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
-        Err(Error::new(ErrorKind::BadRequest, format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label())))
+        Err(Error::new(
+            ErrorKind::BadRequest,
+            format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label()),
+        ))
     }
     /// The Message-ID headers of a thread's messages as last listed, for spotting copies of
     /// worker mail exactly; empty when the provider doesn't expose them.
@@ -143,7 +146,10 @@ impl Provider for Client {
             provider: "cloudmail".into(),
             label: "Cloudmail".into(),
             ok: health.is_ok(),
-            addresses: self.identities().map(|i| i.identities.into_iter().map(|a| a.email).collect()).unwrap_or_default(),
+            addresses: self
+                .identities()
+                .map(|i| i.identities.into_iter().map(|a| a.email).collect())
+                .unwrap_or_default(),
             detail: match health {
                 Ok(_) => self.base_url().to_string(),
                 Err(e) => e.message,
@@ -226,14 +232,20 @@ pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
         "icloud" => Ok(Arc::new(crate::icloud::Icloud::new(name, cfg))),
         other => Err(Error::new(
             ErrorKind::Config,
-            format!("account {name}: unknown provider \"{other}\" (known: {})", KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")),
+            format!(
+                "account {name}: unknown provider \"{other}\" (known: {})",
+                KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")
+            ),
         )),
     }
 }
 
 /// Account names become ID prefixes, so they are short lowercase words.
 pub fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 32 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name != "cloudmail"
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name != "cloudmail"
 }
 
 /// How a linked account's command-line tool ended.
@@ -246,7 +258,9 @@ pub(crate) enum Run {
 
 /// Runs a prepared command (stdout and stderr piped, stdin fed when given), killing it after `timeout`.
 pub(crate) fn run_command(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Run {
-    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Run::Missing,
@@ -293,7 +307,8 @@ pub(crate) struct PrivateDir(PathBuf);
 
 impl PrivateDir {
     pub fn new(parent: &Path, prefix: &str) -> std::io::Result<Self> {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let dir = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
         Self::create(&dir)?;
         Ok(Self(dir))

@@ -114,7 +114,10 @@ impl Message {
         let Some(auth) = self.auth.as_ref() else { return false };
         match auth.verified {
             Some(verified) => !verified,
-            None => auth.dmarc.as_deref().is_some_and(|d| !d.eq_ignore_ascii_case("pass") && !d.eq_ignore_ascii_case("none")),
+            None => auth
+                .dmarc
+                .as_deref()
+                .is_some_and(|d| !d.eq_ignore_ascii_case("pass") && !d.eq_ignore_ascii_case("none")),
         }
     }
 }
@@ -297,9 +300,16 @@ mod tests {
     fn attachments_go_as_base64_and_only_when_there_are_some() {
         let mut req = SendRequest { to: vec!["a@b.c".into()], text: "hi".into(), ..Default::default() };
         assert!(serde_json::to_value(&req).unwrap().get("attachments").is_none(), "existing payloads don't change");
-        req.attachments.push(OutgoingAttachment { filename: "a.bin".into(), mime_type: "application/octet-stream".into(), content: vec![0, 255, 1] });
+        req.attachments.push(OutgoingAttachment {
+            filename: "a.bin".into(),
+            mime_type: "application/octet-stream".into(),
+            content: vec![0, 255, 1],
+        });
         let v = serde_json::to_value(&req).unwrap();
-        assert_eq!(v["attachments"], serde_json::json!([{ "filename": "a.bin", "mime_type": "application/octet-stream", "content": "AP8B" }]));
+        assert_eq!(
+            v["attachments"],
+            serde_json::json!([{ "filename": "a.bin", "mime_type": "application/octet-stream", "content": "AP8B" }])
+        );
         let back: OutgoingAttachment = serde_json::from_value(v["attachments"][0].clone()).unwrap();
         assert_eq!(back.content, [0, 255, 1]);
     }

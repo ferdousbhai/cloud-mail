@@ -51,19 +51,33 @@ pub fn show(ui: &Rc<Ui>) {
     restart.set_visible(false);
     root.append(&restart);
 
-    let window = gtk::Window::builder().title("Accounts").transient_for(&ui.window).modal(true).default_width(560).child(&root).build();
+    let window = gtk::Window::builder()
+        .title("Accounts")
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(560)
+        .child(&root)
+        .build();
     window.add_css_class("cloudmail");
     let a = Rc::new(Accounts { ui: ui.clone(), window, list, status, restart });
 
     for (provider, button) in buttons {
-        button.connect_clicked(clone!(#[weak] a, move |b| link(&a, provider, b)));
+        button.connect_clicked(clone!(
+            #[weak]
+            a,
+            move |b| link(&a, provider, b)
+        ));
     }
-    a.restart.connect_clicked(clone!(#[weak] a, move |_| {
-        crate::RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(app) = a.ui.window.application() {
-            app.quit();
+    a.restart.connect_clicked(clone!(
+        #[weak]
+        a,
+        move |_| {
+            crate::RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(app) = a.ui.window.application() {
+                app.quit();
+            }
         }
-    }));
+    ));
     refresh(&a);
     a.window.present();
 }
@@ -94,24 +108,37 @@ fn refresh(a: &Rc<Accounts>) {
                 .iter()
                 .map(|(name, cfg)| match accounts::open(name) {
                     Ok(p) => p.status(),
-                    Err(e) => AccountStatus { name: name.clone(), provider: cfg.provider(name).to_string(), label: name.clone(), ok: false, addresses: Vec::new(), detail: e.message },
+                    Err(e) => AccountStatus {
+                        name: name.clone(),
+                        provider: cfg.provider(name).to_string(),
+                        label: name.clone(),
+                        ok: false,
+                        addresses: Vec::new(),
+                        detail: e.message,
+                    },
                 })
                 .collect())
         },
-        clone!(#[weak] a, move |result: Result<Vec<AccountStatus>, String>| {
-            while let Some(child) = a.list.first_child() {
-                a.list.remove(&child);
-            }
-            match result {
-                Ok(list) if list.is_empty() => a.list.append(&gtk::Label::builder().label("None yet: link one below.").xalign(0.0).build()),
-                Ok(list) => {
-                    for s in list {
-                        a.list.append(&row(&a, s));
-                    }
+        clone!(
+            #[weak]
+            a,
+            move |result: Result<Vec<AccountStatus>, String>| {
+                while let Some(child) = a.list.first_child() {
+                    a.list.remove(&child);
                 }
-                Err(e) => say(&a, &e),
+                match result {
+                    Ok(list) if list.is_empty() => {
+                        a.list.append(&gtk::Label::builder().label("None yet: link one below.").xalign(0.0).build())
+                    }
+                    Ok(list) => {
+                        for s in list {
+                            a.list.append(&row(&a, s));
+                        }
+                    }
+                    Err(e) => say(&a, &e),
+                }
             }
-        }),
+        ),
     );
 }
 
@@ -122,7 +149,8 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     let state = if s.ok { "signed in" } else { "needs attention" };
     let title = format!("{} ({}, {state})", s.label, s.name);
     text.append(&gtk::Label::builder().label(&title).xalign(0.0).build());
-    let detail = if s.addresses.is_empty() { s.detail.clone() } else { format!("{}\n{}", s.addresses.join(", "), s.detail) };
+    let detail =
+        if s.addresses.is_empty() { s.detail.clone() } else { format!("{}\n{}", s.addresses.join(", "), s.detail) };
     let detail = gtk::Label::builder().label(&detail).xalign(0.0).wrap(true).build();
     detail.add_css_class("column-sub");
     text.append(&detail);
@@ -130,49 +158,73 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     if !s.ok {
         let sign_in = gtk::Button::with_label("Sign in");
         let name = s.name.clone();
-        sign_in.connect_clicked(clone!(#[weak] a, move |b| {
-            b.set_sensitive(false);
-            say(&a, "Finish signing in in the browser or sign-in window…");
-            let name = name.clone();
-            util::run(
-                move || accounts::sign_in(&name).map_err(|e| e.to_string()),
-                clone!(#[weak] a, move |r: Result<AccountStatus, String>| match r {
-                    Ok(s) => changed(&a, &format!("Signed in to {}", s.label)),
-                    Err(e) => {
-                        say(&a, &e);
-                        refresh(&a);
-                    }
-                }),
-            );
-        }));
+        sign_in.connect_clicked(clone!(
+            #[weak]
+            a,
+            move |b| {
+                b.set_sensitive(false);
+                say(&a, "Finish signing in in the browser or sign-in window…");
+                let name = name.clone();
+                util::run(
+                    move || accounts::sign_in(&name).map_err(|e| e.to_string()),
+                    clone!(
+                        #[weak]
+                        a,
+                        move |r: Result<AccountStatus, String>| match r {
+                            Ok(s) => changed(&a, &format!("Signed in to {}", s.label)),
+                            Err(e) => {
+                                say(&a, &e);
+                                refresh(&a);
+                            }
+                        }
+                    ),
+                );
+            }
+        ));
         row.append(&sign_in);
     }
     let remove = gtk::Button::with_label("Unlink");
     let (name, label) = (s.name.clone(), s.label.clone());
-    remove.connect_clicked(clone!(#[weak] a, move |_| {
-        let dialog = gtk::AlertDialog::builder()
-            .message(format!("Unlink {label}?"))
-            .detail("Its mail stops showing here; nothing changes in the account itself.")
-            .buttons(["Cancel", "Unlink"])
-            .cancel_button(0)
-            .default_button(0)
-            .modal(true)
-            .build();
-        let name = name.clone();
-        dialog.choose(Some(&a.window), gio::Cancellable::NONE, clone!(#[weak] a, move |res| {
-            if res != Ok(1) {
-                return;
-            }
+    remove.connect_clicked(clone!(
+        #[weak]
+        a,
+        move |_| {
+            let dialog = gtk::AlertDialog::builder()
+                .message(format!("Unlink {label}?"))
+                .detail("Its mail stops showing here; nothing changes in the account itself.")
+                .buttons(["Cancel", "Unlink"])
+                .cancel_button(0)
+                .default_button(0)
+                .modal(true)
+                .build();
             let name = name.clone();
-            util::run(
-                move || accounts::unlink(&name).map(|_| name).map_err(|e| e.message),
-                clone!(#[weak] a, move |r: Result<String, String>| match r {
-                    Ok(name) => changed(&a, &format!("Unlinked {name}")),
-                    Err(e) => say(&a, &e),
-                }),
+            dialog.choose(
+                Some(&a.window),
+                gio::Cancellable::NONE,
+                clone!(
+                    #[weak]
+                    a,
+                    move |res| {
+                        if res != Ok(1) {
+                            return;
+                        }
+                        let name = name.clone();
+                        util::run(
+                            move || accounts::unlink(&name).map(|_| name).map_err(|e| e.message),
+                            clone!(
+                                #[weak]
+                                a,
+                                move |r: Result<String, String>| match r {
+                                    Ok(name) => changed(&a, &format!("Unlinked {name}")),
+                                    Err(e) => say(&a, &e),
+                                }
+                            ),
+                        );
+                    }
+                ),
             );
-        }));
-    }));
+        }
+    ));
     row.append(&remove);
     row
 }
@@ -188,18 +240,30 @@ fn link(a: &Rc<Accounts>, provider: &'static str, button: &gtk::Button) {
             let req = Link { provider: provider.into(), can_sign_in: true, ..Default::default() };
             accounts::link(&req, mail.as_ref(), &|_| {}).map_err(|e| e.to_string())
         },
-        clone!(#[weak] a, move |r: Result<accounts::Linked, String>| {
-            button.set_sensitive(true);
-            match r {
-                Ok(l) => {
-                    let mut text = format!("Linked {}{}", l.label, if l.addresses.is_empty() { String::new() } else { format!(" ({})", l.addresses.join(", ")) });
-                    if let Some(Err(why)) = &l.screened_in {
-                        text.push_str(&format!("; its correspondents couldn't be screened in ({why})"));
+        clone!(
+            #[weak]
+            a,
+            move |r: Result<accounts::Linked, String>| {
+                button.set_sensitive(true);
+                match r {
+                    Ok(l) => {
+                        let mut text = format!(
+                            "Linked {}{}",
+                            l.label,
+                            if l.addresses.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" ({})", l.addresses.join(", "))
+                            }
+                        );
+                        if let Some(Err(why)) = &l.screened_in {
+                            text.push_str(&format!("; its correspondents couldn't be screened in ({why})"));
+                        }
+                        changed(&a, &text);
                     }
-                    changed(&a, &text);
+                    Err(e) => say(&a, &e),
                 }
-                Err(e) => say(&a, &e),
             }
-        }),
+        ),
     );
 }

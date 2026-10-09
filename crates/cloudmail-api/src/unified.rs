@@ -244,14 +244,21 @@ impl Mail {
 
     /// Keeps of each worker-screened account's threads those `folder` shows, by their senders'
     /// decisions (one lookup for all of them); the waiting ones are marked as in the Screener.
-    fn screen(&self, results: Vec<(String, Result<Vec<ThreadSummary>>)>, folder: &str) -> Vec<(String, Result<Vec<ThreadSummary>>)> {
+    fn screen(
+        &self,
+        results: Vec<(String, Result<Vec<ThreadSummary>>)>,
+        folder: &str,
+    ) -> Vec<(String, Result<Vec<ThreadSummary>>)> {
         let screened = |name: &str| self.accounts.iter().find(|p| p.name() == name).filter(|p| p.screened_by_worker());
         let own: HashMap<String, Vec<String>> = results
             .iter()
             .filter_map(|(name, r)| Some((name.clone(), (r.is_ok().then_some(())?, screened(name)?).1)))
-            .map(|(name, p)| (name, p.identities().unwrap_or_default().into_iter().map(|a| a.email.to_ascii_lowercase()).collect()))
+            .map(|(name, p)| {
+                (name, p.identities().unwrap_or_default().into_iter().map(|a| a.email.to_ascii_lowercase()).collect())
+            })
             .collect();
-        let sender = |t: &ThreadSummary| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()).filter(|e| e.contains('@'));
+        let sender =
+            |t: &ThreadSummary| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()).filter(|e| e.contains('@'));
         let emails: Vec<String> = results
             .iter()
             .filter(|(name, _)| own.contains_key(name))
@@ -266,7 +273,13 @@ impl Mail {
                 let Some(mine) = own.get(&name) else { return (name, r) };
                 let list = match (&decisions, r) {
                     (_, Err(e)) => Err(e),
-                    (Err(e), Ok(_)) => Err(Error::new(e.kind, format!("{name}: your Screener's decisions couldn't be read ({}), so its mail isn't shown", e.message))),
+                    (Err(e), Ok(_)) => Err(Error::new(
+                        e.kind,
+                        format!(
+                            "{name}: your Screener's decisions couldn't be read ({}), so its mail isn't shown",
+                            e.message
+                        ),
+                    )),
                     (Ok(d), Ok(list)) => Ok(list
                         .into_iter()
                         .filter_map(|mut t| {
@@ -293,7 +306,11 @@ impl Mail {
     pub fn search(&self, query: &str, limit: u32) -> Result<Listing> {
         let q = ThreadQuery { folder: "all".into(), q: Some(query.to_string()), limit, ..Default::default() };
         if !self.has_accounts() {
-            return Ok(Listing { threads: self.client.list_threads(&q)?, warnings: self.broken.clone(), ..Default::default() });
+            return Ok(Listing {
+                threads: self.client.list_threads(&q)?,
+                warnings: self.broken.clone(),
+                ..Default::default()
+            });
         }
         let (worker, (extra, mut warnings, hidden)) = std::thread::scope(|s| {
             let extra = s.spawn(|| self.accounts_search(query, limit));
@@ -311,18 +328,25 @@ impl Mail {
 
     fn each_account<T: Send>(&self, f: impl Fn(&dyn Provider) -> Result<T> + Sync) -> Vec<(String, Result<T>)> {
         std::thread::scope(|s| {
-            let handles: Vec<_> = self.accounts.iter().map(|p| (p.name().to_string(), s.spawn(|| f(p.as_ref())))).collect();
+            let handles: Vec<_> =
+                self.accounts.iter().map(|p| (p.name().to_string(), s.spawn(|| f(p.as_ref())))).collect();
             handles
                 .into_iter()
                 .map(|(name, h)| {
-                    let r = h.join().unwrap_or_else(|_| Err(Error::new(ErrorKind::AccountUnavailable, format!("{name}: failed unexpectedly"))));
+                    let r = h.join().unwrap_or_else(|_| {
+                        Err(Error::new(ErrorKind::AccountUnavailable, format!("{name}: failed unexpectedly")))
+                    });
                     (name, r)
                 })
                 .collect()
         })
     }
 
-    fn collect(&self, results: Vec<(String, Result<Vec<ThreadSummary>>)>, dedupe: bool) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
+    fn collect(
+        &self,
+        results: Vec<(String, Result<Vec<ThreadSummary>>)>,
+        dedupe: bool,
+    ) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
         let mut threads = Vec::new();
         let mut warnings = Vec::new();
         for (name, r) in results {
@@ -334,9 +358,19 @@ impl Mail {
         let before = threads.len();
         if dedupe && !threads.is_empty() {
             let index = self.worker_index(&threads);
-            let exact: Vec<Vec<String>> = threads.iter().map(|t| self.account_for(&t.id).map(|p| p.message_ids(&t.id)).unwrap_or_default()).collect();
-            let same_subject = |t: &ThreadSummary| index.iter().filter(|w| subject_key(&w.subject) == subject_key(&t.subject)).collect::<Vec<_>>();
-            let candidates: Vec<&ThreadSummary> = threads.iter().zip(&exact).filter(|(_, ids)| !ids.is_empty()).flat_map(|(t, _)| same_subject(t)).collect();
+            let exact: Vec<Vec<String>> = threads
+                .iter()
+                .map(|t| self.account_for(&t.id).map(|p| p.message_ids(&t.id)).unwrap_or_default())
+                .collect();
+            let same_subject = |t: &ThreadSummary| {
+                index.iter().filter(|w| subject_key(&w.subject) == subject_key(&t.subject)).collect::<Vec<_>>()
+            };
+            let candidates: Vec<&ThreadSummary> = threads
+                .iter()
+                .zip(&exact)
+                .filter(|(_, ids)| !ids.is_empty())
+                .flat_map(|(t, _)| same_subject(t))
+                .collect();
             let known = self.worker_message_ids(&candidates);
             let mut keep = Vec::with_capacity(threads.len());
             for (t, ids) in threads.into_iter().zip(exact) {
@@ -364,7 +398,11 @@ impl Mail {
         let Some(oldest) = threads.iter().map(|t| t.last_at).filter(|t| *t > 0).min() else { return Vec::new() };
         let since = Some(oldest - DUPLICATE_WINDOW_MS - 1);
         // 200 is the most the worker returns per request.
-        let fetch = |folder: &str| self.client.list_threads(&ThreadQuery { folder: folder.into(), since, limit: 200, ..Default::default() }).unwrap_or_default();
+        let fetch = |folder: &str| {
+            self.client
+                .list_threads(&ThreadQuery { folder: folder.into(), since, limit: 200, ..Default::default() })
+                .unwrap_or_default()
+        };
         let (mut all, blocked) = std::thread::scope(|s| {
             let blocked = s.spawn(|| fetch("blocked"));
             (fetch("all"), blocked.join().unwrap_or_default())
@@ -392,12 +430,19 @@ impl Mail {
         }
         for chunk in todo.chunks(8) {
             let read: Vec<_> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk.iter().map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id)))).collect();
+                let handles: Vec<_> =
+                    chunk.iter().map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id)))).collect();
                 handles.into_iter().map(|(id, at, h)| (id, at, h.join().ok().and_then(|r| r.ok()))).collect()
             });
             for (id, at, detail) in read {
                 let Some(detail) = detail else { continue };
-                let ids: Vec<String> = detail.messages.iter().filter_map(|m| m.message_id.as_deref()).map(crate::gmail::normalize_message_id).filter(|m| !m.is_empty()).collect();
+                let ids: Vec<String> = detail
+                    .messages
+                    .iter()
+                    .filter_map(|m| m.message_id.as_deref())
+                    .map(crate::gmail::normalize_message_id)
+                    .filter(|m| !m.is_empty())
+                    .collect();
                 self.worker_ids.lock().unwrap().insert(id.clone(), (at, ids.clone()));
                 out.insert(id, ids);
             }
@@ -431,9 +476,16 @@ impl Mail {
             }
         }
         if self.accounts.iter().any(|p| p.screened_by_worker()) {
-            let (waiting, w, _) = self.accounts_list(&ThreadQuery { folder: "screener".into(), limit: SCREEN_SCAN, ..Default::default() });
+            let (waiting, w, _) = self.accounts_list(&ThreadQuery {
+                folder: "screener".into(),
+                limit: SCREEN_SCAN,
+                ..Default::default()
+            });
             warnings.extend(w);
-            let screened: Vec<ThreadSummary> = waiting.into_iter().filter(|t| self.account_for(&t.id).is_some_and(|p| p.screened_by_worker())).collect();
+            let screened: Vec<ThreadSummary> = waiting
+                .into_iter()
+                .filter(|t| self.account_for(&t.id).is_some_and(|p| p.screened_by_worker()))
+                .collect();
             senders.extend(waiting_senders(&screened));
         }
         (senders, warnings)
@@ -457,7 +509,8 @@ impl Mail {
                 if status != "blocked" {
                     return Ok(0);
                 }
-                let inbox = p.threads(&ThreadQuery { folder: "inbox".into(), limit: SCREEN_SCAN, ..Default::default() })?;
+                let inbox =
+                    p.threads(&ThreadQuery { folder: "inbox".into(), limit: SCREEN_SCAN, ..Default::default() })?;
                 let mut moved = 0;
                 for t in inbox.iter().filter(|t| t.is_from(key)) {
                     p.move_thread(&t.id, p.archive_folder())?;
@@ -516,7 +569,15 @@ impl Mail {
         let mut sent = sender.send(req)?;
         if sender.screened_by_worker() {
             // People you write to are screened in, as the worker does for its own mail.
-            let to: Vec<Address> = req.to.iter().chain(&req.cc).chain(&req.bcc).flat_map(|r| crate::text::split_addresses(r)).map(|a| crate::gmail::address_from(&a)).filter(|a| a.email.contains('@')).collect();
+            let to: Vec<Address> = req
+                .to
+                .iter()
+                .chain(&req.cc)
+                .chain(&req.bcc)
+                .flat_map(|r| crate::text::split_addresses(r))
+                .map(|a| crate::gmail::address_from(&a))
+                .filter(|a| a.email.contains('@'))
+                .collect();
             if let Err(e) = self.client.decide_senders(&to, "approved", false) {
                 sent.warning = Some(format!("sent, but its recipients couldn't be screened in: {}", e.message));
             }
@@ -540,14 +601,23 @@ mod tests {
     use super::*;
 
     fn t(id: &str, email: &str, subject: &str, at: i64) -> ThreadSummary {
-        ThreadSummary { id: id.into(), subject: subject.into(), from: Some(Address { name: None, email: email.into() }), last_at: at, ..Default::default() }
+        ThreadSummary {
+            id: id.into(),
+            subject: subject.into(),
+            from: Some(Address { name: None, email: email.into() }),
+            last_at: at,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn copies_match_on_sender_subject_and_time() {
         let original = t("t_1", "Ann@Example.com", "Lunch?", 1_000_000);
         assert!(is_copy(&t("hey:1:2", "ann@example.com", "Re: lunch?", 1_000_000 + 60_000), &original));
-        assert!(!is_copy(&t("hey:1:2", "ann@example.com", "Lunch?", 1_000_000 + DUPLICATE_WINDOW_MS + 1), &original), "too far apart");
+        assert!(
+            !is_copy(&t("hey:1:2", "ann@example.com", "Lunch?", 1_000_000 + DUPLICATE_WINDOW_MS + 1), &original),
+            "too far apart"
+        );
         assert!(!is_copy(&t("hey:1:2", "bob@example.com", "Lunch?", 1_000_000), &original), "another sender");
         assert!(!is_copy(&t("hey:1:2", "ann@example.com", "Dinner?", 1_000_000), &original), "another subject");
         assert!(!is_copy(&t("hey:1:2", "", "", 0), &t("t_2", "", "", 0)), "unknown senders never match");

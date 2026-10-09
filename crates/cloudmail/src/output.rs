@@ -19,7 +19,10 @@ pub mod exit {
         (OK, "success"),
         (GENERIC, "other failure (local I/O, a setup step, a cancelled confirmation or editor)"),
         (USAGE, "invalid arguments, a destructive command run without --yes, or a request the worker rejected"),
-        (AUTH, "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in"),
+        (
+            AUTH,
+            "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in",
+        ),
         (NOT_FOUND, "the thread, message, attachment, mailbox or sender does not exist"),
         (API, "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed"),
     ];
@@ -96,11 +99,7 @@ pub struct Response {
 
 impl Response {
     pub fn new(data: impl Serialize, summary: impl Into<String>) -> Self {
-        Self {
-            data: serde_json::to_value(data).unwrap_or(Value::Null),
-            summary: summary.into(),
-            ..Default::default()
-        }
+        Self { data: serde_json::to_value(data).unwrap_or(Value::Null), summary: summary.into(), ..Default::default() }
     }
 
     pub fn silent() -> Self {
@@ -159,7 +158,9 @@ impl Response {
             Mode::Count => self.count().to_string(),
             Mode::Ids => match &self.ids {
                 // IDs can be addresses a sender chose, so they get the same terminal treatment.
-                Some(ids) => ids.iter().map(|id| terminal_safe(id).replace(['\n', '\t'], " ")).collect::<Vec<_>>().join("\n"),
+                Some(ids) => {
+                    ids.iter().map(|id| terminal_safe(id).replace(['\n', '\t'], " ")).collect::<Vec<_>>().join("\n")
+                }
                 // The command has already run (it may have changed something), so say so rather than fail.
                 None => {
                     eprintln!("note: this command has no IDs to list; printing its result instead");
@@ -172,7 +173,11 @@ impl Response {
                     out.push_str("\n\n");
                     out.push_str(&dim("Next:"));
                     for b in &self.breadcrumbs {
-                        out.push_str(&format!("\n  {}  {}", terminal_safe(&b.command), dim(&terminal_safe(&b.description))));
+                        out.push_str(&format!(
+                            "\n  {}  {}",
+                            terminal_safe(&b.command),
+                            dim(&terminal_safe(&b.description))
+                        ));
                     }
                 }
                 out
@@ -310,8 +315,16 @@ impl CliError {
 impl From<ApiError> for CliError {
     fn from(e: ApiError) -> Self {
         let (exit, hint) = match e.kind {
-            ErrorKind::Config => (exit::AUTH, Some("run `cloudmail setup`, or `cloudmail config set api-url …` and `cloudmail config set api-token …`")),
-            ErrorKind::Unauthorized => (exit::AUTH, Some("the api_token doesn't match the worker's API_TOKEN secret; check `cloudmail config show`")),
+            ErrorKind::Config => (
+                exit::AUTH,
+                Some(
+                    "run `cloudmail setup`, or `cloudmail config set api-url …` and `cloudmail config set api-token …`",
+                ),
+            ),
+            ErrorKind::Unauthorized => (
+                exit::AUTH,
+                Some("the api_token doesn't match the worker's API_TOKEN secret; check `cloudmail config show`"),
+            ),
             ErrorKind::NotFound => (exit::NOT_FOUND, None),
             ErrorKind::BadRequest => (exit::USAGE, None),
             ErrorKind::Network => (exit::API, Some("check api_url with `cloudmail config show` and your connection")),
@@ -379,7 +392,10 @@ mod tests {
         let evil = "x\x1b]0;PWNED\x07\x1b[2A\x1b[2K\u{9b}31m\nnext";
         let out = terminal_safe(&format!("{styled} {evil}"));
         assert!(out.starts_with(&styled), "{out:?}");
-        assert!(!out.contains("\x1b]") && !out.contains("\x1b[2A") && !out.contains('\x07') && !out.contains('\u{9b}'), "{out:?}");
+        assert!(
+            !out.contains("\x1b]") && !out.contains("\x1b[2A") && !out.contains('\x07') && !out.contains('\u{9b}'),
+            "{out:?}"
+        );
         assert!(out.ends_with("\nnext"));
     }
 

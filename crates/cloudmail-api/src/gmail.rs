@@ -93,7 +93,13 @@ fn nonblank(v: Option<String>) -> Option<String> {
 
 /// A header's value from a message or part (`payload.headers`, or a part's own `headers`).
 fn header(part: &Value, name: &str) -> String {
-    part["headers"].as_array().into_iter().flatten().find(|h| h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name))).map(|h| text(&h["value"])).unwrap_or_default()
+    part["headers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|h| h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        .map(|h| text(&h["value"]))
+        .unwrap_or_default()
 }
 
 fn labels(m: &Value) -> Vec<&str> {
@@ -137,7 +143,13 @@ fn decode_b64(data: &str) -> Option<Vec<u8>> {
 /// Decoded body text in the part's charset (UTF-8 unless it says Latin-1 or similar).
 fn decode_text(bytes: &[u8], content_type: &str) -> String {
     let ct = content_type.to_ascii_lowercase();
-    let charset = ct.split(';').filter_map(|p| p.trim().strip_prefix("charset=")).next().unwrap_or("utf-8").trim_matches('"').to_string();
+    let charset = ct
+        .split(';')
+        .filter_map(|p| p.trim().strip_prefix("charset="))
+        .next()
+        .unwrap_or("utf-8")
+        .trim_matches('"')
+        .to_string();
     if matches!(charset.as_str(), "iso-8859-1" | "latin1" | "latin-1" | "windows-1252" | "cp1252" | "iso-8859-15") {
         bytes.iter().map(|&b| b as char).collect()
     } else {
@@ -172,7 +184,9 @@ pub(crate) fn format_address(a: &Address) -> String {
     match a.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         None => email,
         Some(n) if !n.is_ascii() => format!("{} <{email}>", encode_words(n)),
-        Some(n) if n.chars().any(|c| "()<>[]:;@\\,.\"".contains(c)) => format!("\"{}\" <{email}>", n.replace(['\r', '\n'], "").replace('\\', "\\\\").replace('"', "\\\"")),
+        Some(n) if n.chars().any(|c| "()<>[]:;@\\,.\"".contains(c)) => {
+            format!("\"{}\" <{email}>", n.replace(['\r', '\n'], "").replace('\\', "\\\\").replace('"', "\\\""))
+        }
         Some(n) => format!("{} <{email}>", n.replace(['\r', '\n'], "")),
     }
 }
@@ -200,7 +214,13 @@ fn filename_params(filename: &str) -> (String, String) {
     }
     let encoded: String = name
         .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
         .collect();
     (format!("name=\"=?UTF-8?B?{}?=\"", STANDARD.encode(name.as_bytes())), format!("filename*=UTF-8''{encoded}"))
 }
@@ -218,7 +238,15 @@ fn clean_mime_type(t: &str) -> String {
 /// An RFC 5322 message for `users.messages.send`: plain text, or multipart/mixed with the text
 /// first and each attachment after it.
 pub fn build_message(from: &Address, req: &SendRequest, threading: Option<&Threading>, date: &str) -> String {
-    let list = |items: &[String]| items.iter().flat_map(|i| split_addresses(i)).map(|a| format_address(&address_from(&a))).filter(|a| a.contains('@')).collect::<Vec<_>>().join(", ");
+    let list = |items: &[String]| {
+        items
+            .iter()
+            .flat_map(|i| split_addresses(i))
+            .map(|a| format_address(&address_from(&a)))
+            .filter(|a| a.contains('@'))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let mut head = vec![format!("From: {}", format_address(from))];
     for (name, items) in [("To", &req.to), ("Cc", &req.cc), ("Bcc", &req.bcc)] {
         let v = list(items);
@@ -263,9 +291,13 @@ pub fn build_message(from: &Address, req: &SendRequest, threading: Option<&Threa
 fn client_credentials(cfg: &AccountConfig) -> Option<(String, String)> {
     let env = |k| nonblank(std::env::var(k).ok());
     let builtin = (nonblank(Some(GOOGLE_CLIENT_ID.to_string())), nonblank(Some(GOOGLE_CLIENT_SECRET.to_string())));
-    [(env(CLIENT_ID_ENV), env(CLIENT_SECRET_ENV)), (nonblank(cfg.client_id.clone()), nonblank(cfg.client_secret.clone())), builtin]
-        .into_iter()
-        .find_map(|(id, secret)| Some((id?, secret?)))
+    [
+        (env(CLIENT_ID_ENV), env(CLIENT_SECRET_ENV)),
+        (nonblank(cfg.client_id.clone()), nonblank(cfg.client_secret.clone())),
+        builtin,
+    ]
+    .into_iter()
+    .find_map(|(id, secret)| Some((id?, secret?)))
 }
 
 /// cloudmail's own gws directory for an account, beside its config file.
@@ -279,14 +311,24 @@ fn sign_in_url(line: &str) -> Option<String> {
 }
 
 pub(crate) fn open_browser(url: &str) {
-    let program = nonblank(std::env::var(BROWSER_ENV).ok()).unwrap_or_else(|| if cfg!(target_os = "macos") { "open".into() } else { "xdg-open".into() });
+    let program = nonblank(std::env::var(BROWSER_ENV).ok())
+        .unwrap_or_else(|| if cfg!(target_os = "macos") { "open".into() } else { "xdg-open".into() });
     let _ = Command::new(program).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
 impl Gmail {
     pub fn new(name: &str, cfg: &AccountConfig) -> Self {
-        let command = nonblank(std::env::var(COMMAND_ENV).ok()).or_else(|| nonblank(cfg.command.clone())).unwrap_or_else(|| "gws".into());
-        Self { name: name.to_string(), command, dir: gws_dir(name), client: client_credentials(cfg), cache: Default::default(), own: Default::default() }
+        let command = nonblank(std::env::var(COMMAND_ENV).ok())
+            .or_else(|| nonblank(cfg.command.clone()))
+            .unwrap_or_else(|| "gws".into());
+        Self {
+            name: name.to_string(),
+            command,
+            dir: gws_dir(name),
+            client: client_credentials(cfg),
+            cache: Default::default(),
+            own: Default::default(),
+        }
     }
 
     pub fn command(&self) -> &str {
@@ -317,7 +359,10 @@ impl Gmail {
     }
 
     fn missing(&self) -> Error {
-        self.fail(ErrorKind::AccountUnavailable, format!("Google's Workspace CLI isn't installed (no `{}` on PATH); {INSTALL_HINT}", self.command))
+        self.fail(
+            ErrorKind::AccountUnavailable,
+            format!("Google's Workspace CLI isn't installed (no `{}` on PATH); {INSTALL_HINT}", self.command),
+        )
     }
 
     /// `gws`, confined to cloudmail's own directory and sign-in.
@@ -331,7 +376,9 @@ impl Gmail {
             .env_remove("GOOGLE_WORKSPACE_CLI_TOKEN")
             .env_remove("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE");
         match &self.client {
-            Some((id, secret)) => cmd.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", id).env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", secret),
+            Some((id, secret)) => {
+                cmd.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", id).env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", secret)
+            }
             None => cmd.env_remove("GOOGLE_WORKSPACE_CLI_CLIENT_ID").env_remove("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"),
         };
         cmd
@@ -340,11 +387,18 @@ impl Gmail {
     /// The installed gws's version line, or an error when it isn't installed.
     pub fn version(&self) -> Result<String> {
         match run_command(self.gws().arg("--version"), None, TIMEOUT) {
-            Run::Done { status, stdout, .. } if status.success() => Ok(String::from_utf8_lossy(&stdout).lines().next().unwrap_or("").trim().to_string()),
-            Run::Done { status, stderr, .. } => Err(self.fail(ErrorKind::AccountUnavailable, format!("`{} --version` failed ({status}): {stderr}", self.command))),
+            Run::Done { status, stdout, .. } if status.success() => {
+                Ok(String::from_utf8_lossy(&stdout).lines().next().unwrap_or("").trim().to_string())
+            }
+            Run::Done { status, stderr, .. } => Err(self.fail(
+                ErrorKind::AccountUnavailable,
+                format!("`{} --version` failed ({status}): {stderr}", self.command),
+            )),
             Run::Missing => Err(self.missing()),
             Run::TimedOut => Err(self.fail(ErrorKind::AccountUnavailable, "`gws --version` didn't answer")),
-            Run::Failed(e) => Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))),
+            Run::Failed(e) => {
+                Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)))
+            }
         }
     }
 
@@ -352,7 +406,9 @@ impl Gmail {
     pub fn no_client_error() -> Error {
         Error::new(
             ErrorKind::Config,
-            format!("Cloudmail's Google sign-in isn't configured in this build; set {CLIENT_ID_ENV} and {CLIENT_SECRET_ENV} (a Desktop-app OAuth client from Google Cloud Console with the Gmail API enabled), or client_id and client_secret under [accounts.gmail] in config.toml"),
+            format!(
+                "Cloudmail's Google sign-in isn't configured in this build; set {CLIENT_ID_ENV} and {CLIENT_SECRET_ENV} (a Desktop-app OAuth client from Google Cloud Console with the Gmail API enabled), or client_id and client_secret under [accounts.gmail] in config.toml"
+            ),
         )
     }
 
@@ -367,10 +423,22 @@ impl Gmail {
         builder.recursive(true);
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&self.dir).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create {}: {e}", self.dir.display())))?;
+        builder.create(&self.dir).map_err(|e| {
+            self.fail(ErrorKind::AccountUnavailable, format!("could not create {}: {e}", self.dir.display()))
+        })?;
         let mut cmd = self.gws();
-        cmd.current_dir(&self.dir).args(["auth", "login", "--scopes", SCOPE]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { self.missing() } else { self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)) })?;
+        cmd.current_dir(&self.dir)
+            .args(["auth", "login", "--scopes", SCOPE])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                self.missing()
+            } else {
+                self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))
+            }
+        })?;
         let opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // gws prints the link on stderr (or, behind a proxy, on stdout); both are shown as they come.
         let watch = |pipe: Box<dyn Read + Send>, echo: bool| {
@@ -402,7 +470,9 @@ impl Gmail {
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(self.fail(ErrorKind::AccountAuth, "the Google sign-in wasn't finished within 10 minutes"));
+                    return Err(
+                        self.fail(ErrorKind::AccountAuth, "the Google sign-in wasn't finished within 10 minutes")
+                    );
                 }
                 Err(e) => return Err(self.fail(ErrorKind::AccountUnavailable, e.to_string())),
             }
@@ -411,8 +481,13 @@ impl Gmail {
         let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
         let json: Value = stdout.find('{').and_then(|i| serde_json::from_str(&stdout[i..]).ok()).unwrap_or(Value::Null);
         if !status.success() || !self.signed_in() {
-            let message = nonempty(text(&json["error"]["message"])).or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string)).unwrap_or_else(|| format!("`gws auth login` failed ({status})"));
-            return Err(self.fail(ErrorKind::AccountAuth, format!("the Google sign-in didn't finish: {}", message.lines().next().unwrap_or(""))));
+            let message = nonempty(text(&json["error"]["message"]))
+                .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string))
+                .unwrap_or_else(|| format!("`gws auth login` failed ({status})"));
+            return Err(self.fail(
+                ErrorKind::AccountAuth,
+                format!("the Google sign-in didn't finish: {}", message.lines().next().unwrap_or("")),
+            ));
         }
         self.cache.lock().unwrap().clear();
         *self.own.lock().unwrap() = None;
@@ -452,15 +527,27 @@ impl Gmail {
         let (status, stdout, stderr) = match run_command(&mut cmd, None, TIMEOUT) {
             Run::Done { status, stdout, stderr } => (status, stdout, stderr),
             Run::Missing => return Err(self.missing()),
-            Run::TimedOut => return Err(self.fail(ErrorKind::AccountUnavailable, format!("`gws gmail users {what}` took longer than {}s", TIMEOUT.as_secs()))),
-            Run::Failed(e) => return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))),
+            Run::TimedOut => {
+                return Err(self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("`gws gmail users {what}` took longer than {}s", TIMEOUT.as_secs()),
+                ));
+            }
+            Run::Failed(e) => {
+                return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)));
+            }
         };
         let parsed: std::result::Result<Value, _> = serde_json::from_slice(&stdout);
         if status.success() {
             if String::from_utf8_lossy(&stdout).trim().is_empty() {
                 return Ok(Value::Null);
             }
-            return parsed.map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("`gws gmail users {what}` answered something that isn't JSON ({e})")));
+            return parsed.map_err(|e| {
+                self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("`gws gmail users {what}` answered something that isn't JSON ({e})"),
+                )
+            });
         }
         Err(self.gws_error(status.code(), &parsed.unwrap_or(Value::Null), &stderr, &what))
     }
@@ -484,25 +571,41 @@ impl Gmail {
         let reason = text(&err["reason"]);
         let again = format!("run `cloudmail account login {}` to sign in again", self.name);
         match (code, http) {
-            (Some(2), _) | (Some(1), 401) => self.fail(ErrorKind::AccountAuth, format!("the Google sign-in expired or was revoked ({message}); {again}")),
-            (Some(1), 403) if reason.contains("insufficient") || message.to_ascii_lowercase().contains("insufficient") => {
-                self.fail(ErrorKind::AccountAuth, format!("Cloudmail isn't allowed to do that in Gmail ({message}); {again}"))
+            (Some(2), _) | (Some(1), 401) => self.fail(
+                ErrorKind::AccountAuth,
+                format!("the Google sign-in expired or was revoked ({message}); {again}"),
+            ),
+            (Some(1), 403)
+                if reason.contains("insufficient") || message.to_ascii_lowercase().contains("insufficient") =>
+            {
+                self.fail(
+                    ErrorKind::AccountAuth,
+                    format!("Cloudmail isn't allowed to do that in Gmail ({message}); {again}"),
+                )
             }
             (Some(1), 404) => self.fail(ErrorKind::NotFound, message),
             (Some(1), 400) => self.fail(ErrorKind::BadRequest, message),
-            (Some(1), 429) => self.fail(ErrorKind::AccountUnavailable, format!("Gmail is rate limiting ({message}); try again shortly")),
+            (Some(1), 429) => self
+                .fail(ErrorKind::AccountUnavailable, format!("Gmail is rate limiting ({message}); try again shortly")),
             (Some(4), _) => self.fail(ErrorKind::AccountUnavailable, format!("couldn't reach Google ({message})")),
-            (Some(3), _) => self.fail(ErrorKind::AccountUnavailable, format!("gws rejected `{what}` ({message}); is gws up to date?")),
+            (Some(3), _) => self
+                .fail(ErrorKind::AccountUnavailable, format!("gws rejected `{what}` ({message}); is gws up to date?")),
             _ => self.fail(ErrorKind::AccountUnavailable, message),
         }
     }
 
     fn shape_error(&self, what: &str) -> Error {
-        self.fail(ErrorKind::AccountUnavailable, format!("unexpected answer to `gws gmail users {what}` (a newer gws?)"))
+        self.fail(
+            ErrorKind::AccountUnavailable,
+            format!("unexpected answer to `gws gmail users {what}` (a newer gws?)"),
+        )
     }
 
     fn local<'a>(&self, id: &'a str) -> Result<&'a str> {
-        id.strip_prefix(self.name.as_str()).and_then(|r| r.strip_prefix(':')).filter(|r| !r.is_empty()).ok_or_else(|| Error::new(ErrorKind::BadRequest, format!("{id} is not a Gmail ID")))
+        id.strip_prefix(self.name.as_str())
+            .and_then(|r| r.strip_prefix(':'))
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| Error::new(ErrorKind::BadRequest, format!("{id} is not a Gmail ID")))
     }
 
     /// The Gmail thread ID in `gmail:<thread>[/<message>]`.
@@ -517,7 +620,9 @@ impl Gmail {
 
     /// `(thread, message)` from `gmail:<thread>/<message>`.
     fn message_ref<'a>(&self, id: &'a str) -> Result<(&'a str, &'a str)> {
-        self.local(id)?.split_once('/').filter(|(t, m)| !t.is_empty() && !m.is_empty()).ok_or_else(|| self.fail(ErrorKind::NotFound, format!("{id} isn't a Gmail message ID (gmail:<thread>/<message>)")))
+        self.local(id)?.split_once('/').filter(|(t, m)| !t.is_empty() && !m.is_empty()).ok_or_else(|| {
+            self.fail(ErrorKind::NotFound, format!("{id} isn't a Gmail message ID (gmail:<thread>/<message>)"))
+        })
     }
 
     /// A thread's summary and Message-IDs from `threads.get` (metadata or full).
@@ -549,13 +654,19 @@ impl Gmail {
             unread: msgs.iter().any(|m| has_label(m, "UNREAD")),
             has_attachments: msgs.iter().any(|m| {
                 let ct = head(m, "Content-Type").to_ascii_lowercase();
-                ct.starts_with("multipart/mixed") || m["payload"]["mimeType"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("multipart/mixed"))
+                ct.starts_with("multipart/mixed")
+                    || m["payload"]["mimeType"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("multipart/mixed"))
             }),
             last_at: internal_date(latest),
             account: Some(self.name.clone()),
         };
-        let message_ids = msgs.iter().map(|m| normalize_message_id(&head(m, "Message-ID"))).filter(|m| !m.is_empty()).collect();
-        let recipients = msgs.iter().filter(|m| has_label(m, "SENT")).flat_map(|m| [addresses(&head(m, "To")), addresses(&head(m, "Cc"))].concat()).collect();
+        let message_ids =
+            msgs.iter().map(|m| normalize_message_id(&head(m, "Message-ID"))).filter(|m| !m.is_empty()).collect();
+        let recipients = msgs
+            .iter()
+            .filter(|m| has_label(m, "SENT"))
+            .flat_map(|m| [addresses(&head(m, "To")), addresses(&head(m, "Cc"))].concat())
+            .collect();
         Some(Cached { history: text(&t["historyId"]), summary, message_ids, recipients })
     }
 
@@ -573,7 +684,12 @@ impl Gmail {
         let data = self.call(&["threads", "list"], params, None)?;
         let entries: Vec<(String, String)> = match data.get("threads") {
             None | Some(Value::Null) => Vec::new(),
-            Some(list) => list.as_array().ok_or_else(|| self.shape_error("threads list"))?.iter().filter_map(|t| Some((t["id"].as_str()?.to_string(), text(&t["historyId"])))).collect(),
+            Some(list) => list
+                .as_array()
+                .ok_or_else(|| self.shape_error("threads list"))?
+                .iter()
+                .filter_map(|t| Some((t["id"].as_str()?.to_string(), text(&t["historyId"]))))
+                .collect(),
         };
         let mut found: HashMap<String, Cached> = HashMap::new();
         let mut stale = Vec::new();
@@ -591,8 +707,12 @@ impl Gmail {
         let mut first_err = None;
         for chunk in stale.chunks(PARALLEL) {
             let results: Vec<(String, Result<Value>)> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk.iter().map(|id| (id.clone(), s.spawn(move || self.get_thread(id, "metadata")))).collect();
-                handles.into_iter().map(|(id, h)| (id, h.join().unwrap_or_else(|_| Err(self.shape_error("threads get"))))).collect()
+                let handles: Vec<_> =
+                    chunk.iter().map(|id| (id.clone(), s.spawn(move || self.get_thread(id, "metadata")))).collect();
+                handles
+                    .into_iter()
+                    .map(|(id, h)| (id, h.join().unwrap_or_else(|_| Err(self.shape_error("threads get")))))
+                    .collect()
             });
             for (id, r) in results {
                 match r.map(|v| self.parse_thread(&v)) {
@@ -629,7 +749,12 @@ impl Gmail {
                     .into_iter()
                     .flatten()
                     .filter(|s| s["isPrimary"] == json!(true) || s["verificationStatus"] == "accepted")
-                    .map(|s| (s["isDefault"] == json!(true), Address { name: nonempty(text(&s["displayName"])), email: text(&s["sendAsEmail"]) }))
+                    .map(|s| {
+                        (
+                            s["isDefault"] == json!(true),
+                            Address { name: nonempty(text(&s["displayName"])), email: text(&s["sendAsEmail"]) },
+                        )
+                    })
                     .filter(|(_, a)| !a.email.is_empty())
                     .collect();
                 list.sort_by_key(|(default, _)| !*default);
@@ -654,7 +779,11 @@ impl Gmail {
 
     fn modify(&self, id: &str, add: &[&str], remove: &[&str]) -> Result<()> {
         let thread = self.thread_id(id)?.to_string();
-        self.call(&["threads", "modify"], json!({ "userId": "me", "id": thread }), Some(&json!({ "addLabelIds": add, "removeLabelIds": remove })))?;
+        self.call(
+            &["threads", "modify"],
+            json!({ "userId": "me", "id": thread }),
+            Some(&json!({ "addLabelIds": add, "removeLabelIds": remove })),
+        )?;
         self.forget_thread(&thread);
         Ok(())
     }
@@ -662,7 +791,10 @@ impl Gmail {
     /// The Message-ID and References a reply to this message carries.
     fn threading(&self, message: &str) -> Result<Threading> {
         let m = self.call(&["messages", "get"], json!({ "userId": "me", "id": message, "format": "metadata", "metadataHeaders": ["Message-ID", "References"] }), None)?;
-        Ok(Threading { in_reply_to: header(&m["payload"], "Message-ID"), references: header(&m["payload"], "References") })
+        Ok(Threading {
+            in_reply_to: header(&m["payload"], "Message-ID"),
+            references: header(&m["payload"], "References"),
+        })
     }
 
     fn query(&self, q: &ThreadQuery, folder: &str) -> Value {
@@ -698,11 +830,21 @@ impl Gmail {
     }
 
     /// A message part tree's text, HTML and attachments.
-    fn walk(&self, message: &str, part: &Value, text_body: &mut Option<String>, html: &mut Option<String>, atts: &mut Vec<Attachment>) {
+    fn walk(
+        &self,
+        message: &str,
+        part: &Value,
+        text_body: &mut Option<String>,
+        html: &mut Option<String>,
+        atts: &mut Vec<Attachment>,
+    ) {
         let mime = part["mimeType"].as_str().unwrap_or("").to_ascii_lowercase();
         let filename = text(&part["filename"]);
         let disposition = header(part, "Content-Disposition").to_ascii_lowercase();
-        let is_file = !mime.starts_with("multipart/") && (!filename.is_empty() || part["body"]["attachmentId"].is_string() || disposition.starts_with("attachment"));
+        let is_file = !mime.starts_with("multipart/")
+            && (!filename.is_empty()
+                || part["body"]["attachmentId"].is_string()
+                || disposition.starts_with("attachment"));
         if is_file {
             let part_id = nonempty(text(&part["partId"])).unwrap_or_else(|| "root".into());
             let cid = header(part, "Content-ID");
@@ -753,7 +895,12 @@ impl Provider for Gmail {
     }
 
     fn status(&self) -> AccountStatus {
-        let mut status = AccountStatus { name: self.name.clone(), provider: "gmail".into(), label: "Gmail".into(), ..Default::default() };
+        let mut status = AccountStatus {
+            name: self.name.clone(),
+            provider: "gmail".into(),
+            label: "Gmail".into(),
+            ..Default::default()
+        };
         if !self.signed_in() {
             status.detail = format!("not signed in: run `cloudmail account login {}`", self.name);
             return status;
@@ -776,7 +923,10 @@ impl Provider for Gmail {
         }
         let mut list = self.listing(self.query(q, folder))?;
         list.retain(|t| {
-            (folder != "archive" || t.folder != "inbox") && q.before.is_none_or(|b| t.last_at < b) && q.since.is_none_or(|s| t.last_at > s) && (!q.unread || t.unread)
+            (folder != "archive" || t.folder != "inbox")
+                && q.before.is_none_or(|b| t.last_at < b)
+                && q.since.is_none_or(|s| t.last_at > s)
+                && (!q.unread || t.unread)
         });
         list.sort_by_key(|t| std::cmp::Reverse(t.last_at));
         list.truncate(q.limit.max(1) as usize);
@@ -792,7 +942,9 @@ impl Provider for Gmail {
     fn thread(&self, id: &str, _html: bool) -> Result<ThreadDetail> {
         let thread = self.thread_id(id)?;
         let data = self.get_thread(thread, "full")?;
-        let cached = self.parse_thread(&data).ok_or_else(|| self.fail(ErrorKind::NotFound, format!("no Gmail thread {id} (or only drafts)")))?;
+        let cached = self
+            .parse_thread(&data)
+            .ok_or_else(|| self.fail(ErrorKind::NotFound, format!("no Gmail thread {id} (or only drafts)")))?;
         let summary = cached.summary.clone();
         let mut messages: Vec<Message> = data["messages"]
             .as_array()
@@ -831,7 +983,10 @@ impl Provider for Gmail {
         match folder {
             "inbox" => self.modify(id, &["INBOX"], &[]),
             "archive" => self.modify(id, &[], &["INBOX"]),
-            other => Err(self.fail(ErrorKind::BadRequest, format!("Gmail threads move between the Inbox and the Archive, not \"{other}\""))),
+            other => Err(self.fail(
+                ErrorKind::BadRequest,
+                format!("Gmail threads move between the Inbox and the Archive, not \"{other}\""),
+            )),
         }
     }
 
@@ -858,7 +1013,9 @@ impl Provider for Gmail {
     fn send(&self, req: &SendRequest) -> Result<SendResponse> {
         let own = self.identities()?;
         let from = match req.from.as_deref().map(bare_email).filter(|f| !f.is_empty()) {
-            Some(f) => own.iter().find(|a| a.email.eq_ignore_ascii_case(&f)).cloned().ok_or_else(|| self.fail(ErrorKind::BadRequest, format!("{f} isn't one of your Gmail send-as addresses")))?,
+            Some(f) => own.iter().find(|a| a.email.eq_ignore_ascii_case(&f)).cloned().ok_or_else(|| {
+                self.fail(ErrorKind::BadRequest, format!("{f} isn't one of your Gmail send-as addresses"))
+            })?,
             None => own[0].clone(),
         };
         let (thread, threading) = match req.reply_to_message_id.as_deref() {
@@ -874,8 +1031,15 @@ impl Provider for Gmail {
         }
         // The message goes as a media upload from a file (an argument couldn't hold more than about
         // 128 KiB), in a private directory inside gws's working directory, removed after.
-        let dir = PrivateDir::new(&self.dir, ".outgoing").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory in {}: {e}", self.dir.display())))?;
-        let path = dir.write("0", "message.eml", message.as_bytes()).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not write the message for gws: {e}")))?;
+        let dir = PrivateDir::new(&self.dir, ".outgoing").map_err(|e| {
+            self.fail(
+                ErrorKind::AccountUnavailable,
+                format!("could not create a temporary directory in {}: {e}", self.dir.display()),
+            )
+        })?;
+        let path = dir.write("0", "message.eml", message.as_bytes()).map_err(|e| {
+            self.fail(ErrorKind::AccountUnavailable, format!("could not write the message for gws: {e}"))
+        })?;
         let relative = path.strip_prefix(&self.dir).unwrap_or(&path).to_path_buf();
         let metadata = thread.as_ref().map(|t| json!({ "threadId": t }));
         let sent = self.call_with(&["messages", "send"], json!({ "userId": "me" }), metadata.as_ref(), Some(&relative));
@@ -893,15 +1057,29 @@ impl Provider for Gmail {
     }
 
     fn download_attachment(&self, id: &str) -> Result<Download> {
-        let (message, part_id) = self.local(id)?.split_once(':').ok_or_else(|| self.fail(ErrorKind::NotFound, format!("{id} isn't a Gmail attachment ID")))?;
+        let (message, part_id) = self
+            .local(id)?
+            .split_once(':')
+            .ok_or_else(|| self.fail(ErrorKind::NotFound, format!("{id} isn't a Gmail attachment ID")))?;
         let m = self.call(&["messages", "get"], json!({ "userId": "me", "id": message, "format": "full" }), None)?;
-        let part = Self::find_part(&m["payload"], part_id).ok_or_else(|| self.fail(ErrorKind::NotFound, format!("no attachment {id}")))?;
+        let part = Self::find_part(&m["payload"], part_id)
+            .ok_or_else(|| self.fail(ErrorKind::NotFound, format!("no attachment {id}")))?;
         let data = match part["body"]["attachmentId"].as_str() {
-            Some(att) => text(&self.call(&["messages", "attachments", "get"], json!({ "userId": "me", "messageId": message, "id": att }), None)?["data"]),
+            Some(att) => text(
+                &self.call(
+                    &["messages", "attachments", "get"],
+                    json!({ "userId": "me", "messageId": message, "id": att }),
+                    None,
+                )?["data"],
+            ),
             None => text(&part["body"]["data"]),
         };
         let bytes = decode_b64(&data).ok_or_else(|| self.shape_error("messages attachments get"))?;
-        Ok(Download { bytes, content_type: nonempty(text(&part["mimeType"])), filename: nonempty(text(&part["filename"])) })
+        Ok(Download {
+            bytes,
+            content_type: nonempty(text(&part["mimeType"])),
+            filename: nonempty(text(&part["filename"])),
+        })
     }
 
     fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
@@ -922,7 +1100,11 @@ impl Provider for Gmail {
     fn correspondents(&self, limit: u32) -> Result<Vec<Address>> {
         let own: Vec<String> = self.own_addresses()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
         let max = limit.clamp(1, LIST_LIMIT);
-        let mut out: Vec<Address> = self.listing(json!({ "userId": "me", "labelIds": ["INBOX"], "maxResults": max }))?.into_iter().filter_map(|t| t.from).collect();
+        let mut out: Vec<Address> = self
+            .listing(json!({ "userId": "me", "labelIds": ["INBOX"], "maxResults": max }))?
+            .into_iter()
+            .filter_map(|t| t.from)
+            .collect();
         let sent = self.listing(json!({ "userId": "me", "labelIds": ["SENT"], "maxResults": max }))?;
         let cache = self.cache.lock().unwrap();
         for t in sent {
@@ -963,7 +1145,11 @@ mod tests {
         assert_eq!(s.id, "gmail:t1");
         assert_eq!((s.subject.as_str(), s.folder.as_str(), s.message_count, s.last_at), ("Trip", "inbox", 2, 2_000));
         assert!(s.unread && s.has_attachments);
-        assert_eq!(s.from, Some(Address { name: Some("Ana, A.".into()), email: "ana@example.net".into() }), "the latest mail you received");
+        assert_eq!(
+            s.from,
+            Some(Address { name: Some("Ana, A.".into()), email: "ana@example.net".into() }),
+            "the latest mail you received"
+        );
         assert_eq!(s.to_address.as_deref(), Some("me@gmail.example"));
         assert_eq!(s.snippet, "It's here & ready");
         assert_eq!(c.message_ids, ["one@example.net", "two@gmail.example"]);
@@ -980,7 +1166,16 @@ mod tests {
     #[test]
     fn folders_become_labels_and_queries() {
         let g = gmail();
-        let p = g.query(&ThreadQuery { folder: "inbox".into(), limit: 25, before: Some(10_500), unread: true, ..Default::default() }, "inbox");
+        let p = g.query(
+            &ThreadQuery {
+                folder: "inbox".into(),
+                limit: 25,
+                before: Some(10_500),
+                unread: true,
+                ..Default::default()
+            },
+            "inbox",
+        );
         assert_eq!(p, json!({ "userId": "me", "maxResults": 25, "labelIds": ["INBOX"], "q": "before:11 is:unread" }));
         let p = g.query(&ThreadQuery { folder: "archive".into(), limit: 500, ..Default::default() }, "archive");
         assert_eq!(p["maxResults"], 100);
@@ -1008,18 +1203,27 @@ mod tests {
             ..Default::default()
         };
         let t = Threading { in_reply_to: "<m1@example.net>".into(), references: "<m0@example.net>".into() };
-        let raw = build_message(&Address { name: Some("Sam Sample".into()), email: "me@gmail.example".into() }, &req, Some(&t), "Wed, 30 Sep 2026 10:00:00 +0000");
+        let raw = build_message(
+            &Address { name: Some("Sam Sample".into()), email: "me@gmail.example".into() },
+            &req,
+            Some(&t),
+            "Wed, 30 Sep 2026 10:00:00 +0000",
+        );
         let (head, body) = raw.split_once("\r\n\r\n").unwrap();
         assert!(head.contains("From: Sam Sample <me@gmail.example>\r\n"), "{head}");
         assert!(head.contains("To: =?UTF-8?B?"), "{head}");
         assert!(head.contains("<ana@example.net>, b@example.net, \"Last, First\" <c@example.net>\r\n"), "{head}");
         assert!(head.contains("Bcc: hidden@example.net\r\n"));
-        assert!(head.contains("In-Reply-To: <m1@example.net>\r\nReferences: <m0@example.net> <m1@example.net>\r\n"), "{head}");
+        assert!(
+            head.contains("In-Reply-To: <m1@example.net>\r\nReferences: <m0@example.net> <m1@example.net>\r\n"),
+            "{head}"
+        );
         assert!(head.contains("Subject: =?UTF-8?B?"));
         assert_eq!(STANDARD.decode(body.replace("\r\n", "")).unwrap(), b"See you\r\nthere");
         assert!(!head.contains("Cc:"), "no empty headers");
 
-        let injected = SendRequest { to: vec!["a@b.c".into()], subject: "Hi\r\nBcc: evil@x.y".into(), ..Default::default() };
+        let injected =
+            SendRequest { to: vec!["a@b.c".into()], subject: "Hi\r\nBcc: evil@x.y".into(), ..Default::default() };
         let raw = build_message(&Address { name: None, email: "me@gmail.example".into() }, &injected, None, "d");
         assert!(!raw.contains("\r\nBcc:") && !raw.contains("In-Reply-To"), "{raw}");
     }
@@ -1032,8 +1236,16 @@ mod tests {
             subject: "Files".into(),
             text: "Two files\nattached".into(),
             attachments: vec![
-                OutgoingAttachment { filename: "Résumé 2026.pdf".into(), mime_type: "application/pdf".into(), content: pdf.clone() },
-                OutgoingAttachment { filename: "say \"hi\".txt".into(), mime_type: "text/plain\r\nX-Evil: 1".into(), content: b"hi".to_vec() },
+                OutgoingAttachment {
+                    filename: "Résumé 2026.pdf".into(),
+                    mime_type: "application/pdf".into(),
+                    content: pdf.clone(),
+                },
+                OutgoingAttachment {
+                    filename: "say \"hi\".txt".into(),
+                    mime_type: "text/plain\r\nX-Evil: 1".into(),
+                    content: b"hi".to_vec(),
+                },
             ],
             ..Default::default()
         };
@@ -1042,7 +1254,10 @@ mod tests {
         assert!(raw.lines().all(|l| l.len() <= 998), "no line over RFC 5322's limit");
         assert!(!raw.contains("X-Evil"), "{raw}");
         let (head, body) = raw.split_once("\r\n\r\n").unwrap();
-        assert!(head.contains("In-Reply-To: <m1@example.net>\r\nReferences: <m1@example.net>\r\nMIME-Version: 1.0\r\n"), "{head}");
+        assert!(
+            head.contains("In-Reply-To: <m1@example.net>\r\nReferences: <m1@example.net>\r\nMIME-Version: 1.0\r\n"),
+            "{head}"
+        );
         let boundary = head.split("boundary=\"").nth(1).unwrap().split('"').next().unwrap();
         assert!(head.ends_with(&format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"")), "{head}");
         assert!(body.ends_with(&format!("\r\n--{boundary}--\r\n")));
@@ -1065,7 +1280,10 @@ mod tests {
         );
         assert_eq!(b, pdf);
         let (h, b) = part(parts[3]);
-        assert_eq!(h, "Content-Type: application/octet-stream; name=\"say \\\"hi\\\".txt\"\r\nContent-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\nContent-Transfer-Encoding: base64");
+        assert_eq!(
+            h,
+            "Content-Type: application/octet-stream; name=\"say \\\"hi\\\".txt\"\r\nContent-Disposition: attachment; filename=\"say \\\"hi\\\".txt\"\r\nContent-Transfer-Encoding: base64"
+        );
         assert_eq!(b, b"hi");
         assert_eq!(parts[4], "--\r\n");
     }
@@ -1085,7 +1303,10 @@ mod tests {
         g.walk("m1", &part, &mut t, &mut h, &mut a);
         assert_eq!(t.as_deref(), Some("café"));
         assert_eq!(h.as_deref(), Some("<b>hi</b>"));
-        assert_eq!(a.iter().map(|a| (a.id.as_str(), a.inline)).collect::<Vec<_>>(), [("gmail:m1:1", false), ("gmail:m1:2", true)]);
+        assert_eq!(
+            a.iter().map(|a| (a.id.as_str(), a.inline)).collect::<Vec<_>>(),
+            [("gmail:m1:1", false), ("gmail:m1:2", true)]
+        );
         assert_eq!(Gmail::find_part(&part, "0.1").unwrap()["mimeType"], "text/html");
     }
 
@@ -1095,10 +1316,26 @@ mod tests {
         let e = g.gws_error(Some(2), &json!({ "error": { "code": 401, "message": "Authentication failed: invalid_grant", "reason": "authError" } }), "", "threads list");
         assert_eq!(e.kind, ErrorKind::AccountAuth);
         assert!(e.message.contains("cloudmail account login gmail"), "{}", e.message);
-        assert_eq!(g.gws_error(Some(1), &json!({ "error": { "code": 404, "message": "Requested entity was not found." } }), "", "x").kind, ErrorKind::NotFound);
-        assert_eq!(g.gws_error(Some(1), &json!({ "error": { "code": 401, "message": "Invalid Credentials" } }), "", "x").kind, ErrorKind::AccountAuth);
+        assert_eq!(
+            g.gws_error(
+                Some(1),
+                &json!({ "error": { "code": 404, "message": "Requested entity was not found." } }),
+                "",
+                "x"
+            )
+            .kind,
+            ErrorKind::NotFound
+        );
+        assert_eq!(
+            g.gws_error(Some(1), &json!({ "error": { "code": 401, "message": "Invalid Credentials" } }), "", "x").kind,
+            ErrorKind::AccountAuth
+        );
         let e = g.gws_error(Some(4), &Value::Null, "error[discovery]: dns error", "x");
-        assert!(e.kind == ErrorKind::AccountUnavailable && e.message.contains("couldn't reach Google"), "{}", e.message);
+        assert!(
+            e.kind == ErrorKind::AccountUnavailable && e.message.contains("couldn't reach Google"),
+            "{}",
+            e.message
+        );
     }
 
     #[test]

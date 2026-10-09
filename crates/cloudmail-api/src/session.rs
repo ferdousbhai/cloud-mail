@@ -74,7 +74,10 @@ fn unavailable(message: impl Into<String>) -> Error {
 }
 
 pub fn sign_in_required() -> Error {
-    Error::new(ErrorKind::AccountAuth, "iCloud isn't signed in on this computer: sign in with icloud-session (`cloudmail account login icloud`)")
+    Error::new(
+        ErrorKind::AccountAuth,
+        "iCloud isn't signed in on this computer: sign in with icloud-session (`cloudmail account login icloud`)",
+    )
 }
 
 fn dbus_error(e: zbus::Error) -> Error {
@@ -84,10 +87,15 @@ fn dbus_error(e: zbus::Error) -> Error {
             "icloud-session can't read its keyring ({}); unlock GNOME Keyring (or start a Secret Service) and try again",
             msg.as_deref().unwrap_or("no reason given")
         )),
-        zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" || name.as_str() == "org.freedesktop.DBus.Error.NameHasNoOwner" => {
+        zbus::Error::MethodError(name, _, _)
+            if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+                || name.as_str() == "org.freedesktop.DBus.Error.NameHasNoOwner" =>
+        {
             unavailable("icloud-session isn't installed or running (it comes with icloud-for-omarchy)")
         }
-        zbus::Error::MethodError(name, msg, _) => unavailable(format!("icloud-session: {}: {}", name.as_str(), msg.as_deref().unwrap_or(""))),
+        zbus::Error::MethodError(name, msg, _) => {
+            unavailable(format!("icloud-session: {}: {}", name.as_str(), msg.as_deref().unwrap_or("")))
+        }
         _ => unavailable(format!("can't reach icloud-session on the session bus: {e}")),
     }
 }
@@ -100,7 +108,8 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(TIMEOUT)).build().into();
+        let agent: ureq::Agent =
+            ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(TIMEOUT)).build().into();
         Self { bus: Mutex::new(None), jar: Mutex::new(None), agent }
     }
 
@@ -120,7 +129,10 @@ impl Session {
     {
         let bus = self.bus()?;
         let reply = bus.call_method(Some(BUS_NAME), OBJECT_PATH, Some(INTERFACE), method, body).map_err(dbus_error)?;
-        reply.body().deserialize().map_err(|e| unavailable(format!("icloud-session answered {method} with something unexpected ({e})")))
+        reply
+            .body()
+            .deserialize()
+            .map_err(|e| unavailable(format!("icloud-session answered {method} with something unexpected ({e})")))
     }
 
     /// The session's properties.
@@ -128,12 +140,20 @@ impl Session {
         let all: HashMap<String, OwnedValue> = self.call_properties()?;
         let text = |k: &str| all.get(k).and_then(|v| <&str>::try_from(v).ok()).unwrap_or("").to_string();
         let flag = |k: &str| all.get(k).and_then(|v| bool::try_from(v).ok()).unwrap_or(false);
-        Ok(Status { signed_in: flag("SignedIn"), signing_in: flag("SigningIn"), apple_id: text("AppleId"), full_name: text("FullName"), dsid: text("Dsid") })
+        Ok(Status {
+            signed_in: flag("SignedIn"),
+            signing_in: flag("SigningIn"),
+            apple_id: text("AppleId"),
+            full_name: text("FullName"),
+            dsid: text("Dsid"),
+        })
     }
 
     fn call_properties(&self) -> Result<HashMap<String, OwnedValue>> {
         let bus = self.bus()?;
-        let reply = bus.call_method(Some(BUS_NAME), OBJECT_PATH, Some("org.freedesktop.DBus.Properties"), "GetAll", &(INTERFACE,)).map_err(dbus_error)?;
+        let reply = bus
+            .call_method(Some(BUS_NAME), OBJECT_PATH, Some("org.freedesktop.DBus.Properties"), "GetAll", &(INTERFACE,))
+            .map_err(dbus_error)?;
         reply.body().deserialize().map_err(|e| unavailable(format!("icloud-session's properties are unreadable ({e})")))
     }
 
@@ -146,7 +166,8 @@ impl Session {
         if let Some(j) = self.jar.lock().unwrap().clone() {
             return Ok(j);
         }
-        let (cookie, params, webservices): (String, HashMap<String, String>, HashMap<String, String>) = self.call("Session", &())?;
+        let (cookie, params, webservices): (String, HashMap<String, String>, HashMap<String, String>) =
+            self.call("Session", &())?;
         let jar = Jar { cookie, params, webservices };
         *self.jar.lock().unwrap() = Some(jar.clone());
         Ok(jar)
@@ -155,15 +176,18 @@ impl Session {
     /// The base URL of one of Apple's webservices (as `/validate` named it), without a trailing slash.
     pub fn webservice(&self, key: &str) -> Result<String> {
         let jar = self.jar()?;
-        jar.webservices
-            .get(key)
-            .map(|u| u.trim_end_matches('/').to_string())
-            .ok_or_else(|| unavailable(format!("this iCloud account has no `{key}` webservice (is iCloud Mail turned on for it?)")))
+        jar.webservices.get(key).map(|u| u.trim_end_matches('/').to_string()).ok_or_else(|| {
+            unavailable(format!("this iCloud account has no `{key}` webservice (is iCloud Mail turned on for it?)"))
+        })
     }
 
     pub fn dsid(&self) -> Result<String> {
         let jar = self.jar()?;
-        jar.params.get("dsid").cloned().filter(|d| !d.is_empty()).ok_or_else(|| unavailable("icloud-session gave no dsid"))
+        jar.params
+            .get("dsid")
+            .cloned()
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| unavailable("icloud-session gave no dsid"))
     }
 
     /// Sends a request with the session. On 421/401, icloud-session confirms with Apple: a session
@@ -207,7 +231,13 @@ impl Session {
         }
         let host = full.host_str().unwrap_or("").to_string();
         let result = match body {
-            _ if method == "GET" => self.agent.get(full.as_str()).header("Cookie", &jar.cookie).header("Origin", ORIGIN).header("Referer", REFERER).call(),
+            _ if method == "GET" => self
+                .agent
+                .get(full.as_str())
+                .header("Cookie", &jar.cookie)
+                .header("Origin", ORIGIN)
+                .header("Referer", REFERER)
+                .call(),
             body => {
                 let (content_type, bytes): (&str, &[u8]) = match body {
                     Some(Payload::Json(b)) => ("application/json", b),
@@ -225,7 +255,13 @@ impl Session {
             }
         };
         let mut response = result.map_err(|e| unavailable(format!("can't reach {host} ({e}); offline?")))?;
-        let set_cookies: Vec<String> = response.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok()).map(str::to_string).collect();
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .map(str::to_string)
+            .collect();
         if !set_cookies.is_empty() {
             // Rotated cookies go back to their owner; the next request asks for the new jar.
             let refs: Vec<&str> = set_cookies.iter().map(String::as_str).collect();
@@ -234,7 +270,12 @@ impl Session {
         }
         let status = response.status().as_u16();
         let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let body = response.body_mut().with_config().limit(96 * 1024 * 1024).read_to_vec().map_err(|e| unavailable(format!("{host}: {e}")))?;
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(96 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| unavailable(format!("{host}: {e}")))?;
         Ok(Reply { status, content_type, body })
     }
 }

@@ -91,7 +91,9 @@ fn main() {
                     .collect::<Vec<_>>()
                     .join(" ");
                 let message = message.trim_start_matches("error: ");
-                CliError::usage(if message.is_empty() { "invalid arguments" } else { message }).hint("run `cloudmail commands --json` or `cloudmail <command> --help`").print(mode);
+                CliError::usage(if message.is_empty() { "invalid arguments" } else { message })
+                    .hint("run `cloudmail commands --json` or `cloudmail <command> --help`")
+                    .print(mode);
                 std::process::exit(exit::USAGE);
             }
             let _ = e.print();

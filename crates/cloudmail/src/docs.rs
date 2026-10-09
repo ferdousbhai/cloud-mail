@@ -20,15 +20,27 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("threads list", &["cloudmail threads list --folder screener", "cloudmail threads list --folder all --limit 100"]),
     ("search", &["cloudmail search invoice", "cloudmail search \"coffee next week\" --json"]),
     ("thread", &["cloudmail thread read t_ad7e6e0b172e481aaa3c"]),
-    ("thread read", &["cloudmail thread read t_ad7e6e0b172e481aaa3c", "cloudmail thread read t_ad7e6e0b172e481aaa3c --mark-read --json"]),
-    ("thread archive", &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"]),
+    (
+        "thread read",
+        &[
+            "cloudmail thread read t_ad7e6e0b172e481aaa3c",
+            "cloudmail thread read t_ad7e6e0b172e481aaa3c --mark-read --json",
+        ],
+    ),
+    (
+        "thread archive",
+        &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"],
+    ),
     ("thread unarchive", &["cloudmail thread unarchive t_ad7e6e0b172e481aaa3c"]),
     ("thread unread", &["cloudmail thread unread t_ad7e6e0b172e481aaa3c"]),
     ("thread markread", &["cloudmail thread markread t_1 t_2"]),
     ("thread delete", &["cloudmail thread delete t_ad7e6e0b172e481aaa3c --yes"]),
     ("screener", &["cloudmail screener", "cloudmail screener --json"]),
     ("screener list", &["cloudmail screener list --ids-only"]),
-    ("screener approve", &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"]),
+    (
+        "screener approve",
+        &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"],
+    ),
     ("screener block", &["cloudmail screener block spam@bad.biz"]),
     ("senders", &["cloudmail senders", "cloudmail senders --status blocked"]),
     (
@@ -50,10 +62,33 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("attachment", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c"]),
-    ("attachment list", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c", "cloudmail attachment list t_ad7e6e0b172e481aaa3c --ids-only"]),
-    ("attachment save", &["cloudmail attachment save a_31d5cc4ab87b497b8b79", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o ~/Downloads/", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o - > menu.pdf"]),
-    ("raw", &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"]),
-    ("watch", &["cloudmail watch", "cloudmail watch --folder screener --interval 60", "cloudmail watch --json | while read -r line; do echo \"$line\" | jq .thread.subject; done"]),
+    (
+        "attachment list",
+        &[
+            "cloudmail attachment list t_ad7e6e0b172e481aaa3c",
+            "cloudmail attachment list t_ad7e6e0b172e481aaa3c --ids-only",
+        ],
+    ),
+    (
+        "attachment save",
+        &[
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79",
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o ~/Downloads/",
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o - > menu.pdf",
+        ],
+    ),
+    (
+        "raw",
+        &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"],
+    ),
+    (
+        "watch",
+        &[
+            "cloudmail watch",
+            "cloudmail watch --folder screener --interval 60",
+            "cloudmail watch --json | while read -r line; do echo \"$line\" | jq .thread.subject; done",
+        ],
+    ),
     ("mailbox", &["cloudmail mailbox list"]),
     ("mailbox list", &["cloudmail mailbox list", "cloudmail mailbox list --json"]),
     (
@@ -63,14 +98,23 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail mailbox add support@example.com --name \"Example Support\" --direct --route",
         ],
     ),
-    ("mailbox set", &["cloudmail mailbox set support@example.com --screen false", "cloudmail mailbox set hi@example.com --position 0"]),
+    (
+        "mailbox set",
+        &[
+            "cloudmail mailbox set support@example.com --screen false",
+            "cloudmail mailbox set hi@example.com --position 0",
+        ],
+    ),
     ("mailbox remove", &["cloudmail mailbox remove old@example.com --yes"]),
     ("settings", &["cloudmail settings get"]),
     ("settings get", &["cloudmail settings get --json"]),
     ("settings set", &["cloudmail settings set forward-to me@elsewhere.com", "cloudmail settings set forward-to \"\""]),
     ("config", &["cloudmail config show"]),
     ("config show", &["cloudmail config show", "cloudmail config show --show-token --json"]),
-    ("config set", &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"]),
+    (
+        "config set",
+        &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"],
+    ),
     ("config path", &["cloudmail config path"]),
     ("account", &["cloudmail account list"]),
     ("account list", &["cloudmail account list", "cloudmail account list --json"]),
@@ -87,8 +131,14 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add icloud --no-login --json",
         ],
     ),
-    ("account login", &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"]),
-    ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey", "cloudmail account remove icloud"]),
+    (
+        "account login",
+        &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"],
+    ),
+    (
+        "account remove",
+        &["cloudmail account remove gmail", "cloudmail account remove hey", "cloudmail account remove icloud"],
+    ),
     (
         "setup",
         &[
@@ -202,12 +252,17 @@ pub fn commands_json(root: &Command) -> Value {
 pub fn commands_text(tree: &Value) -> String {
     let mut out = String::from("cloudmail commands (run `cloudmail <command> --help` for details)\n");
     for c in tree["commands"].as_array().into_iter().flatten() {
-        out.push_str(&format!("\n{}\n    {}\n", c["usage"].as_str().unwrap_or_default(), c["description"].as_str().unwrap_or_default()));
+        out.push_str(&format!(
+            "\n{}\n    {}\n",
+            c["usage"].as_str().unwrap_or_default(),
+            c["description"].as_str().unwrap_or_default()
+        ));
         for e in c["examples"].as_array().into_iter().flatten() {
             out.push_str(&format!("    $ {}\n", e.as_str().unwrap_or_default()));
         }
     }
-    let globals = tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
+    let globals =
+        tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
     out.push_str(&format!("\nGlobal flags: {}\n\nExit codes:\n", globals.join("  ")));
     for (code, meaning) in exit::TABLE {
         out.push_str(&format!("  {code}  {meaning}\n"));
@@ -364,11 +419,7 @@ a short agent skill for Claude Code, Codex and others.
 "#;
 
 pub fn agent_guide() -> String {
-    let rows = exit::TABLE
-        .iter()
-        .map(|(c, d)| format!("| {c} | {d} |"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let rows = exit::TABLE.iter().map(|(c, d)| format!("| {c} | {d} |")).collect::<Vec<_>>().join("\n");
     AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
 }
 
@@ -408,9 +459,11 @@ pub fn install_skill() -> CliResult {
     let home = dirs::home_dir().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
     let paths = write_skill(&home)?;
     let human = paths.iter().map(|p| format!("Installed {}", p.display())).collect::<Vec<_>>().join("\n");
-    Ok(Response::new(json!({ "paths": paths }), "Installed the cloudmail skill")
-        .human(human)
-        .crumbs(vec![crumb("show", "cloudmail skill", "Print the skill")]))
+    Ok(Response::new(json!({ "paths": paths }), "Installed the cloudmail skill").human(human).crumbs(vec![crumb(
+        "show",
+        "cloudmail skill",
+        "Print the skill",
+    )]))
 }
 
 #[cfg(test)]
@@ -437,7 +490,13 @@ mod tests {
             assert!(all.iter().any(|a| a == p), "examples for unknown command `{p}`");
             assert!(!ex.is_empty());
             for e in *ex {
-                assert!(e.starts_with("cloudmail ") || e.contains("| cloudmail") || e.contains("| xargs cloudmail") || e.starts_with("echo "), "{e}");
+                assert!(
+                    e.starts_with("cloudmail ")
+                        || e.contains("| cloudmail")
+                        || e.contains("| xargs cloudmail")
+                        || e.starts_with("echo "),
+                    "{e}"
+                );
             }
         }
     }
@@ -492,7 +551,10 @@ mod tests {
         assert!(!compose["examples"].as_array().unwrap().is_empty());
         assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
         assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
-        assert!(commands_text(&tree).contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n"));
+        assert!(
+            commands_text(&tree)
+                .contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n")
+        );
     }
 
     #[test]
@@ -519,7 +581,11 @@ mod tests {
         };
         assert!(SKILL.starts_with("---\nname: cloudmail\n"));
         for line in SKILL.lines().filter(|l| l.starts_with("cloudmail ")) {
-            let words: Vec<&str> = line.split_whitespace().skip(1).take_while(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-')).collect();
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .skip(1)
+                .take_while(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+                .collect();
             let found = (1..=words.len().min(2)).rev().any(|n| all.contains(&words[..n].join(" ")));
             assert!(found, "skill names an unknown command: {line}");
         }

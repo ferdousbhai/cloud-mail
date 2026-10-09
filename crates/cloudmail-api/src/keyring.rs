@@ -35,7 +35,9 @@ type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 fn unavailable(e: impl std::fmt::Display) -> Error {
     Error::new(
         ErrorKind::Config,
-        format!("the keyring (Secret Service) isn't available ({e}); cloudmail keeps its secrets there. Start or unlock GNOME Keyring (or another Secret Service) and try again"),
+        format!(
+            "the keyring (Secret Service) isn't available ({e}); cloudmail keeps its secrets there. Start or unlock GNOME Keyring (or another Secret Service) and try again"
+        ),
     )
 }
 
@@ -55,12 +57,20 @@ struct Open {
 impl Open {
     fn new() -> zbus::Result<Open> {
         let bus = Connection::session()?;
-        let (_, session): (OwnedValue, OwnedObjectPath) =
-            bus.call_method(Some(BUS_NAME), SERVICE_PATH, Some(SERVICE), "OpenSession", &("plain", Value::from("")))?.body().deserialize()?;
+        let (_, session): (OwnedValue, OwnedObjectPath) = bus
+            .call_method(Some(BUS_NAME), SERVICE_PATH, Some(SERVICE), "OpenSession", &("plain", Value::from("")))?
+            .body()
+            .deserialize()?;
         Ok(Open { bus, session })
     }
 
-    fn call<R>(&self, path: &str, interface: &str, method: &str, body: &(impl serde::Serialize + zbus::zvariant::DynamicType)) -> zbus::Result<R>
+    fn call<R>(
+        &self,
+        path: &str,
+        interface: &str,
+        method: &str,
+        body: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+    ) -> zbus::Result<R>
     where
         R: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type,
     {
@@ -95,7 +105,8 @@ impl Open {
     }
 
     fn unlock(&self, path: &OwnedObjectPath) -> zbus::Result<()> {
-        let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = self.call(SERVICE_PATH, SERVICE, "Unlock", &(vec![path],))?;
+        let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) =
+            self.call(SERVICE_PATH, SERVICE, "Unlock", &(vec![path],))?;
         self.prompt(&prompt)?;
         Ok(())
     }
@@ -107,7 +118,8 @@ impl Open {
             return Ok(path);
         }
         let properties = HashMap::from([("org.freedesktop.Secret.Collection.Label", Value::from(DEFAULT_LABEL))]);
-        let (path, prompt): (OwnedObjectPath, OwnedObjectPath) = self.call(SERVICE_PATH, SERVICE, "CreateCollection", &(properties, DEFAULT_ALIAS))?;
+        let (path, prompt): (OwnedObjectPath, OwnedObjectPath) =
+            self.call(SERVICE_PATH, SERVICE, "CreateCollection", &(properties, DEFAULT_ALIAS))?;
         match self.prompt(&prompt)? {
             Some(made) => Ok(OwnedObjectPath::try_from(made)?),
             None => Ok(path),
@@ -150,7 +162,8 @@ pub fn set(name: &str, label: &str, secret: &str) -> Result<()> {
             ("org.freedesktop.Secret.Item.Attributes", Value::from(attributes(name))),
         ]);
         let secret = (&k.session, Vec::<u8>::new(), secret.as_bytes(), CONTENT_TYPE);
-        let (_, prompt): (OwnedObjectPath, OwnedObjectPath) = k.call(&collection, COLLECTION, "CreateItem", &(properties, secret, true))?;
+        let (_, prompt): (OwnedObjectPath, OwnedObjectPath) =
+            k.call(&collection, COLLECTION, "CreateItem", &(properties, secret, true))?;
         k.prompt(&prompt)?;
         Ok(())
     })()

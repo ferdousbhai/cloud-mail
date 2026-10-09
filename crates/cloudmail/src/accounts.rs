@@ -38,7 +38,8 @@ fn link_error(e: LinkError) -> CliError {
 
 fn not_linked(e: Error) -> CliError {
     match e.kind {
-        ErrorKind::NotFound => CliError::not_found(e.message).hint("see `cloudmail account list`, or link one with `cloudmail account add`"),
+        ErrorKind::NotFound => CliError::not_found(e.message)
+            .hint("see `cloudmail account list`, or link one with `cloudmail account add`"),
         _ => e.into(),
     }
 }
@@ -48,8 +49,16 @@ fn sign_in(name: &str) -> CliResult {
     let p = accounts::open(name).map_err(not_linked)?;
     eprintln!("Signing in to {}…", p.label());
     let status = accounts::sign_in(name).map_err(link_error)?;
-    let summary = format!("Signed in to {} again{}", status.label, if status.addresses.is_empty() { String::new() } else { format!(" ({})", status.addresses.join(", ")) });
-    Ok(Response::new(json!({ "account": name, "addresses": status.addresses }), summary).crumbs(vec![crumb("inbox", "cloudmail inbox", "Your Inbox")]))
+    let summary = format!(
+        "Signed in to {} again{}",
+        status.label,
+        if status.addresses.is_empty() { String::new() } else { format!(" ({})", status.addresses.join(", ")) }
+    );
+    Ok(Response::new(json!({ "account": name, "addresses": status.addresses }), summary).crumbs(vec![crumb(
+        "inbox",
+        "cloudmail inbox",
+        "Your Inbox",
+    )]))
 }
 
 fn list() -> CliResult {
@@ -62,13 +71,21 @@ fn list() -> CliResult {
             .map(|(name, cfg)| {
                 s.spawn(move || match accounts::open(name) {
                     Ok(p) => p.status(),
-                    Err(e) => AccountStatus { name: name.clone(), provider: cfg.provider(name).to_string(), label: name.clone(), ok: false, addresses: Vec::new(), detail: e.message },
+                    Err(e) => AccountStatus {
+                        name: name.clone(),
+                        provider: cfg.provider(name).to_string(),
+                        label: name.clone(),
+                        ok: false,
+                        addresses: Vec::new(),
+                        detail: e.message,
+                    },
                 })
             })
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    let mut human = format!("cloudmail  {}", worker.as_deref().unwrap_or("(worker not configured: run `cloudmail setup`)"));
+    let mut human =
+        format!("cloudmail  {}", worker.as_deref().unwrap_or("(worker not configured: run `cloudmail setup`)"));
     for s in &statuses {
         let state = if s.ok { "signed in" } else { "needs attention" };
         let addrs = if s.addresses.is_empty() { String::new() } else { format!("  {}", s.addresses.join(", ")) };
@@ -79,7 +96,11 @@ fn list() -> CliResult {
     }
     let summary = match statuses.len() {
         0 => "No linked accounts".to_string(),
-        n => format!("{n} linked account{}; {} signed in", if n == 1 { "" } else { "s" }, statuses.iter().filter(|s| s.ok).count()),
+        n => format!(
+            "{n} linked account{}; {} signed in",
+            if n == 1 { "" } else { "s" },
+            statuses.iter().filter(|s| s.ok).count()
+        ),
     };
     let ids = statuses.iter().map(|s| s.name.clone()).collect();
     let mut crumbs = vec![
@@ -90,7 +111,11 @@ fn list() -> CliResult {
     if !statuses.is_empty() {
         crumbs = vec![crumb("inbox", "cloudmail inbox", "Your Inbox with the linked accounts' merged in")];
         if statuses.iter().any(|s| s.provider == "hey") {
-            crumbs.push(crumb("feed", "cloudmail threads list --folder feed", "HEY's The Feed (also paper-trail, set-aside, reply-later)"));
+            crumbs.push(crumb(
+                "feed",
+                "cloudmail threads list --folder feed",
+                "HEY's The Feed (also paper-trail, set-aside, reply-later)",
+            ));
         }
         crumbs.push(crumb("remove", "cloudmail account remove <name>", "Unlink an account"));
     }
@@ -115,9 +140,14 @@ fn add(ctx: &Ctx, link: Link) -> CliResult {
         if linked.addresses.is_empty() { String::new() } else { format!(" ({})", linked.addresses.join(", ")) }
     );
     match &linked.screened_in {
-        Some(Ok(n)) => summary.push_str(&format!(". Your Screener decides its new senders; {n} people it already corresponds with were screened in")),
-        Some(Err(why)) => summary.push_str(&format!(". Its correspondents couldn't be screened in ({why}), so they wait in the Screener")),
-        None if linked.provider != "hey" => summary.push_str(". Your Screener decides its new senders once your worker is set up"),
+        Some(Ok(n)) => summary.push_str(&format!(
+            ". Your Screener decides its new senders; {n} people it already corresponds with were screened in"
+        )),
+        Some(Err(why)) => summary
+            .push_str(&format!(". Its correspondents couldn't be screened in ({why}), so they wait in the Screener")),
+        None if linked.provider != "hey" => {
+            summary.push_str(". Your Screener decides its new senders once your worker is set up")
+        }
         None => {}
     }
     if let Some(f) = &forwarding {
@@ -136,11 +166,22 @@ fn add(ctx: &Ctx, link: Link) -> CliResult {
         "hey" => data["hey_version"] = json!(linked.version),
         _ => {}
     }
-    let mut crumbs: Vec<Breadcrumb> = vec![crumb("inbox", "cloudmail inbox", &format!("Your Inbox with {label}'s merged in"))];
+    let mut crumbs: Vec<Breadcrumb> =
+        vec![crumb("inbox", "cloudmail inbox", &format!("Your Inbox with {label}'s merged in"))];
     match linked.provider.as_str() {
-        "gmail" => crumbs.push(crumb("search", "cloudmail search <words>", "Search your mail and Gmail together (Gmail reads its own search syntax)")),
-        "icloud" => crumbs.push(crumb("search", "cloudmail search <words>", "Search your mail and iCloud Mail together")),
-        _ => crumbs.push(crumb("feed", "cloudmail threads list --folder feed", "HEY's The Feed (also paper-trail, set-aside, reply-later)")),
+        "gmail" => crumbs.push(crumb(
+            "search",
+            "cloudmail search <words>",
+            "Search your mail and Gmail together (Gmail reads its own search syntax)",
+        )),
+        "icloud" => {
+            crumbs.push(crumb("search", "cloudmail search <words>", "Search your mail and iCloud Mail together"))
+        }
+        _ => crumbs.push(crumb(
+            "feed",
+            "cloudmail threads list --folder feed",
+            "HEY's The Feed (also paper-trail, set-aside, reply-later)",
+        )),
     }
     crumbs.push(crumb("screener", "cloudmail screener", "Senders waiting for a yes or no"));
     crumbs.push(crumb("list", "cloudmail account list", "Linked accounts"));
@@ -158,8 +199,13 @@ fn remove(name: &str) -> CliResult {
             gone.gws_dir.as_deref().map(|d| d.display().to_string()).unwrap_or_default()
         ),
         ("gmail", _) => format!("Unlinked {name}; nothing changed in Gmail itself"),
-        ("icloud", _) => format!("Unlinked {name}; nothing changed in iCloud, and icloud-session, which other apps use, stays signed in"),
+        ("icloud", _) => format!(
+            "Unlinked {name}; nothing changed in iCloud, and icloud-session, which other apps use, stays signed in"
+        ),
         _ => format!("Unlinked {name}; nothing changed in the account itself, and its CLI is still signed in"),
     };
-    Ok(Response::new(json!({ "account": name, "removed": true, "signed_out": gone.signed_out.unwrap_or(false) }), summary))
+    Ok(Response::new(
+        json!({ "account": name, "removed": true, "signed_out": gone.signed_out.unwrap_or(false) }),
+        summary,
+    ))
 }
