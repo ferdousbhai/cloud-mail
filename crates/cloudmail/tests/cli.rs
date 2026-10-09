@@ -388,6 +388,13 @@ fn errors_have_codes_and_exit_statuses() {
     assert_eq!(o.status.code(), Some(3));
     assert_eq!(json_out(&o)["error"]["code"], "not_configured");
 
+    // A preview works unconfigured, and says nothing can be sent yet.
+    let o = cloudmail_env(&m, &["compose", "--to", "a@b.com", "--subject", "Hi", "-m", "x", "--dry-run"], None, &[("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)]);
+    assert_eq!(o.status.code(), Some(0));
+    let v = json_out(&o);
+    assert!(v["summary"].as_str().unwrap().ends_with("nothing can be sent until `cloudmail setup` has run"), "{v}");
+    assert_eq!(v["meta"]["warnings"][0]["code"], "not_configured");
+
     let o = cloudmail(&m, &["inbox", "--nope"], None);
     assert_eq!(o.status.code(), Some(2));
     assert_eq!(json_out(&o)["error"]["code"], "usage");

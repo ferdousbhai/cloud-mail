@@ -212,20 +212,23 @@ pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// A domain's public MX hosts (DNS over HTTPS); None when the lookup itself failed.
+/// A domain's public MX hosts (DNS over HTTPS); None when the lookup failed three times.
 fn mx_hosts(domain: &str) -> Option<Vec<String>> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(5))).build().into();
-    let body: Value = agent
-        .get("https://cloudflare-dns.com/dns-query")
-        .query("name", domain)
-        .query("type", "MX")
-        .header("accept", "application/dns-json")
-        .call()
-        .ok()?
-        .body_mut()
-        .read_json()
-        .ok()?;
-    Some(parse_mx_answer(&body))
+    let lookup = || -> Option<Value> {
+        agent
+            .get("https://cloudflare-dns.com/dns-query")
+            .query("name", domain)
+            .query("type", "MX")
+            .header("accept", "application/dns-json")
+            .call()
+            .ok()?
+            .body_mut()
+            .read_json()
+            .ok()
+    };
+    // One setup looks up every domain, and a single slow answer shouldn't read as mail elsewhere.
+    (0..3).find_map(|_| lookup()).map(|body| parse_mx_answer(&body))
 }
 
 /// MX hosts in priority order (most preferred first).
@@ -542,10 +545,15 @@ pub fn route_address(
         let elsewhere: Vec<String> = mx.iter().flatten().filter(|h| !h.ends_with(".mx.cloudflare.net")).cloned().collect();
         let safe = mx.is_some() && elsewhere.is_empty();
         if !safe {
-            let current = if elsewhere.is_empty() { "somewhere we couldn't look up".to_string() } else { elsewhere.join(", ") };
-            let question = format!("{domain} receives mail at {current}. Move all of {domain}'s mail to Cloudflare (replaces its MX records)?");
+            // A failed lookup says so: "receives mail at somewhere" reads as mail elsewhere.
+            let current = if mx.is_none() {
+                format!("{domain} may receive mail elsewhere (its MX lookup failed; run setup again to retry)")
+            } else {
+                format!("{domain} receives mail at {}", elsewhere.join(", "))
+            };
+            let question = format!("{current}. Move all of {domain}'s mail to Cloudflare (replaces its MX records)?");
             if !consent(w, yes, &question) {
-                return Ok(blocked(w, address, format!("{domain} receives mail at {current}; moving it to Cloudflare replaces its MX records")));
+                return Ok(blocked(w, address, format!("{current}; moving it to Cloudflare replaces its MX records")));
             }
         }
         w.mutate(&format!("enable Email Routing for {domain}"), &["email-routing", "enable", "-z", &domain], None)?;

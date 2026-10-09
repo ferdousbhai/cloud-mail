@@ -319,12 +319,21 @@ fn with_attachments(req: &SendRequest) -> String {
 fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
     let to_text = req.to.join(", ");
     if dry_run {
-        if !req.attachments.is_empty()
-            && let Ok(mail) = ctx.mail() {
-                let sender = mail.sender_for(&req);
-                cloudmail_api::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
+        // A preview needs no worker, but one that couldn't be sent says so.
+        let unconfigured = match ctx.mail() {
+            Ok(mail) => {
+                if !req.attachments.is_empty() {
+                    let sender = mail.sender_for(&req);
+                    cloudmail_api::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
+                }
+                None
             }
-        let summary = format!("Would send \"{}\" to {to_text}{} (dry run)", req.subject, with_attachments(&req));
+            Err(e) => Some(e),
+        };
+        let mut summary = format!("Would send \"{}\" to {to_text}{} (dry run)", req.subject, with_attachments(&req));
+        if unconfigured.is_some() {
+            summary.push_str("; nothing can be sent until `cloudmail setup` has run");
+        }
         let files: Vec<String> = req.attachments.iter().map(|a| format!("{} ({}, {})", a.filename, human_size(a.size() as i64), a.mime_type)).collect();
         let human = format!(
             "From: {}\nTo: {to_text}{}{}\nSubject: {}{}\n\n{}\n\n{summary}",
@@ -340,7 +349,11 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
         if !req.attachments.is_empty() {
             request["attachments"] = req.attachments.iter().map(|a| json!({ "filename": a.filename, "mime_type": a.mime_type, "size": a.size() })).collect();
         }
-        return Ok(Response::new(json!({ "dry_run": true, "request": request }), summary).human(human));
+        let mut resp = Response::new(json!({ "dry_run": true, "request": request }), summary).human(human);
+        if let Some(e) = unconfigured {
+            resp = resp.meta("warnings", [json!({ "code": e.code, "message": e.message })]);
+        }
+        return Ok(resp);
     }
     let resp = ctx.mail()?.send(&req)?;
     let mut summary = format!("Sent \"{}\" to {to_text}{}", req.subject, with_attachments(&req));
