@@ -231,7 +231,8 @@ When stdout is piped, every command prints one JSON envelope:
 - `breadcrumbs` suggest the next commands; placeholders look like `<id>`.
 - `--quiet` prints only `data`; `--ids-only` prints one ID per line; `--count` prints a number.
 - `--json` forces the envelope on a terminal; `--styled` forces human text when piped.
-- `cloudmail watch` is the exception: it streams one JSON object per line (JSONL), no envelope.
+- Two exceptions: `cloudmail watch` streams one JSON object per line (JSONL), and `cloudmail skill`
+  prints its SKILL.md as plain markdown; neither has an envelope.
 
 Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "..."}}` and exit non-zero:
 

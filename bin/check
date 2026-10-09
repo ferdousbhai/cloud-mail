@@ -1,0 +1,35 @@
+#!/bin/bash
+# Every check a change must pass, run on this machine. .githooks/pre-push runs it before a push;
+# set CLOUDMAIL_NO_CHECK=1 to push without it. GitHub only builds the release packages
+# (.github/workflows/packages.yml, on a version tag).
+#
+#   bin/check          # Rust (clippy, tests), the worker (tests, types), packaging
+set -euo pipefail
+cd "$(dirname "$0")/.."
+export PATH="$HOME/.cargo/bin:$PATH"
+
+step() { printf '\n==> %s\n' "$*"; }
+
+# The desktop app needs GTK 4 and WebKitGTK 6.0 to build; without them only the CLI and the
+# library are checked, and the build of the release packages is the app's check.
+crates=(-p cloudmail-api -p cloudmail)
+if pkg-config --exists gtk4 webkitgtk-6.0 2>/dev/null; then
+  crates+=(-p cloudmail-gtk)
+else
+  echo "note: skipping cloudmail-gtk (install gtk4 and webkitgtk-6.0 to check it)" >&2
+fi
+
+step "clippy"
+cargo clippy --locked "${crates[@]}" --all-targets -- -D warnings
+step "cargo test"
+cargo test --locked "${crates[@]}"
+
+step "worker"
+(cd worker && { [[ -d node_modules ]] || bun install --frozen-lockfile; } && bun test && bun run typecheck)
+
+step "packaging"
+bash packaging/repo/test.sh
+python3 packaging/repo/test_arch.py
+bash -n bin/build-package bin/release bin/release-on-tag bin/verify-release install.sh .githooks/pre-push
+
+printf '\nAll checks passed.\n'
