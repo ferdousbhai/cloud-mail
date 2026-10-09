@@ -14,7 +14,7 @@ prints one JSON envelope `{ok, data, summary, breadcrumbs, meta}`, never prompts
 with `{ok:false, error:{code, message, hint}}` on failure. Follow `error.hint` and `breadcrumbs`.
 
 Start with `cloudmail status --json`: `data.healthy` means it's set up, so skip to **Use**;
-`not_configured` (or no `cloudmail`) means **Set up**.
+`error.code == "not_configured"` (or no `cloudmail`) means **Set up**.
 Details on demand only: `cloudmail <cmd> --help`, `cloudmail agent-guide`, `cloudmail commands --json`.
 
 ## Set up (once)
@@ -25,17 +25,24 @@ Setup drives the Cloudflare CLI as `npx cf`; for other Cloudflare work, find com
 `npx cf cli search "<task>"` (no names/domains/IDs in the query).
 
 1. **Cloudflare login.** `npx cf auth whoami`. If logged out, have the user run `! npx cf auth login`
-   (browser), or use `CLOUDFLARE_API_TOKEN` (permissions: README "For agents and scripts"). The account
-   needs the Workers Paid plan to send mail. Several accounts: `npx cf accounts list`, pass `--account <id>`.
-2. **Find their domains.** `npx cf zones list --status active` lists domains on Cloudflare. Show them
-   and ask which addresses to create on each, and which should skip the Screener (`:direct`, for
+   (browser), or use `CLOUDFLARE_API_TOKEN` (permissions: README "For agents and scripts"). Several
+   accounts: `npx cf accounts list`, pass `--account <id>`. Sending needs the Workers Paid plan:
+   `npx cf accounts subscriptions get | jq -r '.[].rate_plan.id'` lists `workers_paid` when it's there.
+2. **Find their domains.** `npx cf zones list --status active --per-page 100 | jq -r '.[].name'` (results
+   are paged, 20 by default; each zone is ~60 lines of JSON, so keep the names only). Show them and ask which addresses to create on each, and which should skip the Screener (`:direct`, for
    support@, billing@, …). A domain not on Cloudflare yet: `npx cf zones create` (see its `--help`),
    then the user switches nameservers at their registrar; continue once the zone is `active`.
 3. **Preview.** `cloudmail setup you@a.com support@a.com:direct hi@b.com --dry-run --json`
-   Add `--forward-to old@inbox.com` if they want copies at their old inbox while switching.
-4. **Confirm before `--yes`.** A domain already receiving mail elsewhere (Google Workspace, Fastmail…)
-   reports `blocked`; `--yes` replaces its MX records and moves its mail here. Setup also adds SPF/DKIM
-   and a `p=reject` DMARC record; other services sending as that domain need SPF/DKIM first. Ask.
+   Add `--forward-to old@inbox.com` if they want copies at their old inbox while switching. It is
+   silent while it works: with many domains it can take several minutes, so wait for it.
+4. **Confirm before `--yes`.** Each `blocked` route says why; `--yes` overrides all of them, so ask about each:
+   - "receives mail at <hosts>": its MX records point elsewhere (Google Workspace, Fastmail…); `--yes`
+     replaces them and moves all of that domain's mail here.
+   - "an existing rule sends <address> to <target>": `--yes` takes the address from that rule (another
+     worker or a forward), which stops getting its mail.
+   - "its MX lookup failed": a DNS hiccup; run the preview again before asking.
+   The "enable sending for <domain>" steps add SPF/DKIM and a `p=reject` DMARC record; ask whether any
+   other service sends mail as that domain (it needs SPF/DKIM set up first, or its mail gets rejected).
 5. **Run** the same command without `--dry-run` (plus `--yes` if approved). Check every
    `data.routes[].status`, then `cloudmail status --json`. Re-running setup is safe; it also updates the worker.
 
@@ -49,9 +56,9 @@ desktop) or have the user run the command with `!`. Without either, `add` fails 
 
 | Provider | Needs | Command |
 |---|---|---|
-| HEY | `hey` CLI (github.com/basecamp/hey-cli), signed in (`! hey auth login`) | `cloudmail account add hey` |
-| Gmail | `npm install -g @googleworkspace/cli` | `cloudmail account add gmail --login` (more: `--name work`) |
-| iCloud | icloud-session (icloud-for-omarchy) | `cloudmail account add icloud --login` |
+| HEY | `hey` on PATH (github.com/basecamp/hey-cli) | `cloudmail account add hey --login` |
+| Gmail | `gws` on PATH (`npm install -g @googleworkspace/cli`) | `cloudmail account add gmail --login` (more: `--name work`) |
+| iCloud | icloud-session (github.com/ferdousbhai/icloud-for-omarchy) | `cloudmail account add icloud --login` |
 
 Gmail warns "Google hasn't verified this app": tell the user to click Advanced, then Go to Cloudmail.
 Verify with `cloudmail account list --json`. Expired sign-in (`account_unauthorized`, exit 3):
