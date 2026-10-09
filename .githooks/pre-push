@@ -19,7 +19,11 @@ if ((branches)) && [[ ${CLOUDMAIL_NO_CHECK:-} != 1 ]]; then
   # The checks run on the working tree, which is what's being pushed unless it has changes.
   [[ -z $(git -C "$top" status --porcelain --untracked-files=no) ]] \
     || echo "note: the working tree has uncommitted changes; bin/check sees them, the push doesn't" >&2
-  "$top/bin/check" >&2 || { echo "bin/check failed; not pushing (CLOUDMAIL_NO_CHECK=1 skips it)" >&2; exit 1; }
+  # From a linked worktree git hands hooks GIT_DIR (and friends); the checks' own fixture
+  # repositories must not inherit them, or their commits land in this one.
+  # shellcheck disable=SC2046
+  (unset $(git rev-parse --local-env-vars); "$top/bin/check" >&2) \
+    || { echo "bin/check failed; not pushing (CLOUDMAIL_NO_CHECK=1 skips it)" >&2; exit 1; }
 fi
 
 [[ ${CLOUDMAIL_NO_AUTO_RELEASE:-} == 1 ]] && exit 0
