@@ -3,7 +3,7 @@
 # set CLOUDMAIL_NO_CHECK=1 to push without it. GitHub only builds the release packages
 # (.github/workflows/packages.yml, on a version tag).
 #
-#   bin/check          # Rust (clippy, tests), the worker (tests, types), packaging
+#   bin/check          # Rust (format, clippy, tests), the worker (tests, types), packaging
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -19,6 +19,8 @@ else
   echo "note: skipping cloudmail-gtk (install gtk4 and webkitgtk-6.0 to check it)" >&2
 fi
 
+step "rustfmt (fix with: cargo fmt --all)"
+cargo fmt --all -- --check
 step "clippy"
 cargo clippy --locked "${crates[@]}" --all-targets -- -D warnings
 step "cargo test"

@@ -295,7 +295,7 @@ bun run dev --port 8799              # cf dev --mode development: local resource
 curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
 bun test && bunx tsc --noEmit
 
-bin/check                            # everything: clippy, Rust tests, worker tests and types, packaging
+bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
 ```
 
 Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
