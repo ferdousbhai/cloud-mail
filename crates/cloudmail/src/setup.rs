@@ -780,12 +780,16 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
             configured == url
         }
     };
-    let reused = existing_cfg
-        .as_ref()
-        .filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker))
-        .and_then(|c| c.api_token.clone());
+    // The token is in the keyring (or, from an older version, still in the file).
+    let reused = match existing_cfg.as_ref().filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker)) {
+        Some(c) => match c.api_token.clone() {
+            Some(t) => Some(t),
+            None => config::keyring_token()?,
+        },
+        None => None,
+    };
     let token = if let Some(token) = reused {
-        w.record("API token", "exists", None, Some(cfg_path.display().to_string()));
+        w.record("API token", "exists", None, Some("keyring".into()));
         token
     } else if !first_time && !args.force {
         if !args.dry_run {
@@ -804,11 +808,15 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
         )?;
         let file = config::FileConfig {
             api_url: Some(url.clone()),
-            api_token: Some(token.clone()),
+            api_token: None,
             poll_seconds: Some(config::DEFAULT_POLL_SECONDS),
             // Linked accounts survive a token rotation.
             accounts: existing_cfg.as_ref().map(|c| c.accounts.clone()).unwrap_or_default(),
         };
+        w.perform("keep the API token in the keyring", None, Some("Secret Service".into()), |_| {
+            cloudmail_api::keyring::set(cloudmail_api::keyring::API_TOKEN, "Cloudmail API token", &token)?;
+            Ok(())
+        })?;
         w.perform("write config", None, Some(cfg_path.display().to_string()), |_| {
             config::save(&file)?;
             Ok(())

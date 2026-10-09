@@ -210,6 +210,40 @@ impl Client {
         .map(|d| d.moved)
     }
 
+    /// The decisions recorded for these addresses (by lowercased address): "approved", "blocked"
+    /// or "pending"; an address with none is missing.
+    pub fn sender_statuses(&self, emails: &[String]) -> Result<std::collections::HashMap<String, String>> {
+        #[derive(serde::Deserialize)]
+        struct Found {
+            senders: Vec<Row>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Row {
+            email: String,
+            status: String,
+        }
+        let mut out = std::collections::HashMap::new();
+        for chunk in emails.chunks(1000) {
+            let found: Found = self.post("/api/senders/lookup", &serde_json::json!({ "emails": chunk }))?;
+            out.extend(found.senders.into_iter().map(|r| (r.email.to_ascii_lowercase(), r.status)));
+        }
+        Ok(out)
+    }
+
+    /// Records one decision for many senders; with `only_undecided`, a decision already made stays.
+    pub fn decide_senders(&self, senders: &[Address], status: &str, only_undecided: bool) -> Result<i64> {
+        #[derive(serde::Deserialize)]
+        struct Changed {
+            changed: i64,
+        }
+        let mut changed = 0;
+        for chunk in senders.chunks(1000) {
+            let list: Vec<_> = chunk.iter().map(|a| serde_json::json!({ "email": a.email, "name": a.name })).collect();
+            changed += self.post::<Changed>("/api/senders/batch", &serde_json::json!({ "senders": list, "status": status, "only_undecided": only_undecided }))?.changed;
+        }
+        Ok(changed)
+    }
+
     pub fn senders(&self, status: &str) -> Result<Vec<Sender>> {
         #[derive(serde::Deserialize)]
         struct Senders {

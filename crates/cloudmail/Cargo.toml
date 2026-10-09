@@ -16,9 +16,8 @@ serde_json.workspace = true
 ureq.workspace = true
 dirs.workspace = true
 clap = { version = "4", features = ["derive", "wrap_help", "env"] }
-rpassword = "7"
 
 [dev-dependencies]
 base64.workspace = true
-rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+urlencoding = "2"
+zbus = "5"

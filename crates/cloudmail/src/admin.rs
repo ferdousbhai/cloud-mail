@@ -172,8 +172,15 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
         ConfigCommand::Path => Ok(Response::new(json!({ "path": path }), path.display().to_string())),
         ConfigCommand::Show { show_token } => {
             let file = config::read_file(&path)?.unwrap_or_default();
-            let effective = config::load().ok();
-            let token = effective.as_ref().map(|c| c.api_token.clone()).or(file.api_token);
+            let effective = config::load();
+            if let Err(e) = &effective
+                && e.kind == cloudmail_api::ErrorKind::Config
+                && e.message.contains("keyring")
+            {
+                return Err(e.clone().into());
+            }
+            let effective = effective.ok();
+            let token = effective.as_ref().map(|c| c.api_token.clone());
             let shown_token = token.as_ref().map(|t| if show_token { t.clone() } else { redact(t) });
             let env_override = config::env_overrides();
             let data = json!({
@@ -181,6 +188,7 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
                 "exists": path.exists(),
                 "api_url": effective.as_ref().map(|c| c.api_url.clone()).or(file.api_url),
                 "api_token": shown_token,
+                "api_token_kept_in": "keyring",
                 "poll_seconds": effective.as_ref().map(|c| c.poll_seconds).or(file.poll_seconds),
                 "env_overrides": env_override,
             });
@@ -196,6 +204,7 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
         }
         ConfigCommand::Set { key, value } => {
             let mut file = config::read_file(&path)?.unwrap_or_default();
+            config::migrate_secrets(&mut file)?;
             match key {
                 ConfigKey::ApiUrl => {
                     if !value.starts_with("http://") && !value.starts_with("https://") {
@@ -203,7 +212,11 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
                     }
                     file.api_url = Some(value.trim_end_matches('/').to_string());
                 }
-                ConfigKey::ApiToken => file.api_token = Some(value),
+                ConfigKey::ApiToken => {
+                    cloudmail_api::keyring::set(cloudmail_api::keyring::API_TOKEN, "Cloudmail API token", value.trim())?;
+                    return Ok(Response::new(json!({ "kept_in": "keyring" }), "Updated the API token in the keyring")
+                        .crumbs(vec![crumb("status", "cloudmail status", "Check the connection")]));
+                }
                 ConfigKey::PollSeconds => {
                     file.poll_seconds = Some(value.parse().map_err(|_| CliError::usage("poll_seconds must be a number"))?);
                 }

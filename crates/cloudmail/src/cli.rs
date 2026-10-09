@@ -525,7 +525,7 @@ pub struct SetupArgs {
 pub enum AccountCommand {
     /// Show your worker and every linked account, with whether each is signed in
     List,
-    /// Link an account: `cloudmail account add hey`, `… add gmail` (one browser sign-in if needed) or `… add icloud` (an app-specific password)
+    /// Link an account: `cloudmail account add hey`, `… add gmail` (one browser sign-in if needed) or `… add icloud` (icloud-session's sign-in window if needed)
     Add {
         /// Provider to link (hey, gmail, icloud)
         provider: String,
@@ -544,31 +544,19 @@ pub enum AccountCommand {
         /// Gmail: the secret of --client-id
         #[arg(long, value_name = "SECRET", requires = "client_id")]
         client_secret: Option<String>,
-        /// iCloud: your iCloud Mail address (…@icloud.com, …@me.com or …@mac.com), which signs in
-        #[arg(long, value_name = "ADDRESS")]
-        email: Option<String>,
-        /// iCloud: another address you send from (Hide My Email, a custom domain); repeat for more
-        #[arg(long = "alias", value_name = "ADDRESS")]
-        aliases: Vec<String>,
-        /// iCloud: read the app-specific password from stdin instead of asking at the terminal
-        #[arg(long)]
-        password_stdin: bool,
         /// Don't start a browser sign-in even on a terminal; fail if not signed in
         #[arg(long, conflicts_with = "login")]
         no_login: bool,
-        /// Start the browser sign-in when needed even without a terminal (for a script that shows the browser)
+        /// Start the sign-in when needed even without a terminal (for a script that shows the browser or window)
         #[arg(long)]
         login: bool,
     },
-    /// Sign a linked account in again, when its sign-in expired or was revoked (one browser sign-in; iCloud: a new app-specific password)
+    /// Sign a linked account in again, when its sign-in expired or was revoked (a browser sign-in; iCloud: icloud-session's window)
     Login {
         /// Account name (see `cloudmail account list`)
         name: String,
-        /// iCloud: read the new app-specific password from stdin instead of asking at the terminal
-        #[arg(long)]
-        password_stdin: bool,
     },
-    /// Unlink an account (nothing changes in the account itself; Gmail's sign-in and iCloud's saved password are removed)
+    /// Unlink an account (nothing changes in the account itself; Cloudmail's own Gmail sign-in is removed)
     Remove {
         /// Account name (see `cloudmail account list`)
         name: String,

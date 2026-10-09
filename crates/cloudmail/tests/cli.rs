@@ -5,7 +5,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+mod support;
+
+const NO_BUS: &str = "unix:path=/nonexistent/cloudmail-test-bus";
 
 #[derive(Debug, Clone)]
 struct Req {
@@ -108,6 +113,12 @@ fn detail() -> Value {
 fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
     let p = req.path.as_str();
     match (req.method.as_str(), p) {
+        // Every linked account's sender is approved, unless a test decides otherwise.
+        ("POST", "/api/senders/lookup") => {
+            let all: Vec<Value> = req.body["emails"].as_array().into_iter().flatten().map(|e| json!({ "email": e, "status": "approved" })).collect();
+            ok(json!({ "senders": all }))
+        }
+        ("POST", "/api/senders/batch") => ok(json!({ "ok": true, "changed": 0 })),
         ("GET", "/api/counts") => ok(json!({ "screener": 1, "inbox": 2, "inbox_unread": 1 })),
         ("GET", _) if p.starts_with("/api/threads?") => {
             if p.contains("since=2000") {
@@ -152,6 +163,8 @@ fn cloudmail(m: &Mock, args: &[&str], stdin: Option<&str>) -> Output {
 fn cloudmail_env(m: &Mock, args: &[&str], stdin: Option<&str>, env: &[(&str, Option<&str>)]) -> Output {
     let home = temp_home("home");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+    // Never the real session bus (keyring, icloud-session): a test that needs one gives its own.
+    cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
     cmd.args(args)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("HOME", &home)
@@ -421,6 +434,8 @@ fn fake_hey() -> String {
 impl HeyHome {
     fn run(&self, m: &Mock, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+        // Never the real session bus (keyring, icloud-session): a test that needs one gives its own.
+        cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
         cmd.args(args)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
             .env("HOME", &self.home)
@@ -708,6 +723,8 @@ fn fake_gws() -> String {
 impl GmailHome {
     fn run(&self, m: &Mock, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
+        // Never the real session bus (keyring, icloud-session): a test that needs one gives its own.
+        cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
         cmd.args(args)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
             .env("HOME", &self.home)
@@ -791,7 +808,7 @@ fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
     let calls = h.calls();
     assert!(calls.iter().any(|c| c.starts_with("gmail users threads list --params") && c.contains(r#""labelIds":["INBOX"]"#) && c.contains(r#""maxResults":25"#)), "{calls:?}");
     assert!(calls.iter().any(|c| c.contains("threads get") && c.contains(r#""format":"metadata""#) && c.contains("Message-ID")), "{calls:?}");
-    assert!(!calls.iter().any(|c| c.contains("modify") || c.contains("send")), "listing changes nothing");
+    assert!(!calls.iter().any(|c| c.contains("modify") || c.contains("messages send")), "listing changes nothing");
     // Every run is confined to cloudmail's own gws directory and sign-in.
     let dir = h.gws_dir().display().to_string();
     for e in h.envs() {
@@ -817,10 +834,8 @@ fn gmail_folders_map_to_labels() {
     let v = json_out(&h.run(&m, &["sent"], &[]));
     assert!(ids(&v).contains(&"gmail:t-a5".to_string()), "{v}");
     assert!(h.calls().iter().any(|c| c.contains(r#""labelIds":["SENT"]"#)));
-    let before = h.calls().len();
     let v = json_out(&h.run(&m, &["threads", "list", "--folder", "screener"], &[]));
-    assert!(!ids(&v).iter().any(|i| i.starts_with("gmail:")), "{v}");
-    assert_eq!(h.calls().len(), before, "Gmail has no Screener, so it isn't asked");
+    assert!(!ids(&v).iter().any(|i| i.starts_with("gmail:")), "every sender is approved here, so nothing waits: {v}");
     let o = h.run(&m, &["threads", "list", "--folder", "feed"], &[]);
     assert_eq!(o.status.code(), Some(2), "HEY's boxes need HEY");
 }
@@ -989,7 +1004,9 @@ fn gmail_account_add_list_remove() {
     assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     let v = json_out(&o);
     assert_eq!(v["data"]["addresses"], json!(["me@gmail.example", "sam@alias.example"]), "verified send-as addresses, default first");
-    assert!(v["summary"].as_str().unwrap().contains("no Screener"));
+    assert!(v["summary"].as_str().unwrap().contains("Your Screener decides its new senders"), "{v}");
+    let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("its correspondents are screened in");
+    assert_eq!((batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()), (Some("approved"), Some(true)));
     let calls = h.calls();
     assert!(calls.iter().any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify"), "{calls:?}");
     assert!(calls.iter().any(|c| c.starts_with("browser https://accounts.google.com/o/oauth2/auth?") && c.contains("client_id=test-client")), "the link opens in the browser: {calls:?}");
@@ -1024,14 +1041,22 @@ fn gmail_account_add_list_remove() {
     let v = json_out(&h.run(&m, &["status"], &[]));
     assert_eq!(v["data"]["accounts"][0]["label"], "Gmail");
 
-    // Another Gmail account under its own name, with its own client, directory and ID prefix.
-    let o = h.run(&m, &["account", "add", "gmail", "--name", "work", "--client-id", "own-id", "--client-secret", "own-secret", "--login"], &[]);
+    // Another Gmail account under its own name, with its own client (its secret in the keyring),
+    // directory and ID prefix.
+    let mut bus = support::Bus::start(&h.home.join("bus"));
+    let keyring = support::keyring(&mut bus, &[]);
+    let on_bus = [("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str())];
+    let o = h.run(&m, &["account", "add", "gmail", "--name", "work", "--client-id", "own-id", "--client-secret", "own-secret", "--login"], &on_bus);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let text = std::fs::read_to_string(&cfg).unwrap();
-    assert!(text.contains("[accounts.work]") && text.contains("provider = \"gmail\"") && text.contains("client_id = \"own-id\""), "{text}");
+    assert!(text.contains("[accounts.work]") && text.contains("provider = \"gmail\"") && text.contains("client_id = \"own-id\"") && !text.contains("own-secret"), "{text}");
+    assert_eq!(support::secret(&keyring, "client_secret:work").as_deref(), Some("own-secret"));
     assert!(h.home.join("config/cloudmail/gws/work/credentials.enc").is_file());
-    let v = json_out(&h.run(&m, &["inbox"], &[]));
+    let v = json_out(&h.run(&m, &["inbox"], &on_bus));
     assert!(ids(&v).contains(&"work:t-a1".to_string()) && ids(&v).contains(&"gmail:t-a1".to_string()), "{v}");
+    let o = h.run(&m, &["account", "remove", "work"], &on_bus);
+    assert!(o.status.success());
+    assert_eq!(support::secret(&keyring, "client_secret:work"), None, "its secret goes with it");
 
     let o = h.run(&m, &["account", "remove", "gmail"], &[]);
     assert!(o.status.success());
@@ -1193,338 +1218,342 @@ fn gmail_sends_attachments_as_an_uploaded_multipart_message() {
     assert!(h.sent().len() > 400 * 1024);
 }
 
-// ---------- linked iCloud Mail account, through tests/fake_icloud ----------
+// ---------- iCloud Mail through icloud-session, and the keyring (tests/support) ----------
 
-mod fake_icloud;
-use fake_icloud::{Fake, Mode};
+use support::{FMessage, FakeMail, Keyring, SessionShared};
 
-/// A home whose config links iCloud Mail (with its password saved), served by a fake iCloud.
+/// A home on a private bus with a keyring, icloud-session and iCloud Mail's web services.
 struct IcloudHome {
     home: PathBuf,
-    fake: Fake,
+    bus: support::Bus,
+    keyring: Keyring,
+    session: SessionShared,
+    mail: FakeMail,
 }
 
-const ICLOUD: &str = "poll_seconds = 60\n\n[accounts.icloud]\nemail = \"me@icloud.com\"\naliases = [\"me@example.com\"]\n";
+const T0: i64 = 1_790_000_000_000;
+const HOUR: i64 = 3_600_000;
 
-fn icloud_home(tag: &str, linked: bool, archive: bool) -> IcloudHome {
+/// Bob's lunch conversation (his message, your reply in Sent, his answer with a PDF), a newsletter
+/// from a sender nobody decided on, mail from a blocked sender, and an archived receipt.
+fn icloud_messages() -> Vec<FMessage> {
+    let bob = "Bob Lee <bob@example.com>";
+    let mut reply = FMessage::new("11", "Sent Messages", "t-lunch", "Ann Example <ann@icloud.com>", "Re: Lunch?", T0 + HOUR);
+    reply.to = vec![bob.into()];
+    let mut answer = FMessage::new("12", "INBOX", "t-lunch", bob, "Re: Lunch?", T0 + 2 * HOUR);
+    answer.seen = false;
+    answer.html = Some("<p>See the <b>menu</b>.</p>".into());
+    answer.attachment = Some(("3".into(), "menu.pdf".into(), "application/pdf".into(), b"%PDF-1.4 fake".to_vec()));
+    answer.references = "<10.t-lunch@example.com> <11.t-lunch@example.com>".into();
+    let mut news = FMessage::new("20", "INBOX", "t-news", "News <news@example.org>", "Weekly news", T0 + 3 * HOUR);
+    news.seen = false;
+    vec![
+        FMessage::new("10", "INBOX", "t-lunch", bob, "Lunch?", T0),
+        reply,
+        answer,
+        news,
+        FMessage::new("30", "INBOX", "t-spam", "Spam <spam@bad.example>", "Win big", T0 + 4 * HOUR),
+        FMessage::new("50", "Archive", "t-receipt", "Shop <shop@example.com>", "Your receipt", T0 - HOUR),
+    ]
+}
+
+fn icloud_home(tag: &str, linked: bool, signed_in: bool) -> IcloudHome {
     let home = temp_home(&format!("icloud-{tag}"));
     let _ = std::fs::remove_dir_all(home.join("config"));
-    let cfg = home.join("config").join("cloudmail");
-    std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("config.toml"), if linked { ICLOUD } else { "poll_seconds = 30\n" }).unwrap();
-    if linked {
-        std::fs::create_dir_all(cfg.join("icloud")).unwrap();
-        std::fs::write(cfg.join("icloud").join("icloud"), format!("{}\n", fake_icloud::PASSWORD)).unwrap();
-    }
-    let fake = Fake::start(&home, archive);
-    seed(&fake);
-    IcloudHome { home, fake }
+    std::fs::create_dir_all(home.join("config/cloudmail")).unwrap();
+    std::fs::write(home.join("config/cloudmail/config.toml"), if linked { "[accounts.icloud]\n" } else { "" }).unwrap();
+    let mut bus = support::Bus::start(&home.join("bus"));
+    let keyring = support::keyring(&mut bus, &[]);
+    let mail = support::icloud_mail(icloud_messages());
+    let session = support::icloud_session(&mut bus, &mail.url, signed_in);
+    IcloudHome { home, bus, keyring, session, mail }
 }
 
-/// A conversation with Ann (her message, your reply in Sent, her answer with an attachment), a
-/// copy of the worker's t_1, a newsletter, and an archived receipt.
-fn seed(f: &Fake) {
-    let mut st = f.state.lock().unwrap();
-    st.add("INBOX", &["\\Seen"], "01-Oct-2026 10:00:00 +0000", "From: Ann Example <ann@example.com>\nTo: me@icloud.com\nSubject: Lunch?\nDate: Thu, 1 Oct 2026 10:00:00 +0000\nMessage-ID: <l1@example.com>\nContent-Type: text/plain; charset=utf-8\n\nWant lunch on Friday?\n");
-    st.add(
-        "INBOX",
-        &[],
-        "01-Oct-2026 12:00:00 +0000",
-        "From: Ann Example <ann@example.com>\nTo: Me <me@icloud.com>\nSubject: Re: Lunch?\nMessage-ID: <l3@example.com>\nIn-Reply-To: <l2@icloud.com>\nReferences: <l1@example.com> <l2@icloud.com>\nContent-Type: multipart/mixed; boundary=\"b1\"\n\n--b1\nContent-Type: multipart/alternative; boundary=\"b2\"\n\n--b2\nContent-Type: text/plain; charset=utf-8\n\nGreat, see the menu.\n--b2\nContent-Type: text/html; charset=utf-8\n\n<p>Great, see the <b>menu</b>.</p>\n--b2--\n--b1\nContent-Type: application/pdf; name=\"menu.pdf\"\nContent-Disposition: attachment; filename=\"menu.pdf\"\nContent-Transfer-Encoding: base64\n\nJVBERi0xLjQgZmFrZQ==\n--b1--\n",
-    );
-    st.add("INBOX", &["\\Seen"], "02-Oct-2026 08:00:00 +0000", "From: Joe <joe@x.com>\nTo: me@icloud.com\nSubject: Subject t_1\nMessage-ID: <a@x>\n\nForwarded copy of the worker's mail.\n");
-    st.add("INBOX", &[], "03-Oct-2026 07:00:00 +0000", "From: News <news@example.org>\nTo: me@icloud.com\nSubject: Caf\u{e9} news\nMessage-ID: <n1@example.org>\nContent-Type: text/html; charset=utf-8\n\n<h1>This week</h1><p>New caf\u{e9} opened.</p>\n");
-    st.add("Sent Messages", &["\\Seen"], "01-Oct-2026 11:00:00 +0000", "From: me@icloud.com\nTo: Ann Example <ann@example.com>\nSubject: Re: Lunch?\nMessage-ID: <l2@icloud.com>\nIn-Reply-To: <l1@example.com>\nReferences: <l1@example.com>\n\nYes! Where?\n");
-    if st.mailbox("Archive").is_some() {
-        st.add("Archive", &["\\Seen"], "15-Sep-2026 09:00:00 +0000", "From: Shop <shop@example.com>\nTo: me@icloud.com\nSubject: Your receipt\nMessage-ID: <r1@shop>\n\nThanks for your order.\n");
+/// Your worker's Screener: Bob and the shop approved, the spammer blocked, the newsletter undecided.
+fn screening(decisions: Arc<Mutex<HashMap<String, String>>>) -> impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + 'static {
+    {
+        let mut d = decisions.lock().unwrap();
+        for (e, s) in [("bob@example.com", "approved"), ("shop@example.com", "approved"), ("spam@bad.example", "blocked")] {
+            d.insert(e.into(), s.into());
+        }
+    }
+    move |req: &Req| {
+        let p = req.path.as_str();
+        match (req.method.as_str(), p) {
+            ("POST", "/api/senders/lookup") => {
+                let d = decisions.lock().unwrap();
+                let found: Vec<Value> = req.body["emails"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).filter_map(|e| d.get(e).map(|s| json!({ "email": e, "status": s }))).collect();
+                ok(json!({ "senders": found }))
+            }
+            ("POST", "/api/senders/batch") => {
+                let mut d = decisions.lock().unwrap();
+                let status = req.body["status"].as_str().unwrap().to_string();
+                for s in req.body["senders"].as_array().into_iter().flatten() {
+                    let e = s["email"].as_str().unwrap().to_ascii_lowercase();
+                    if !(req.body["only_undecided"] == json!(true) && d.contains_key(&e)) {
+                        d.insert(e, status.clone());
+                    }
+                }
+                ok(json!({ "ok": true, "changed": 1 }))
+            }
+            ("POST", _) if p.starts_with("/api/senders/") => {
+                let e = urlencoding::decode(&p["/api/senders/".len()..]).unwrap().into_owned();
+                decisions.lock().unwrap().insert(e, req.body["status"].as_str().unwrap().into());
+                ok(json!({ "ok": true, "moved": 0 }))
+            }
+            _ => default_handler(req),
+        }
     }
 }
 
 impl IcloudHome {
-    fn run(&self, m: &Mock, args: &[&str], stdin: Option<&str>) -> Output {
+    fn run(&self, m: &Mock, args: &[&str]) -> Output {
+        self.run_env(m, args, &[])
+    }
+
+    fn run_env(&self, m: &Mock, args: &[&str], env: &[(&str, Option<&str>)]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
         cmd.args(args)
+            .env("DBUS_SESSION_BUS_ADDRESS", &self.bus.address)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
             .env("HOME", &self.home)
             .env("CLOUDMAIL_API_URL", &m.url)
             .env("CLOUDMAIL_API_TOKEN", "test-token")
-            .env("CLOUDMAIL_BROWSER", "true")
             .current_dir(&self.home)
-            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (k, v) in self.fake.env() {
-            cmd.env(k, v);
+            .stdin(Stdio::null());
+        for (k, v) in env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
         }
-        let mut child = cmd.spawn().unwrap();
-        if let Some(s) = stdin {
-            // A command that fails before reading its stdin closes it early.
-            let _ = child.stdin.take().unwrap().write_all(s.as_bytes());
-        }
-        child.wait_with_output().unwrap()
+        cmd.output().unwrap()
     }
 
     fn json(&self, m: &Mock, args: &[&str]) -> Value {
-        let o = self.run(m, args, None);
+        let o = self.run(m, args);
         assert!(o.status.success(), "{args:?}: {}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         json_out(&o)
     }
 
-    fn password_file(&self) -> PathBuf {
-        self.home.join("config/cloudmail/icloud/icloud")
-    }
-
-    /// The thread ID of the listed thread with this subject.
-    fn id_of(&self, v: &Value, subject: &str) -> String {
-        v["data"].as_array().unwrap().iter().find(|t| t["subject"] == subject).unwrap_or_else(|| panic!("no {subject} in {v}"))["id"].as_str().unwrap().to_string()
+    fn calls(&self) -> Vec<String> {
+        self.session.lock().unwrap().calls.clone()
     }
 }
 
+fn id_of(v: &Value, subject: &str) -> String {
+    v["data"].as_array().unwrap().iter().find(|t| t["subject"] == subject).unwrap_or_else(|| panic!("no {subject} in {v}"))["id"].as_str().unwrap().to_string()
+}
+
+fn subjects(v: &Value) -> Vec<String> {
+    v["data"].as_array().unwrap().iter().map(|t| t["subject"].as_str().unwrap().to_string()).collect()
+}
+
 #[test]
-fn icloud_account_add_list_login_remove() {
-    let m = mock(default_handler);
-    let h = icloud_home("accounts", false, true);
+fn icloud_links_through_icloud_session() {
+    let decisions = Arc::new(Mutex::new(HashMap::new()));
+    let m = mock(screening(decisions.clone()));
+    let h = icloud_home("link", false, false);
     let cfg = h.home.join("config/cloudmail/config.toml");
-    let pw = format!("{}\n", fake_icloud::PASSWORD);
 
-    let o = h.run(&m, &["account", "add", "icloud", "--password-stdin"], Some(&pw));
-    assert_eq!(o.status.code(), Some(2), "no address and no terminal to ask at");
-    let o = h.run(&m, &["account", "add", "icloud", "--email", "me@example.com", "--password-stdin"], Some(&pw));
-    assert_eq!(o.status.code(), Some(2));
-    assert!(json_out(&o)["error"]["hint"].as_str().unwrap().contains("--alias"), "custom domains are aliases");
-    let o = h.run(&m, &["account", "add", "icloud", "--email", "me@icloud.com"], None);
-    assert_eq!(o.status.code(), Some(3), "no terminal to ask for the password at");
+    // No icloud-session on the bus at all.
+    let mut lonely = support::Bus::start(&h.home.join("lonely-bus"));
+    let _ = support::keyring(&mut lonely, &[]);
+    let o = h.run_env(&m, &["account", "add", "icloud"], &[("DBUS_SESSION_BUS_ADDRESS", Some(&lonely.address))]);
+    assert_eq!(o.status.code(), Some(1), "{}", String::from_utf8_lossy(&o.stdout));
     let v = json_out(&o);
-    assert_eq!(v["error"]["code"], "not_logged_in");
-    assert!(v["error"]["hint"].as_str().unwrap().contains("--password-stdin"), "{v}");
-    let o = h.run(&m, &["account", "add", "icloud", "--email", "me@icloud.com", "--password-stdin"], Some("wrong-pass-word-xxxx\n"));
-    assert_eq!(o.status.code(), Some(3));
-    assert_eq!(json_out(&o)["error"]["code"], "account_unauthorized");
-    assert!(!h.password_file().exists(), "a refused password isn't kept");
-    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
-    let o = h.run(&m, &["account", "add", "icloud", "--email", "me@icloud.com", "--command", "x", "--password-stdin"], Some(&pw));
-    assert_eq!(o.status.code(), Some(2), "--command is for CLI-backed providers");
-    let o = h.run(&m, &["account", "add", "gmail", "--email", "me@icloud.com"], None);
-    assert_eq!(o.status.code(), Some(2), "--email is for iCloud");
+    assert_eq!(v["error"]["code"], "not_installed");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("icloud-for-omarchy"), "{v}");
 
-    let o = h.run(&m, &["account", "add", "icloud", "--email", "Me@iCloud.com", "--alias", "me@example.com", "--password-stdin"], Some(&pw));
-    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    let v = json_out(&o);
-    assert_eq!(v["data"]["addresses"], json!(["me@icloud.com", "me@example.com"]));
-    assert!(v["summary"].as_str().unwrap_or_default().contains("no Screener") || v.to_string().contains("no Screener"), "{v}");
-    let text = std::fs::read_to_string(&cfg).unwrap();
-    assert!(text.contains("[accounts.icloud]") && text.contains("email = \"me@icloud.com\"") && text.contains("me@example.com"), "{text}");
-    assert!(!text.contains(fake_icloud::PASSWORD), "the password isn't in config.toml");
-    assert_eq!(std::fs::read_to_string(h.password_file()).unwrap().trim(), fake_icloud::PASSWORD);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(h.password_file()).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-    // iCloud's documented user name (the address's name part) is tried first.
-    assert_eq!(h.fake.state.lock().unwrap().logins.last().map(String::as_str), Some("me"));
+    let o = h.run(&m, &["account", "add", "icloud"]);
+    assert_eq!(o.status.code(), Some(3), "signed out and no terminal: nothing opens");
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
+    assert!(!h.calls().contains(&"SignIn".to_string()));
+
+    let v = h.json(&m, &["account", "add", "icloud", "--login"]);
+    assert!(h.calls().contains(&"SignIn".to_string()), "icloud-session's own sign-in window");
+    assert_eq!(v["data"]["addresses"], json!(["ann@icloud.com", "hi@ann.dev"]), "the addresses Mail sends from");
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap().trim(), "[accounts.icloud]", "nothing else to keep");
+    // Its correspondents (Inbox senders, recipients of sent mail) are screened in, a no kept.
+    let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").unwrap();
+    assert_eq!(batch.body["only_undecided"], true);
+    let emails: Vec<&str> = batch.body["senders"].as_array().unwrap().iter().map(|s| s["email"].as_str().unwrap()).collect();
+    assert!(emails.contains(&"news@example.org") && emails.contains(&"bob@example.com") && !emails.iter().any(|e| e.ends_with("icloud.com")), "{emails:?}");
+    assert_eq!(decisions.lock().unwrap()["spam@bad.example"], "blocked");
 
     let v = h.json(&m, &["account", "list"]);
-    let a = &v["data"]["accounts"][0];
-    assert_eq!((a["name"].as_str(), a["provider"].as_str(), a["label"].as_str(), a["ok"].as_bool()), (Some("icloud"), Some("icloud"), Some("iCloud Mail"), Some(true)), "{v}");
-
-    let o = h.run(&m, &["account", "login", "icloud", "--password-stdin"], Some(&pw));
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
-    let o = h.run(&m, &["account", "login", "icloud"], None);
-    assert_eq!(o.status.code(), Some(3), "a new password needs a terminal or stdin");
-
-    let o = h.run(&m, &["account", "remove", "icloud"], None);
-    assert!(o.status.success());
-    assert!(!h.password_file().exists(), "unlinking forgets the password");
-    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
+    assert_eq!((v["data"]["accounts"][0]["label"].as_str(), v["data"]["accounts"][0]["ok"].as_bool()), (Some("iCloud Mail"), Some(true)), "{v}");
+    h.json(&m, &["account", "remove", "icloud"]);
+    assert!(!h.calls().contains(&"SignOut".to_string()), "icloud-session stays signed in for the other apps");
+    assert!(h.keyring.lock().unwrap().is_empty(), "no secret of cloudmail's own");
 }
 
 #[test]
-fn icloud_inbox_threads_by_conversation_and_hides_copies() {
-    let m = mock(default_handler);
-    let h = icloud_home("inbox", true, true);
+fn icloud_mail_is_screened_by_your_worker() {
+    let decisions = Arc::new(Mutex::new(HashMap::new()));
+    let m = mock(screening(decisions.clone()));
+    let h = icloud_home("screen", true, true);
     let v = h.json(&m, &["inbox"]);
-    let subjects: Vec<&str> = v["data"].as_array().unwrap().iter().map(|t| t["subject"].as_str().unwrap()).collect();
-    // Newest first; Joe's copy of t_1 (same Message-ID) is hidden; the worker's own mail is older.
-    assert_eq!(subjects, ["Café news", "Lunch?", "Subject t_1", "Subject t_2"], "{v}");
-    assert_eq!(v["meta"]["duplicates_hidden"], 1);
-    let lunch = v["data"].as_array().unwrap().iter().find(|t| t["subject"] == "Lunch?").unwrap();
-    assert!(lunch["id"].as_str().unwrap().starts_with("icloud:t"), "{lunch}");
-    assert_eq!(lunch["account"], "icloud");
-    assert_eq!(lunch["folder"], "inbox");
-    assert_eq!(lunch["message_count"], 2, "both of Ann's messages; your reply is in Sent");
-    assert_eq!(lunch["unread"], true);
-    assert_eq!(lunch["has_attachments"], true);
-    assert_eq!(lunch["from"]["name"], "Ann Example");
-    assert_eq!(lunch["to_address"], "me@icloud.com");
-    assert_eq!(lunch["snippet"], "Great, see the menu.");
-    assert_eq!(lunch["last_at"], 1790856000000_i64);
-    let log = h.fake.log();
-    assert!(log.iter().any(|c| c == "EXAMINE \"INBOX\""), "{log:?}");
-    assert!(!log.iter().any(|c| c.starts_with("SELECT") || c.contains("STORE") || c.contains("MOVE")), "listing changes nothing: {log:?}");
-    assert!(log.iter().any(|c| c.starts_with("UID FETCH") && c.contains("BODY.PEEK[HEADER.FIELDS (") && c.contains("BODY.PEEK[TEXT]<0.2048>")), "{log:?}");
+    assert_eq!(subjects(&v), ["Lunch?", "Subject t_1", "Subject t_2"], "the newsletter waits, the spammer is out");
+    let lunch = &v["data"][0];
+    assert_eq!((lunch["account"].as_str(), lunch["folder"].as_str(), lunch["unread"].as_bool(), lunch["has_attachments"].as_bool()), (Some("icloud"), Some("inbox"), Some(true), Some(true)));
+    assert_eq!(lunch["from"]["email"], "bob@example.com");
+    let search = h.mail.log("/mailws2/v1/thread/search");
+    let r = &search[0];
+    assert_eq!(r.cookie, support::COOKIE);
+    assert_eq!((r.query["dsid"].as_str(), r.query["clientBuildNumber"].as_str()), ("1234", "2636Hotfix65"));
+    assert_eq!(r.body["sessionHeaders"], json!({ "folder": "INBOX", "modseq": null, "threadmodseq": null, "condstore": 1, "qresync": 1, "threadmode": 1 }));
+    assert_eq!(r.body["responseType"], "THREAD_DIGEST");
+    assert!(h.mail.log("/thread/flag").is_empty() && !h.mail.seen("12"), "listing leaves mail unread");
 
-    let v = h.json(&m, &["archive"]);
-    assert!(v["data"].as_array().unwrap().iter().any(|t| t["subject"] == "Your receipt" && t["folder"] == "archive"), "{v}");
-    let v = h.json(&m, &["sent"]);
-    let sent: Vec<&Value> = v["data"].as_array().unwrap().iter().filter(|t| t["account"] == "icloud").collect();
-    assert_eq!(sent.len(), 1, "{v}");
-    assert_eq!(sent[0]["subject"], "Lunch?", "a reply's thread is named without its Re:");
-    assert_eq!(sent[0]["id"], lunch["id"], "the same conversation has the same ID wherever it's listed");
+    let v = h.json(&m, &["screener"]);
+    let waiting: Vec<&Value> = v["data"].as_array().unwrap().iter().filter(|s| s["account"] == "icloud").collect();
+    assert_eq!(waiting.len(), 1, "{v}");
+    assert_eq!((waiting[0]["email"].as_str(), waiting[0]["last_subject"].as_str()), (Some("news@example.org"), Some("Weekly news")));
     let v = h.json(&m, &["threads", "list", "--folder", "screener"]);
-    assert!(!v["data"].as_array().unwrap().iter().any(|t| t["account"] == "icloud"), "iCloud has no Screener");
-    let v = h.json(&m, &["inbox", "--unread"]);
-    let icloud: Vec<&str> = v["data"].as_array().unwrap().iter().filter(|t| t["account"] == "icloud").map(|t| t["subject"].as_str().unwrap()).collect();
-    assert_eq!(icloud, ["Café news", "Lunch?"]);
+    assert!(v["data"].as_array().unwrap().iter().any(|t| t["subject"] == "Weekly news" && t["folder"] == "screener"), "{v}");
+    let v = h.json(&m, &["search", "win"]);
+    assert!(!subjects(&v).contains(&"Win big".to_string()), "a blocked sender stays out of search");
+    let v = h.json(&m, &["archive"]);
+    assert!(subjects(&v).contains(&"Your receipt".to_string()), "{v}");
 
-    h.fake.clear_log();
-    let v = h.json(&m, &["search", "café"]);
-    assert!(v["data"].as_array().unwrap().iter().any(|t| t["subject"] == "Café news"), "{v}");
-    assert!(h.fake.log().iter().any(|c| c.starts_with("UID SEARCH CHARSET UTF-8 TEXT {")), "non-ASCII searches go as UTF-8 literals: {:?}", h.fake.log());
-    let v = h.json(&m, &["search", "lunch"]);
-    let hits: Vec<&Value> = v["data"].as_array().unwrap().iter().filter(|t| t["account"] == "icloud").collect();
-    assert_eq!(hits.len(), 1, "one conversation, found in the Inbox and Sent: {v}");
-    assert_eq!(hits[0]["message_count"], 3);
+    // A no: decided once in the worker, and the sender's Inbox threads archived in iCloud.
+    h.json(&m, &["screener", "block", "news@example.org"]);
+    assert_eq!(decisions.lock().unwrap()["news@example.org"], "blocked");
+    let mv = h.mail.log("/thread/move");
+    assert_eq!(mv.len(), 1);
+    assert_eq!((mv[0].body["destFolder"].as_str(), mv[0].body["threadIds"][0].as_str()), (Some("Archive"), Some("t-news")));
+    assert_eq!(h.mail.folder_of("20"), "Archive");
 }
 
 #[test]
-fn icloud_thread_read_attachment_raw_and_reply() {
-    let m = mock(default_handler);
+fn icloud_threads_read_and_reply_like_the_web_app() {
+    let decisions = Arc::new(Mutex::new(HashMap::new()));
+    let m = mock(screening(decisions.clone()));
     let h = icloud_home("read", true, true);
-    let inbox = h.json(&m, &["inbox"]);
-    let id = h.id_of(&inbox, "Lunch?");
-    h.fake.clear_log();
-    let v = h.json(&m, &["thread", "read", &id]);
+    let id = id_of(&h.json(&m, &["inbox"]), "Lunch?");
+    let v = h.json(&m, &["thread", "read", &id, "--html"]);
     let msgs = v["data"]["messages"].as_array().unwrap();
-    assert_eq!(msgs.len(), 3, "Ann's two messages and your reply from Sent: {v}");
-    assert_eq!(msgs.iter().map(|m| m["outgoing"].as_bool().unwrap()).collect::<Vec<_>>(), [false, true, false]);
-    assert_eq!(msgs[1]["from"]["email"], "me@icloud.com");
-    assert_eq!(msgs[2]["message_id"], "<l3@example.com>");
-    assert!(msgs[2]["text"].as_str().unwrap().contains("Great, see the menu."), "{}", msgs[2]);
+    assert_eq!(msgs.iter().map(|m| m["outgoing"].as_bool().unwrap()).collect::<Vec<_>>(), [false, true, false], "your reply from Sent Messages in between");
+    assert_eq!(msgs[2]["html"], "<p>See the <b>menu</b>.</p>");
     let att = &msgs[2]["attachments"][0];
-    assert_eq!((att["filename"].as_str(), att["mime_type"].as_str(), att["size"].as_i64()), (Some("menu.pdf"), Some("application/pdf"), Some(13)), "{att}");
-    assert!(!h.fake.log().iter().any(|c| c.contains("STORE") || c.starts_with("SELECT")), "reading leaves mail unread: {:?}", h.fake.log());
-    assert!(h.fake.flags_of("INBOX", "<l3@example.com>").is_empty());
+    assert_eq!((att["filename"].as_str(), att["mime_type"].as_str(), att["size"].as_i64()), (Some("menu.pdf"), Some("application/pdf"), Some(13)));
+    assert!(h.mail.log("/message/get").iter().all(|r| r.body["dontMarkAsRead"] == true), "reading never marks read");
+    assert!(!h.mail.seen("12"), "`thread read` leaves it unread");
 
-    let o = h.run(&m, &["attachment", "save", att["id"].as_str().unwrap(), "-o", "-"], None);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(o.stdout, b"%PDF-1.4 fake");
-    let o = h.run(&m, &["raw", msgs[0]["id"].as_str().unwrap()], None);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(String::from_utf8_lossy(&o.stdout).contains("Want lunch on Friday?"));
+    let o = h.run(&m, &["attachment", "save", att["id"].as_str().unwrap(), "-o", "-"]);
+    assert_eq!(o.stdout, b"%PDF-1.4 fake", "{}", String::from_utf8_lossy(&o.stderr));
+    let o = h.run(&m, &["raw", msgs[0]["id"].as_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Text of Lunch?"), "{}", String::from_utf8_lossy(&o.stderr));
 
-    let o = h.run(&m, &["reply", &id, "--no-quote", "-m", "Friday it is"], None);
-    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    let v = json_out(&o);
-    assert_eq!(v["data"]["thread_id"], id, "{v}");
-    assert!(v["data"]["warning"].is_null(), "{v}");
-    let sent = h.fake.state.lock().unwrap().sent.clone();
-    assert_eq!(sent.len(), 1);
-    assert_eq!((sent[0].user.as_str(), sent[0].from.as_str(), sent[0].to.clone()), ("me@icloud.com", "me@icloud.com", vec!["ann@example.com".to_string()]));
-    let head = sent[0].data.split("\r\n\r\n").next().unwrap().to_string();
-    assert!(head.contains("In-Reply-To: <l3@example.com>") && head.contains("References: <l1@example.com> <l2@icloud.com> <l3@example.com>"), "{head}");
-    assert!(head.contains("Subject: Re: Lunch?") && head.starts_with("Message-ID: <"), "{head}");
-    // iCloud didn't file it in Sent Messages itself, so a copy was saved there.
-    let copies = h.fake.raw_in("Sent Messages");
-    assert_eq!(copies.len(), 2, "{copies:?}");
-    assert!(copies[1].contains("Friday it is") || copies[1].contains("RnJpZGF5IGl0IGlz"), "{}", copies[1]);
-    assert_eq!(h.fake.flags_of("Sent Messages", "In-Reply-To: <l3@example.com>"), ["\\Seen"]);
-    // The reply joins the conversation.
-    let v = h.json(&m, &["thread", "read", &id]);
-    assert_eq!(v["data"]["messages"].as_array().unwrap().len(), 4);
-}
+    let v = h.json(&m, &["reply", &id, "--no-quote", "-m", "Friday it is"]);
+    assert_eq!(v["data"]["thread_id"], id.as_str());
+    let st = h.mail.state.lock().unwrap();
+    let d = &st.drafts[0];
+    assert_eq!(d["from"], "Ann Example <ann@icloud.com>", "named by icloud-session's FullName, as Mail names you");
+    assert_eq!(d["to"], json!(["Bob Lee <bob@example.com>"]));
+    assert_eq!(d["headerInReplyTo"], "<12.t-lunch@example.com>");
+    assert_eq!(d["headerReferences"], "<10.t-lunch@example.com> <11.t-lunch@example.com> <12.t-lunch@example.com>");
+    assert_eq!((d["subject"].as_str(), d["textBody"].as_str()), (Some("Re: Lunch?"), Some("Friday it is")));
+    assert_eq!(st.sent.len(), 1, "sent by draft/send of Drafts/<uid>");
+    drop(st);
+    let batch = requests(&m).into_iter().find(|r| r.path == "/api/senders/batch").expect("whoever you write to is screened in");
+    assert_eq!((batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()), (Some("approved"), Some(false)));
 
-#[test]
-fn icloud_compose_keeps_bcc_out_of_the_message_and_never_files_twice() {
-    let m = mock(default_handler);
-    let h = icloud_home("compose", true, true);
-    h.fake.set_mode(Mode::AutoSent);
-    let o = h.run(&m, &["compose", "--from", "me@example.com", "--to", "Bob <bob@b.com>", "--bcc", "secret@c.com", "--subject", "Hi", "-m", "Hello"], None);
-    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    let v = json_out(&o);
-    assert!(v["data"]["thread_id"].as_str().unwrap().starts_with("icloud:t"), "{v}");
-    let sent = h.fake.state.lock().unwrap().sent.clone();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].from, "me@example.com", "an alias sends through iCloud");
-    assert_eq!(sent[0].to, ["bob@b.com", "secret@c.com"]);
-    assert!(!sent[0].data.contains("Bcc:") && !sent[0].data.contains("secret@c.com"), "{}", sent[0].data);
-    assert!(sent[0].data.contains("From: me@example.com\r\nTo: Bob <bob@b.com>\r\n"), "{}", sent[0].data);
-    assert_eq!(h.fake.raw_in("Sent Messages").len(), 2, "iCloud filed it itself; no second copy");
-    assert!(!h.fake.log().iter().any(|c| c.starts_with("APPEND")));
-    assert!(!requests(&m).iter().any(|r| r.path == "/api/send"), "never through the worker");
-
-    let o = h.run(&m, &["compose", "--from", "other@icloud.com", "--to", "bob@b.com", "--subject", "Hi", "-m", "Hello"], None);
-    assert!(o.status.success(), "an address no account owns goes through your worker, as before");
-    assert!(requests(&m).iter().any(|r| r.path == "/api/send"));
+    let file = h.home.join("plan.txt");
+    std::fs::write(&file, "the plan").unwrap();
+    h.json(&m, &["compose", "--from", "hi@ann.dev", "--to", "carol@z.com", "--bcc", "dave@w.com", "--subject", "Plan", "-m", "Attached.", "--attach", file.to_str().unwrap()]);
+    let st = h.mail.state.lock().unwrap();
+    let (q, bytes) = &st.uploads[0];
+    assert_eq!((q["X-name"].as_str(), q["X-type"].as_str(), bytes.as_slice()), ("plan.txt", "text/plain", &b"the plan"[..]));
+    let d = &st.drafts[1];
+    assert_eq!(d["from"], "Ann at Home <hi@ann.dev>");
+    assert_eq!((d["bcc"].clone(), d["attachments"][0]["guid"].clone()), (json!(["dave@w.com"]), json!("cachedpart:1")));
+    assert_eq!(st.sent.len(), 2);
 }
 
 #[test]
 fn icloud_moves_and_marks() {
-    let m = mock(default_handler);
-    let h = icloud_home("moves", true, false);
-    let id = h.id_of(&h.json(&m, &["inbox"]), "Lunch?");
-    assert!(h.run(&m, &["thread", "archive", &id], None).status.success());
-    assert!(h.fake.log().iter().any(|c| c == "CREATE \"Archive\""), "no Archive yet, so one is made: {:?}", h.fake.log());
-    assert_eq!(h.fake.uids("INBOX").len(), 2, "both of Ann's messages left the Inbox");
-    assert_eq!(h.fake.raw_in("Archive").len(), 2);
-    assert_eq!(h.fake.raw_in("Sent Messages").len(), 1, "your reply stays in Sent");
-    let v = h.json(&m, &["archive"]);
-    assert!(v["data"].as_array().unwrap().iter().any(|t| t["id"] == id.as_str()), "the same ID after archiving: {v}");
-
-    assert!(h.run(&m, &["thread", "markread", &id], None).status.success());
-    assert!(h.fake.flags_of("Archive", "<l3@example.com>").contains(&"\\Seen".to_string()));
-    assert!(h.run(&m, &["thread", "unread", &id], None).status.success());
-    assert!(h.fake.flags_of("Archive", "<l3@example.com>").is_empty(), "the latest message you received is unread again");
-    assert!(h.fake.flags_of("Archive", "<l1@example.com>").contains(&"\\Seen".to_string()));
-
-    assert!(h.run(&m, &["thread", "unarchive", &id], None).status.success());
-    assert_eq!(h.fake.uids("INBOX").len(), 4);
-    assert!(h.fake.raw_in("Archive").is_empty());
-    let o = h.run(&m, &["thread", "delete", &id, "--yes"], None);
-    assert_eq!(o.status.code(), Some(2), "deleting stays a worker-only action");
+    let m = mock(screening(Arc::new(Mutex::new(HashMap::new()))));
+    let h = icloud_home("moves", true, true);
+    let id = id_of(&h.json(&m, &["inbox"]), "Lunch?");
+    h.json(&m, &["thread", "markread", &id]);
+    let flag = h.mail.log("/thread/flag");
+    assert_eq!((flag[0].body["method"].as_str(), flag[0].body["sessionHeaders"]["folder"].as_str()), (Some("ADD"), Some("INBOX")));
+    assert!(h.mail.seen("12"));
+    h.json(&m, &["thread", "unread", &id]);
+    assert!(!h.mail.seen("12"));
+    h.json(&m, &["thread", "archive", &id]);
+    assert_eq!((h.mail.folder_of("10"), h.mail.folder_of("12"), h.mail.folder_of("11")), ("Archive".into(), "Archive".into(), "Sent Messages".into()), "your reply stays in Sent");
+    let archived = id_of(&h.json(&m, &["archive"]), "Lunch?");
+    h.json(&m, &["thread", "unarchive", &archived]);
+    assert_eq!(h.mail.folder_of("12"), "INBOX");
+    assert_eq!(h.run(&m, &["thread", "delete", &id, "--yes"]).status.code(), Some(2), "deleting stays a worker-only action");
 }
 
 #[test]
 fn a_failing_icloud_never_breaks_your_own_mail() {
-    let m = mock(default_handler);
-    let h = icloud_home("isolation", true, true);
-    let check = |h: &IcloudHome, code: &str, says: &str| {
-        let o = h.run(&m, &["inbox"], None);
-        assert!(o.status.success(), "{code}: {}", String::from_utf8_lossy(&o.stdout));
+    let m = mock(screening(Arc::new(Mutex::new(HashMap::new()))));
+    let h = icloud_home("failing", true, true);
+    let lunch = id_of(&h.json(&m, &["inbox"]), "Lunch?");
+    let warning = |h: &IcloudHome| {
+        let o = h.run(&m, &["inbox"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
         let v = json_out(&o);
-        assert_eq!(ids(&v), ["t_1", "t_2"], "{code}");
-        assert_eq!(v["meta"]["warnings"][0]["account"], "icloud", "{v}");
-        assert_eq!(v["meta"]["warnings"][0]["code"], code, "{v}");
-        assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains(says), "{v}");
+        assert_eq!(ids(&v), ["t_1", "t_2"]);
+        v["meta"]["warnings"][0].clone()
     };
-    h.fake.set_mode(Mode::BadPassword);
-    check(&h, "account_unauthorized", "run `cloudmail account login icloud`");
-    let o = h.run(&m, &["thread", "read", "icloud:tYUB4"], None);
-    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
-    let o = h.run(&m, &["compose", "--from", "me@icloud.com", "--to", "a@b.com", "--subject", "Hi", "-m", "x"], None);
-    assert_eq!(o.status.code(), Some(3), "SMTP refuses the password too: {}", String::from_utf8_lossy(&o.stdout));
-    h.fake.set_mode(Mode::Garbage);
-    check(&h, "account_unavailable", "unexpected");
-    h.fake.set_mode(Mode::Ok);
-    std::fs::remove_file(h.password_file()).unwrap();
-    check(&h, "account_unauthorized", "no app-specific password is saved");
+    h.mail.state.lock().unwrap().rotate_cookie = true;
+    h.json(&m, &["inbox"]);
+    assert!(h.session.lock().unwrap().merged.iter().any(|c| c.starts_with("X-APPLE-WEBAUTH-TOKEN=rotated")), "rotated cookies go back to icloud-session");
 
-    // Offline: nothing listens where iCloud should be.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    std::fs::write(h.password_file(), fake_icloud::PASSWORD).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cloudmail"));
-    cmd.args(["inbox"])
-        .env("XDG_CONFIG_HOME", h.home.join("config"))
-        .env("HOME", &h.home)
-        .env("CLOUDMAIL_API_URL", &m.url)
-        .env("CLOUDMAIL_API_TOKEN", "test-token")
-        .env("CLOUDMAIL_ICLOUD_IMAP", format!("localhost:{closed}"))
-        .env("CLOUDMAIL_ICLOUD_CA", &h.fake.ca)
-        .stdin(Stdio::null());
-    let o = cmd.output().unwrap();
+    h.session.lock().unwrap().keyring_locked = true;
+    let w = warning(&h);
+    assert_eq!(w["code"], "account_unavailable");
+    assert!(w["message"].as_str().unwrap().contains("keyring"), "{w}");
+    h.session.lock().unwrap().keyring_locked = false;
+
+    h.mail.state.lock().unwrap().garbage = true;
+    let w = warning(&h);
+    assert!(w["message"].as_str().unwrap().contains("doesn't understand"), "{w}");
+    h.mail.state.lock().unwrap().garbage = false;
+
+    // Apple says the session ended, and icloud-session confirms it.
+    {
+        h.mail.state.lock().unwrap().status = Some(421);
+        h.session.lock().unwrap().still_signed_in = false;
+    }
+    let w = warning(&h);
+    assert_eq!(w["code"], "account_unauthorized");
+    assert!(w["message"].as_str().unwrap().contains("cloudmail account login icloud"), "{w}");
+    assert!(h.calls().contains(&"ReportSignInRequired".to_string()));
+    let o = h.run(&m, &["thread", "read", &lunch]);
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
+}
+
+#[test]
+fn secrets_live_in_the_keyring() {
+    let m = mock(default_handler);
+    let h = icloud_home("keyring", false, true);
+    let cfg = h.home.join("config/cloudmail/config.toml");
+    std::fs::write(&cfg, format!("api_url = \"{}\"\napi_token = \"test-token\"\n", m.url)).unwrap();
+    let no_env = [("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)];
+    let o = h.run_env(&m, &["inbox"], &no_env);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(support::secret(&h.keyring, "api_token").as_deref(), Some("test-token"), "an older config's token moves to the keyring");
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("api_token"));
+    assert!(h.run_env(&m, &["inbox"], &no_env).status.success(), "and is read from there");
+
+    let o = h.run_env(&m, &["config", "set", "api-token", "rotated"], &no_env);
     assert!(o.status.success());
+    assert_eq!(support::secret(&h.keyring, "api_token").as_deref(), Some("rotated"));
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("rotated"));
+
+    // No Secret Service: a clear error, never a file.
+    let lonely = support::Bus::start(&h.home.join("lonely-bus"));
+    let o = h.run_env(&m, &["inbox"], &[no_env[0], no_env[1], ("DBUS_SESSION_BUS_ADDRESS", Some(&lonely.address))]);
+    assert_eq!(o.status.code(), Some(3));
     let v = json_out(&o);
-    assert_eq!(ids(&v), ["t_1", "t_2"]);
-    assert_eq!(v["meta"]["warnings"][0]["code"], "account_unavailable", "{v}");
-    assert!(v["meta"]["warnings"][0]["message"].as_str().unwrap().contains("offline?"), "{v}");
+    assert_eq!(v["error"]["code"], "not_configured");
+    assert!(v["error"]["message"].as_str().unwrap().contains("keyring (Secret Service) isn't available"), "{v}");
 }

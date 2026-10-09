@@ -3,6 +3,15 @@
 //! The worker is authoritative: its errors fail an operation as they always have. A linked
 //! account's errors never do; they come back as warnings next to whatever the worker returned.
 //!
+//! The Screener for accounts without one (Gmail, iCloud Mail; `Provider::screened_by_worker`) is
+//! your worker's: one decision per address, wherever the mail comes. A thread whose sender (the
+//! latest one not you) has no decision waits in the Screener and is left out of the Inbox; an
+//! approved sender's is in the Inbox; a blocked sender's is left out of the Inbox, everything and
+//! search. Saying no also archives that sender's Inbox threads in the account itself, so they
+//! leave its own Inbox (on the phone too); later mail from them stays in the account's Inbox but
+//! never shows here. People you write to through an account are screened in, as the worker does
+//! for its own mail, and linking an account screens in the people it already corresponds with.
+//!
 //! Duplicates: a worker that forwards to a linked account (`forward_to` = your HEY address), or
 //! an account that forwards into your worker, puts every message in both; the account's copy is
 //! hidden. Where the account exposes Message-IDs (Gmail), a thread is a copy when one of its
@@ -20,6 +29,36 @@ use crate::provider::{self, AccountWarning, ExtraFolder, Provider};
 use crate::types::*;
 
 pub const DUPLICATE_WINDOW_MS: i64 = 15 * 60 * 1000;
+/// How many Inbox threads of a worker-screened account the Screener looks through.
+const SCREEN_SCAN: u32 = 200;
+
+/// Where a worker-screened account's thread belongs, by its sender's decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screening {
+    Approved,
+    Blocked,
+    Waiting,
+}
+
+/// A decision as the worker records it ("approved", "blocked", "pending" or none).
+pub fn screening(status: Option<&str>) -> Screening {
+    match status {
+        Some("approved") => Screening::Approved,
+        Some("blocked") => Screening::Blocked,
+        _ => Screening::Waiting,
+    }
+}
+
+/// Whether a worker-screened account's thread shows in a folder ("screener" for the waiting).
+pub fn shows_in(folder: &str, s: Screening) -> bool {
+    match folder {
+        "inbox" => s == Screening::Approved,
+        "screener" => s == Screening::Waiting,
+        // Archived and sent mail is yours; a blocked sender's stays out of everything else.
+        "archive" | "sent" => true,
+        _ => s != Screening::Blocked,
+    }
+}
 
 /// A worker thread's `last_at` when read, and its messages' Message-IDs.
 type WorkerIds = (i64, Vec<String>);
@@ -72,6 +111,35 @@ pub fn merge_senders(mut worker: Vec<PendingSender>, accounts: Vec<PendingSender
         }
     }
     worker
+}
+
+/// The senders of threads waiting in the Screener, one entry each, newest first.
+pub fn waiting_senders(threads: &[ThreadSummary]) -> Vec<PendingSender> {
+    let mut out: Vec<PendingSender> = Vec::new();
+    for t in threads {
+        let Some(from) = t.from.as_ref().filter(|a| a.email.contains('@')) else { continue };
+        let email = from.email.to_ascii_lowercase();
+        match out.iter_mut().find(|s| s.email == email) {
+            Some(s) => {
+                s.thread_count += 1;
+                if t.last_at > s.last_at {
+                    s.last_at = t.last_at;
+                    s.last_subject = Some(t.subject.clone());
+                }
+            }
+            None => out.push(PendingSender {
+                email,
+                name: from.name.clone(),
+                thread_count: 1,
+                last_subject: Some(t.subject.clone()),
+                last_at: t.last_at,
+                account: t.account.clone(),
+                id: None,
+            }),
+        }
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.last_at));
+    out
 }
 
 /// Newest first, at most `limit`.
@@ -152,11 +220,73 @@ impl Mail {
         Ok(Listing { threads: merge(worker, extra, q.limit), warnings, duplicates_hidden: hidden, more })
     }
 
-    /// Linked accounts' threads in a folder, with copies of worker mail left out.
+    /// Linked accounts' threads in a folder, with copies of worker mail left out and, for the
+    /// accounts your worker screens, only what that folder shows of them.
     pub fn accounts_list(&self, q: &ThreadQuery) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
         let folder = if q.folder.is_empty() { "inbox" } else { q.folder.as_str() };
-        let results = self.each_account(|p| if p.has_folder(folder) { p.threads(q) } else { Ok(Vec::new()) });
+        let results = self.each_account(|p| {
+            if p.screened_by_worker() {
+                // An account without a Screener has its waiting mail in its Inbox.
+                let (inner, limit) = if folder == "screener" { ("inbox", SCREEN_SCAN) } else { (folder, q.limit) };
+                if !p.has_folder(inner) {
+                    return Ok(Vec::new());
+                }
+                p.threads(&ThreadQuery { folder: inner.into(), limit, ..q.clone() })
+            } else if p.has_folder(folder) {
+                p.threads(q)
+            } else {
+                Ok(Vec::new())
+            }
+        });
+        let results = self.screen(results, folder);
         self.collect(results, folder != "screener")
+    }
+
+    /// Keeps of each worker-screened account's threads those `folder` shows, by their senders'
+    /// decisions (one lookup for all of them); the waiting ones are marked as in the Screener.
+    fn screen(&self, results: Vec<(String, Result<Vec<ThreadSummary>>)>, folder: &str) -> Vec<(String, Result<Vec<ThreadSummary>>)> {
+        let screened = |name: &str| self.accounts.iter().find(|p| p.name() == name).filter(|p| p.screened_by_worker());
+        let own: HashMap<String, Vec<String>> = results
+            .iter()
+            .filter_map(|(name, r)| Some((name.clone(), (r.is_ok().then_some(())?, screened(name)?).1)))
+            .map(|(name, p)| (name, p.identities().unwrap_or_default().into_iter().map(|a| a.email.to_ascii_lowercase()).collect()))
+            .collect();
+        let sender = |t: &ThreadSummary| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()).filter(|e| e.contains('@'));
+        let emails: Vec<String> = results
+            .iter()
+            .filter(|(name, _)| own.contains_key(name))
+            .flat_map(|(_, r)| r.as_ref().map(|l| l.iter().filter_map(sender).collect::<Vec<_>>()).unwrap_or_default())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let decisions = if emails.is_empty() { Ok(HashMap::new()) } else { self.client.sender_statuses(&emails) };
+        results
+            .into_iter()
+            .map(|(name, r)| {
+                let Some(mine) = own.get(&name) else { return (name, r) };
+                let list = match (&decisions, r) {
+                    (_, Err(e)) => Err(e),
+                    (Err(e), Ok(_)) => Err(Error::new(e.kind, format!("{name}: your Screener's decisions couldn't be read ({}), so its mail isn't shown", e.message))),
+                    (Ok(d), Ok(list)) => Ok(list
+                        .into_iter()
+                        .filter_map(|mut t| {
+                            let s = match sender(&t) {
+                                None => Screening::Approved,
+                                Some(e) if mine.contains(&e) => Screening::Approved,
+                                Some(e) => screening(d.get(&e).map(String::as_str)),
+                            };
+                            shows_in(folder, s).then(|| {
+                                if folder == "screener" {
+                                    t.folder = "screener".into();
+                                }
+                                t
+                            })
+                        })
+                        .collect()),
+                };
+                (name, list)
+            })
+            .collect()
     }
 
     /// Full-text search across the worker and every account.
@@ -175,6 +305,7 @@ impl Mail {
 
     pub fn accounts_search(&self, query: &str, limit: u32) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
         let results = self.each_account(|p| p.search(query, limit));
+        let results = self.screen(results, "search");
         self.collect(results, true)
     }
 
@@ -288,7 +419,8 @@ impl Mail {
         Ok((merge_senders(worker?, extra), warnings))
     }
 
-    /// Senders waiting in the linked accounts' Screeners.
+    /// Senders waiting in the linked accounts' Screeners: HEY's own, and the undecided senders in
+    /// the Inboxes your worker screens.
     pub fn accounts_screener(&self) -> (Vec<PendingSender>, Vec<AccountWarning>) {
         let mut senders = Vec::new();
         let mut warnings = Vec::new();
@@ -298,11 +430,19 @@ impl Mail {
                 Err(e) => warnings.push(AccountWarning::new(&name, &e)),
             }
         }
+        if self.accounts.iter().any(|p| p.screened_by_worker()) {
+            let (waiting, w, _) = self.accounts_list(&ThreadQuery { folder: "screener".into(), limit: SCREEN_SCAN, ..Default::default() });
+            warnings.extend(w);
+            let screened: Vec<ThreadSummary> = waiting.into_iter().filter(|t| self.account_for(&t.id).is_some_and(|p| p.screened_by_worker())).collect();
+            senders.extend(waiting_senders(&screened));
+        }
         (senders, warnings)
     }
 
-    /// Screens a sender in or out. `key` is an address (decided in the worker, and in every
-    /// account where that address is waiting) or an account's sender ID such as `hey:123`.
+    /// Screens a sender in or out. `key` is an address (decided in the worker, which decides for
+    /// Gmail and iCloud Mail too, and in every HEY account where that address is waiting) or an
+    /// account's sender ID such as `hey:123`. A no also archives that sender's Inbox threads in the
+    /// worker-screened accounts.
     pub fn decide_sender(&self, key: &str, status: &str) -> Result<(i64, Vec<AccountWarning>)> {
         if let Some(p) = self.account_for(key) {
             return p.decide_sender(key, status).map(|n| (n, Vec::new()));
@@ -310,19 +450,27 @@ impl Mail {
         if !self.has_accounts() {
             return self.client.decide_sender(key, status).map(|n| (n, Vec::new()));
         }
-        let (worker, extra) = std::thread::scope(|s| {
-            let extra = s.spawn(|| {
-                self.each_account(|p| {
-                    let mut moved = 0;
-                    for sender in p.screener()?.into_iter().filter(|s| s.email.eq_ignore_ascii_case(key)) {
-                        moved += p.decide_sender(sender.id.as_deref().unwrap_or(&sender.email), status)?;
-                    }
-                    Ok(moved)
-                })
-            });
-            (self.client.decide_sender(key, status), extra.join().unwrap_or_default())
+        // The worker's decision is the one that counts for the accounts it screens; it comes first.
+        let mut moved = self.client.decide_sender(key, status)?;
+        let extra = self.each_account(|p| {
+            if p.screened_by_worker() {
+                if status != "blocked" {
+                    return Ok(0);
+                }
+                let inbox = p.threads(&ThreadQuery { folder: "inbox".into(), limit: SCREEN_SCAN, ..Default::default() })?;
+                let mut moved = 0;
+                for t in inbox.iter().filter(|t| t.is_from(key)) {
+                    p.move_thread(&t.id, p.archive_folder())?;
+                    moved += 1;
+                }
+                return Ok(moved);
+            }
+            let mut moved = 0;
+            for sender in p.screener()?.into_iter().filter(|s| s.email.eq_ignore_ascii_case(key)) {
+                moved += p.decide_sender(sender.id.as_deref().unwrap_or(&sender.email), status)?;
+            }
+            Ok(moved)
         });
-        let mut moved = worker?;
         let mut warnings = Vec::new();
         for (name, r) in extra {
             match r {
@@ -365,7 +513,25 @@ impl Mail {
     pub fn send(&self, req: &SendRequest) -> Result<SendResponse> {
         let sender = self.sender_for(req);
         crate::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
-        sender.send(req)
+        let mut sent = sender.send(req)?;
+        if sender.screened_by_worker() {
+            // People you write to are screened in, as the worker does for its own mail.
+            let to: Vec<Address> = req.to.iter().chain(&req.cc).chain(&req.bcc).flat_map(|r| crate::text::split_addresses(r)).map(|a| crate::gmail::address_from(&a)).filter(|a| a.email.contains('@')).collect();
+            if let Err(e) = self.client.decide_senders(&to, "approved", false) {
+                sent.warning = Some(format!("sent, but its recipients couldn't be screened in: {}", e.message));
+            }
+        }
+        Ok(sent)
+    }
+
+    /// Screens in the people a newly linked account already corresponds with (never overriding
+    /// a decision); how many were new.
+    pub fn screen_in_correspondents(&self, account: &dyn Provider) -> Result<i64> {
+        if !account.screened_by_worker() {
+            return Ok(0);
+        }
+        let people = account.correspondents(100)?;
+        self.client.decide_senders(&people, "approved", true)
     }
 }
 

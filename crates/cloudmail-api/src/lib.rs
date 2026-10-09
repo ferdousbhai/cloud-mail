@@ -1,6 +1,7 @@
 //! Shared API client, types, config and text helpers for the cloudmail CLI and GTK app, plus the
 //! provider abstraction that lets linked accounts (HEY, Gmail, iCloud Mail) sit next to your worker.
 
+pub mod accounts;
 pub mod attach;
 pub mod client;
 pub mod config;
@@ -8,8 +9,9 @@ pub mod error;
 pub mod gmail;
 pub mod hey;
 pub mod icloud;
-pub mod imap;
+pub mod keyring;
 pub mod provider;
+pub mod session;
 pub mod text;
 pub mod types;
 pub mod unified;

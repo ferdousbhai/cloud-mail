@@ -16,7 +16,8 @@
 //!
 //! Folders: the Inbox is Gmail's INBOX label; archiving removes it (Gmail's own archive) and
 //! "move to Inbox" adds it back; the Archive lists threads with mail outside the Inbox; Sent is the
-//! SENT label; unread is the UNREAD label. Gmail has no Screener: its mail goes straight to the Inbox.
+//! SENT label; unread is the UNREAD label. Gmail has no Screener, so your worker's decides (see
+//! `unified.rs`).
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_PAD_INDIFFERENT};
@@ -57,7 +58,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 const LIST_LIMIT: u32 = 100;
 /// `gws` runs at a time when fetching a listing's threads.
 const PARALLEL: usize = 8;
-const META_HEADERS: &[&str] = &["From", "To", "Subject", "Date", "Message-ID", "Delivered-To", "Content-Type"];
+const META_HEADERS: &[&str] = &["From", "To", "Cc", "Subject", "Date", "Message-ID", "Delivered-To", "Content-Type"];
 
 /// A thread as last listed, kept while its historyId stays the same.
 #[derive(Clone)]
@@ -65,6 +66,8 @@ struct Cached {
     history: String,
     summary: ThreadSummary,
     message_ids: Vec<String>,
+    /// Who your sent messages in it went to.
+    recipients: Vec<Address>,
 }
 
 pub struct Gmail {
@@ -164,7 +167,7 @@ fn encode_words(s: &str) -> String {
 }
 
 /// `Name <a@b>` for a header, the name quoted or encoded as needed.
-fn format_address(a: &Address) -> String {
+pub(crate) fn format_address(a: &Address) -> String {
     let email: String = a.email.chars().filter(|c| !matches!(c, '\r' | '\n' | '<' | '>' | ',' | '"')).collect();
     match a.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         None => email,
@@ -552,7 +555,8 @@ impl Gmail {
             account: Some(self.name.clone()),
         };
         let message_ids = msgs.iter().map(|m| normalize_message_id(&head(m, "Message-ID"))).filter(|m| !m.is_empty()).collect();
-        Some(Cached { history: text(&t["historyId"]), summary, message_ids })
+        let recipients = msgs.iter().filter(|m| has_label(m, "SENT")).flat_map(|m| [addresses(&head(m, "To")), addresses(&head(m, "Cc"))].concat()).collect();
+        Some(Cached { history: text(&t["historyId"]), summary, message_ids, recipients })
     }
 
     fn get_thread(&self, id: &str, format: &str) -> Result<Value> {
@@ -909,6 +913,25 @@ impl Provider for Gmail {
     fn message_ids(&self, thread_id: &str) -> Vec<String> {
         let Ok(thread) = self.thread_id(thread_id) else { return Vec::new() };
         self.cache.lock().unwrap().get(thread).map(|c| c.message_ids.clone()).unwrap_or_default()
+    }
+
+    fn screened_by_worker(&self) -> bool {
+        true
+    }
+
+    fn correspondents(&self, limit: u32) -> Result<Vec<Address>> {
+        let own: Vec<String> = self.own_addresses()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
+        let max = limit.clamp(1, LIST_LIMIT);
+        let mut out: Vec<Address> = self.listing(json!({ "userId": "me", "labelIds": ["INBOX"], "maxResults": max }))?.into_iter().filter_map(|t| t.from).collect();
+        let sent = self.listing(json!({ "userId": "me", "labelIds": ["SENT"], "maxResults": max }))?;
+        let cache = self.cache.lock().unwrap();
+        for t in sent {
+            if let Some(c) = self.thread_id(&t.id).ok().and_then(|id| cache.get(id)) {
+                out.extend(c.recipients.iter().cloned());
+            }
+        }
+        out.retain(|a| !own.contains(&a.email.to_ascii_lowercase()));
+        Ok(out)
     }
 }
 

@@ -106,6 +106,16 @@ pub trait Provider: Send + Sync {
     fn message_ids(&self, _thread_id: &str) -> Vec<String> {
         Vec::new()
     }
+    /// Whether your worker's Screener decides this account's senders (it has no Screener of its
+    /// own). Its threads then wait in the Screener until their sender is approved.
+    fn screened_by_worker(&self) -> bool {
+        false
+    }
+    /// The people this account already corresponds with (Inbox senders, recipients of sent mail,
+    /// about `limit` conversations of each), screened in when the account is linked.
+    fn correspondents(&self, _limit: u32) -> Result<Vec<Address>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Your Cloudmail worker, as a provider. Its IDs are unprefixed.
@@ -194,7 +204,7 @@ impl Provider for Client {
 pub const KNOWN_PROVIDERS: &[(&str, &str)] = &[
     ("hey", "HEY (hey.com), through the official `hey` CLI"),
     ("gmail", "Gmail, through Google's Workspace CLI `gws`"),
-    ("icloud", "iCloud Mail, over IMAP and SMTP with an app-specific password"),
+    ("icloud", "iCloud Mail, through the iCloud sign-in icloud-session keeps"),
 ];
 
 /// How an account is named on screen: its provider's name for the usual account names, else the

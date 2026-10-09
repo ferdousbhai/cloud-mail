@@ -79,9 +79,8 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add hey",
             "cloudmail account add hey --command ~/.local/bin/hey",
             "cloudmail account add hey --no-login --json",
-            "cloudmail account add icloud --email you@icloud.com",
-            "cloudmail account add icloud --email you@icloud.com --alias you@example.com",
-            "printf '%s\\n' \"$APP_PASSWORD\" | cloudmail account add icloud --email you@icloud.com --password-stdin --json",
+            "cloudmail account add icloud",
+            "cloudmail account add icloud --no-login --json",
         ],
     ),
     ("account login", &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"]),
@@ -304,13 +303,12 @@ installed and signed in; on a terminal, add runs `hey auth login` for you, other
 in the browser (Gmail access only, kept in cloudmail's own gws directory, apart from any gws of yours),
 otherwise it fails with `not_logged_in`; `--login` signs in without a terminal. A build without
 cloudmail's Google client fails with `not_configured` until CLOUDMAIL_GOOGLE_CLIENT_ID/SECRET or
-`--client-id/--client-secret` name one. `cloudmail account add icloud --email you@icloud.com` links
-iCloud Mail over IMAP and SMTP with an app-specific password (made at account.apple.com: Sign-In and
-Security → App-Specific Passwords): on a terminal it opens that page and asks for the password,
-otherwise pass it on stdin with `--password-stdin` (else `not_logged_in`). It is checked by signing in,
-then kept in `~/.config/cloudmail/icloud/<name>`, readable only by you. `--alias` adds an address you
-also send from (Hide My Email, a custom domain). `cloudmail account list --json` shows each account and
-whether it works.
+`--client-id/--client-secret` name one (the secret is kept in the keyring). `cloudmail account add
+icloud` links iCloud Mail through icloud-session (icloud-for-omarchy), which keeps this computer's
+iCloud sign-in for every app: on a terminal it opens icloud-session's sign-in window if needed,
+otherwise it fails with `not_logged_in` (`--login` opens it anyway); `not_installed` without
+icloud-session. Your addresses and name come from iCloud Mail's own settings. `cloudmail account list
+--json` shows each account and whether it works.
 
 Once linked, their mail appears next to yours with `"account": "hey"` / `"gmail"` / `"icloud"` on threads
 and HEY's Screener senders (your worker's own mail has no `account` key). IDs are prefixed and go back
@@ -321,17 +319,19 @@ to their account:
     hey:<topic>/<entry>      a message        hey:<id>   an attachment or a Screener sender
     gmail:<thread>           a Gmail thread   gmail:<thread>/<message>   a message (also for `raw`)
     gmail:<message>:<part>   a Gmail attachment
-    icloud:t<root>           an iCloud Mail thread (grouped by Message-ID/References; <root> is the
-                             first message's Message-ID in base64url, so it survives archiving)
-    icloud:t<root>/<box>.<uidvalidity>.<uid>   a message (also for `raw`)
-    icloud:<box>.<uidvalidity>.<uid>#<n>       an iCloud Mail attachment
+    icloud:t…                an iCloud Mail thread (opaque; it names the mailbox it was listed in,
+                             so list again after moving it)
+    icloud:t…/m…             a message (also for `raw`)       icloud:a…   an iCloud Mail attachment
 
 Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's and iCloud's Inboxes; `archive` = your Archive +
 HEY's Paper Trail + Gmail threads out of the Inbox + iCloud's Archive mailbox (archiving a HEY thread
 moves it to Paper Trail, a Gmail thread loses its Inbox label, an iCloud thread moves to Archive;
-unarchive undoes each); `sent` = yours + Gmail's + iCloud's; `screener` = yours + HEY's (a sender
-waiting in both shows once; Gmail and iCloud Mail have no Screener, their mail goes straight to the Inbox);
-`blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
+unarchive undoes each); `sent` = yours + Gmail's + iCloud's; `screener` = yours + HEY's + Gmail's and
+iCloud's waiting mail (a sender waiting in several places shows once). Gmail and iCloud Mail have no
+Screener, so your worker's decides for them: a new sender's thread waits in `screener` and stays out of
+`inbox` until approved; a blocked sender's is left out of everything but `archive`/`sent`, and blocking
+archives that sender's Inbox threads in the account too. Linking one screens in the people it already
+corresponds with; people you write to through it are screened in. `blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
 feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads its own search syntax).
 
     cloudmail inbox --json                           # merged by time
@@ -343,11 +343,11 @@ feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads 
     cloudmail screener approve hey:5001              # only in HEY
 
 If your worker forwards to a linked address (or Gmail forwards into your worker), the account's copy of
-each message is hidden (`meta.duplicates_hidden`): Gmail and iCloud copies by Message-ID, HEY copies by sender,
+each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY and iCloud copies by sender,
 subject and time. A linked account's failure never fails a command about your own mail: the rest is
 returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
 fails with `account_unauthorized` (exit 3: `cloudmail account login <name>` signs it in again in the
-browser, or for iCloud with a new app-specific password), `account_unavailable` (exit 5: its CLI
+browser, or icloud-session's window for iCloud), `account_unavailable` (exit 5: its CLI
 missing or failing, or Google or iCloud unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
 and `watch` follows your worker only.
 
