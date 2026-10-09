@@ -1,3 +1,4 @@
+mod accounts;
 pub mod compose;
 #[cfg(debug_assertions)]
 mod devscript;
@@ -265,6 +266,14 @@ impl Ui {
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
+        let accounts_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        accounts_box.append(&gtk::Label::new(Some("\u{f2c0}")));
+        let accounts_label = gtk::Label::builder().label("Accounts").xalign(0.0).build();
+        accounts_box.append(&accounts_label);
+        let accounts_btn = gtk::Button::builder().child(&accounts_box).tooltip_text("Linked accounts: HEY, Gmail, iCloud Mail").build();
+        accounts_btn.add_css_class("flat");
+        sidebar.append(&accounts_btn);
+        wide_only.push(accounts_label.upcast());
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
         sidebar.append(&hint);
@@ -499,6 +508,8 @@ impl Ui {
             #[upgrade_or] false,
             move |_, decision, kind| ui.decide_policy(decision, kind)
         ));
+
+        accounts_btn.connect_clicked(clone!(#[weak] ui, move |_| accounts::show(&ui)));
 
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -777,11 +788,11 @@ impl Ui {
             let label = self.account_label(&name);
             let button = gtk::Button::with_label(&format!("Sign in to {label}"));
             if self.signing_in.borrow().contains(&name) {
-                button.set_label("Waiting for the browser…");
+                button.set_label("Waiting for the sign-in…");
                 button.set_sensitive(false);
             }
             button.connect_clicked(clone!(#[weak(rename_to = ui)] self, move |b| {
-                b.set_label("Waiting for the browser…");
+                b.set_label("Waiting for the sign-in…");
                 b.set_sensitive(false);
                 ui.sign_in_account(&name);
             }));
@@ -802,7 +813,7 @@ impl Ui {
             return;
         }
         let label = account.label().to_string();
-        self.toast(&format!("Finish signing in to {label} in your browser"));
+        self.toast(&format!("Finish signing in to {label} (in the browser or sign-in window)"));
         let name = name.to_string();
         util::run(
             move || account.sign_in(),
