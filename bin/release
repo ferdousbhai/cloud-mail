@@ -10,12 +10,15 @@ gh_repo=ferdousbhai/cloud-mail
 fingerprint=35C47A06567940B6796B4D0F9B3C7BDF85268B31
 step() { printf '\n==> %s\n' "$*"; }
 source_commit=$(git rev-parse "$tag^{commit}")
-[[ $(git show "$source_commit:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1) == "$version" ]]
+cargo_version=$(git show "$source_commit:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+[[ $cargo_version == "$version" ]] \
+  || { echo "Cargo.toml at $tag says version ${cargo_version:-<none>}, not $version." >&2; exit 1; }
 remote_commit=$(gh api "repos/$gh_repo/commits/$tag" --jq .sha)
 [[ $source_commit == "$remote_commit" ]] || { echo 'Local and remote tags disagree.' >&2; exit 1; }
 gpg --batch --list-secret-keys "$fingerprint" >/dev/null 2>&1 \
   || { echo "The package-signing key $fingerprint is not in this keyring." >&2; exit 1; }
-gh release view "$tag" --repo "$gh_repo" >/dev/null
+gh release view "$tag" --repo "$gh_repo" >/dev/null \
+  || { echo "No GitHub release for $tag; draft one first (bin/release-on-tag does)." >&2; exit 1; }
 step "Waiting for native package CI for $tag"
 run=${2:-}
 if [[ -z $run ]]; then
