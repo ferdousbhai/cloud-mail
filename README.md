@@ -27,7 +27,7 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 | `worker/` | Cloudflare Worker (TypeScript): inbound handler, Screener, JSON API |
 | `crates/cloudmail` | `cloudmail` CLI |
 | `crates/cloudmail-gtk` | `cloudmail-gtk` desktop app (GTK4 + WebKitGTK), themed from Omarchy if present |
-| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI) |
+| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI, iCloud Mail over IMAP and SMTP) |
 | `docs/API.md` | HTTP API reference |
 
 ## Get started
@@ -189,6 +189,56 @@ one line says what's wrong. When a sign-in has expired or been revoked (Gmail or
 few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
 takes a moment; your own mail doesn't wait for it.
 
+## Your iCloud Mail too (optional)
+
+iCloud Mail can sit next to your mail the same way, in the app and the CLI, and nothing changes until
+you add it. Cloudmail talks to iCloud's own mail servers (IMAP at `imap.mail.me.com`, SMTP at
+`smtp.mail.me.com`, both over TLS) with an **app-specific password**: a password Apple makes for one
+app, which can read and send your mail but can't sign in to your Apple Account, and which you can
+revoke at any time. Nothing else to install. It works with Advanced Data Protection on, since that
+doesn't cover iCloud Mail.
+
+```sh
+cloudmail account add icloud --email you@icloud.com   # opens account.apple.com, then asks for the password
+cloudmail account list
+cloudmail account remove icloud                       # unlink and forget the saved password
+```
+
+`account add` opens [account.apple.com](https://account.apple.com/account/manage): sign in, then
+**Sign-In and Security → App-Specific Passwords → +**, name it Cloudmail, and paste the password it
+shows (`xxxx-xxxx-xxxx-xxxx`) at the prompt. Cloudmail signs in with it to check it works, then keeps
+it in `~/.config/cloudmail/icloud/icloud`, readable only by you, the way your worker's API token is
+kept in `config.toml`. Sign in with your `@icloud.com` (or `@me.com`, `@mac.com`) address; addresses
+you also send from, such as Hide My Email or a custom domain on iCloud+, go in with
+`--alias you@example.com` (repeat it for more), since IMAP can't list them. Without a terminal (a
+script, an agent), pipe the password in: `cloudmail account add icloud --email you@icloud.com
+--password-stdin`.
+
+| In Cloudmail | Your worker | iCloud Mail |
+|---|---|---|
+| Inbox | Inbox | Inbox (unread = not yet read in Mail) |
+| Archive (`e`) | Archive | the Archive mailbox (made the first time you archive, as Mail does); `i` brings a thread back |
+| Screener | Screener | (iCloud has no Screener: its mail goes straight to the Inbox) |
+| Sent | Sent | Sent Messages |
+| Search | full-text search | iCloud's server-side search of the Inbox, Archive and Sent Messages |
+
+IMAP has no threads, so Cloudmail groups iCloud's messages into conversations itself, by the
+Message-ID, In-Reply-To and References headers every mail program writes: your reply from Sent
+Messages shows inside the conversation it answers. iCloud threads carry a small **iCloud** tag.
+Reading never marks a message read (that's `markread`, or opening it in the app); replying (threaded,
+from the address the mail came to), writing from your iCloud address or an alias, marking read/unread,
+archiving, attachments (up to 14 MiB, as iCloud takes 20 MB messages) and `cloudmail raw` all go
+through iCloud; iCloud's IDs start with `icloud:`. After sending, Cloudmail makes sure the message is
+in Sent Messages, saving a copy there unless iCloud has already filed one. Junk, Drafts and your own
+mailboxes aren't shown.
+
+**Forwarding.** If your worker forwards to your iCloud address, or iCloud forwards into your worker,
+iCloud's copy is hidden: like Gmail, it is matched by Message-ID.
+
+**If iCloud is unavailable** (offline, or the password was revoked), your own mail loads as usual and
+one line says what's wrong. A revoked password needs a new one: `cloudmail account login icloud`
+opens the page and asks for it (the app's **Sign in** button opens the page and says the same).
+
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
@@ -244,12 +294,18 @@ cargo test --workspace && cargo clippy --workspace --all-targets
 
 Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
 `Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls
-through `gws gmail users … --params '<json>'`, and `unified.rs` merges providers, turns their failures
+through `gws gmail users … --params '<json>'`, `icloud.rs` maps iCloud Mail's IMAP (through the small
+blocking client in `imap.rs`, which frames commands and leaves parsing to `imap-proto`) and SMTP
+(`lettre`), and `unified.rs` merges providers, turns their failures
 into warnings and hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
 its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
 "…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
 and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
 (`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
+iCloud's tests run against `crates/cloudmail/tests/fake_icloud`, an in-process IMAP and SMTP server
+with a certificate made per run; cloudmail reaches it through `CLOUDMAIL_ICLOUD_IMAP`,
+`CLOUDMAIL_ICLOUD_SMTP` (`host:port`) and `CLOUDMAIL_ICLOUD_CA` (one more CA to trust), and always
+over TLS.
 
 Cloudmail's Google sign-in is one OAuth client, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in
 `crates/cloudmail-api/src/gmail.rs` (a desktop client's secret isn't secret). Until those are filled
@@ -270,6 +326,8 @@ Mail that can't be parsed or stored is never bounced: the raw message is kept in
 ## Security notes
 
 - The API is protected by a single bearer token: treat `~/.config/cloudmail/config.toml` like a password.
+- A linked iCloud account's app-specific password is in `~/.config/cloudmail/icloud/<name>` (mode 600).
+  It opens your iCloud mail, not your Apple Account; revoke it at account.apple.com if that file leaks.
 - Message HTML is untrusted. The desktop app renders it with JavaScript disabled, remote loads
   blocked and links opened in your browser.
 - Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,
