@@ -99,6 +99,17 @@ pub enum Command {
     Commands,
     /// Print a guide for AI agents: envelope, exit codes and common workflows
     AgentGuide,
+    /// Print the agent skill (SKILL.md) built into cloudmail, or install it for your coding agents
+    Skill {
+        #[command(subcommand)]
+        command: Option<SkillCommand>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillCommand {
+    /// Copy SKILL.md to ~/.agents/skills/cloudmail/ and link it into ~/.claude/skills/ when Claude Code is installed
+    Install,
 }
 
 #[derive(Args, Debug, Clone)]

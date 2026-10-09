@@ -246,9 +246,15 @@ The CLI is its own documentation. When output is piped, every command prints a J
 nothing ever prompts.
 
 ```sh
+cloudmail skill install       # install the agent skill (setup, linking accounts, daily use) for
+                              # Claude Code, Codex and other agents reading ~/.agents/skills
 cloudmail agent-guide         # concepts, output format, exit codes, workflows
 cloudmail commands --json     # every command, flag and example
 ```
+
+The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agent through setting
+up all your domains with the Cloudflare CLI, linking HEY, Gmail and iCloud Mail, and using the CLI,
+in about 1,500 tokens.
 
 ## Releasing
 

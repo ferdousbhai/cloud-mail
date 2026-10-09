@@ -2,8 +2,12 @@
 
 use clap::{ArgAction, Command};
 use serde_json::{Value, json};
+use std::path::Path;
 
-use crate::output::exit;
+use crate::output::{CliError, CliResult, Response, crumb, exit};
+
+/// The agent skill, printed by `cloudmail skill` and installed by `cloudmail skill install`.
+pub const SKILL: &str = include_str!("../../../skills/cloudmail/SKILL.md");
 
 /// Examples per command path. A test checks that every command has one and every key is real.
 pub const EXAMPLES: &[(&str, &[&str])] = &[
@@ -96,6 +100,8 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     ("commands", &["cloudmail commands", "cloudmail commands --json"]),
     ("agent-guide", &["cloudmail agent-guide"]),
+    ("skill", &["cloudmail skill", "cloudmail skill > SKILL.md"]),
+    ("skill install", &["cloudmail skill install"]),
 ];
 
 pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
@@ -352,7 +358,8 @@ missing or failing, or Google or iCloud unreachable), or `not_found`. Linked acc
 and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
-`cloudmail commands --json` lists every command, flag and example.
+`cloudmail commands --json` lists every command, flag and example; `cloudmail skill install` installs
+a short agent skill for Claude Code, Codex and others.
 "#;
 
 pub fn agent_guide() -> String {
@@ -362,6 +369,47 @@ pub fn agent_guide() -> String {
         .collect::<Vec<_>>()
         .join("\n");
     AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
+}
+
+/// Writes SKILL.md to `~/.agents/skills/cloudmail/` (where Codex and others look) and, when Claude
+/// Code is installed, links `~/.claude/skills/cloudmail` to it. Returns the paths it wrote.
+pub fn write_skill(home: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let dir = home.join(".agents/skills/cloudmail");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("SKILL.md"), SKILL)?;
+    let mut written = vec![dir.join("SKILL.md")];
+    if home.join(".claude").is_dir() {
+        let link = home.join(".claude/skills/cloudmail");
+        std::fs::create_dir_all(home.join(".claude/skills"))?;
+        match std::fs::symlink_metadata(&link) {
+            // A directory of its own (an older copy): update the copy rather than replace it.
+            Ok(m) if m.is_dir() => {
+                std::fs::write(link.join("SKILL.md"), SKILL)?;
+                written.push(link.join("SKILL.md"));
+                return Ok(written);
+            }
+            Ok(_) => std::fs::remove_file(&link)?,
+            Err(_) => {}
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("../../.agents/skills/cloudmail", &link)?;
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(&link)?;
+            std::fs::write(link.join("SKILL.md"), SKILL)?;
+        }
+        written.push(link);
+    }
+    Ok(written)
+}
+
+pub fn install_skill() -> CliResult {
+    let home = dirs::home_dir().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
+    let paths = write_skill(&home)?;
+    let human = paths.iter().map(|p| format!("Installed {}", p.display())).collect::<Vec<_>>().join("\n");
+    Ok(Response::new(json!({ "paths": paths }), "Installed the cloudmail skill")
+        .human(human)
+        .crumbs(vec![crumb("show", "cloudmail skill", "Print the skill")]))
 }
 
 #[cfg(test)]
@@ -444,6 +492,36 @@ mod tests {
         assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
         assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
         assert!(commands_text(&tree).contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n"));
+    }
+
+    #[test]
+    fn skill_installs_for_agents_and_claude() {
+        let home = std::env::temp_dir().join(format!("cloudmail-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let written = write_skill(&home).unwrap();
+        assert_eq!(written.len(), 2);
+        // Twice is fine: the link is replaced.
+        write_skill(&home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join(".claude/skills/cloudmail/SKILL.md")).unwrap(), SKILL);
+        assert!(std::fs::symlink_metadata(home.join(".claude/skills/cloudmail")).unwrap().file_type().is_symlink());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn skill_commands_are_real() {
+        // Every `cloudmail …` line in the skill's Use block names a real command.
+        let all = {
+            let mut v = Vec::new();
+            paths(&crate::cli::Cli::command(), "", &mut v);
+            v
+        };
+        assert!(SKILL.starts_with("---\nname: cloudmail\n"));
+        for line in SKILL.lines().filter(|l| l.starts_with("cloudmail ")) {
+            let words: Vec<&str> = line.split_whitespace().skip(1).take_while(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-')).collect();
+            let found = (1..=words.len().min(2)).rev().any(|n| all.contains(&words[..n].join(" ")));
+            assert!(found, "skill names an unknown command: {line}");
+        }
     }
 
     #[test]
