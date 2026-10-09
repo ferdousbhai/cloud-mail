@@ -2153,8 +2153,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "ureq"
 version = "3.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a7ac20be9b7726e0bbdbf974c059676d9acb1cd414961f570a4e8231cacd7fc"
+source = "git+https://github.com/algesten/ureq?rev=0ebb046e1cf269592f9edb3a55f489d508f47a1d#0ebb046e1cf269592f9edb3a55f489d508f47a1d"
 dependencies = [
  "base64",
  "cookie_store",
