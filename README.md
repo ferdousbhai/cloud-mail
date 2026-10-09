@@ -82,7 +82,7 @@ Cloudmail is also on its way into Omarchy's own repository and *Install › Serv
 ### From source
 
 Needs Node.js and Rust; the desktop app also needs GTK 4 and WebKitGTK 6.0
-(Arch: `pacman -S gtk4 webkitgtk-6.0`).
+(`./install.sh` installs them on Arch).
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail

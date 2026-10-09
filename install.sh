@@ -15,6 +15,11 @@ SHARE="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [[ "${CLOUDMAIL_NO_GTK:-}" == 1 ]]; then
   cargo build --release -p cloudmail
 else
+  # The desktop app builds against GTK 4 and WebKitGTK 6.0; on Arch, install whichever is missing.
+  if ! pkg-config --exists gtk4 webkitgtk-6.0 2>/dev/null && command -v pacman >/dev/null; then
+    echo "Installing GTK 4 and WebKitGTK 6.0 for cloudmail-gtk"
+    sudo pacman -S --needed gtk4 webkitgtk-6.0
+  fi
   cargo build --release -p cloudmail -p cloudmail-gtk
 fi
 
