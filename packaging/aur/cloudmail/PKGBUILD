@@ -8,10 +8,13 @@ url="https://github.com/ferdousbhai/cloud-mail"
 license=('MIT')
 depends=('gtk4' 'webkitgtk-6.0' 'glib2' 'gcc-libs' 'glibc')
 makedepends=('cargo')
+checkdepends=('dbus')  # the CLI tests' private session bus
 options=('!debug' '!lto')  # makepkg's C LTO breaks ring's assembly objects
 optdepends=(
   'npm: deploying the worker with `cloudmail setup`, and Google'\''s Workspace CLI for an opt-in Gmail account'
   'libnotify: new-mail notifications in cloudmail-gtk'
+  'gnome-keyring: the Secret Service that keeps the API token, which cloudmail needs (KeePassXC'\''s works too)'
+  'icloud-session: an opt-in iCloud Mail account (from icloud-for-omarchy)'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')  # bin/release pins the tag archive's checksum when it builds
