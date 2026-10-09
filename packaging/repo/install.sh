@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO=cloudmail
-RELEASES=https://github.com/ferdousbhai/cloud-mail/releases/latest/download
+RELEASES=${CLOUDMAIL_RELEASES_URL:-https://github.com/ferdousbhai/cloud-mail/releases/latest/download}
 SIGNING_KEY_FINGERPRINT=35C47A06567940B6796B4D0F9B3C7BDF85268B31
 PACKAGES=(cloudmail npm)
 
@@ -65,10 +65,22 @@ if ! command -v pacman >/dev/null; then
   echo "pacman not found: this installer is for Omarchy and other Arch Linux systems." >&2
   exit 1
 fi
-if [[ $(uname -m) != x86_64 ]]; then
-  echo "The signed repository has x86_64 packages only; on $(uname -m), build from source:" >&2
-  echo "  https://github.com/ferdousbhai/cloud-mail#from-source" >&2
-  exit 1
+case "$(uname -m)" in
+  x86_64) ;;
+  aarch64) REPO=cloudmail-aarch64 ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Older/manual installs may have configured the x86_64 repository on ARM.
+# Remove only this installer's exact include, config and refresh hook.
+if [[ $REPO == cloudmail-aarch64 ]]; then
+  sudo=''
+  (( EUID == 0 )) || sudo=sudo
+  $sudo sed -i '\|^Include = /etc/pacman.d/cloudmail.conf$|d' /etc/pacman.conf
+  $sudo rm -f /etc/pacman.d/cloudmail.conf
+  user="${SUDO_USER:-${USER:-$(id -un)}}"
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -z $home ]] || $sudo rm -f "$home/.config/omarchy/hooks/pre-refresh-pacman.d/cloudmail"
 fi
 
 echo "Adding the [$REPO] repository"

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Build an unsigned package natively; release signing stays on the maintainer's machine.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+architecture=${1:?usage: bin/build-package <x86_64|aarch64> [output-directory]}
+case "$architecture" in
+  x86_64) image=archlinux:base-devel; platform=linux/amd64 ;;
+  aarch64) image=${ARM_BUILD_IMAGE:?Set ARM_BUILD_IMAGE to a native Arch Linux ARM image}; platform=linux/arm64 ;;
+  *) echo "Unsupported architecture: $architecture" >&2; exit 1 ;;
+esac
+[[ $(uname -m) == "$architecture" ]] || { echo 'A native runner is required.' >&2; exit 1; }
+version=$(git show HEAD:Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+output=$(realpath -m "${2:-target/packages/$architecture}")
+mkdir -p "$output"
+docker run --rm --platform "$platform" -e BUILD_ARCH="$architecture" -e BUILD_VERSION="$version" \
+  -e OUTPUT_UID="$(id -u)" -e OUTPUT_GID="$(id -g)" \
+  -v "$PWD:/source:ro" -v "$output:/output" "$image" bash -euo pipefail -c '
+    [[ $(uname -m) == "$BUILD_ARCH" ]]
+    sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
+    pacman-key --init
+    if [[ $BUILD_ARCH == aarch64 ]]; then pacman-key --populate archlinuxarm; else pacman-key --populate archlinux; fi
+    pacman -Syu --needed --noconfirm base-devel cargo git gtk4 webkitgtk-6.0
+    git config --global --add safe.directory /source
+    git config --global --add safe.directory /source/.git
+    commit=$(git -C /source rev-parse HEAD)
+    mkdir /build
+    git -C /source archive --prefix="cloud-mail-$BUILD_VERSION/" HEAD | gzip -n > /build/source.tar.gz
+    git -C /source show HEAD:packaging/aur/cloudmail/PKGBUILD > /build/PKGBUILD
+    sum=$(sha256sum /build/source.tar.gz | cut -d" " -f1)
+    sed -i -e "s|^source=.*|source=(source.tar.gz)|" -e "s/^sha256sums=.*/sha256sums=(\x27$sum\x27)/" /build/PKGBUILD
+    useradd -m builder
+    chown -R builder:builder /build /output
+    su builder -c "cd /build && PKGDEST=/output PKGEXT=.pkg.tar.zst makepkg --force"
+    package=/output/cloudmail-$BUILD_VERSION-1-$BUILD_ARCH.pkg.tar.zst
+    info=$(bsdtar -xOf "$package" .PKGINFO)
+    grep -qxF "pkgname = cloudmail" <<< "$info"
+    grep -qxF "pkgver = $BUILD_VERSION-1" <<< "$info"
+    grep -qxF "arch = $BUILD_ARCH" <<< "$info"
+    [[ $(/build/src/cloud-mail-$BUILD_VERSION/target/release/cloudmail --version) == "cloudmail $BUILD_VERSION" ]]
+    printf "%s\n" "$commit" > /output/source-commit.txt
+    chown -R "$OUTPUT_UID:$OUTPUT_GID" /output
+  '
