@@ -66,7 +66,7 @@ pub fn status(ctx: &Ctx) -> CliResult {
     let summary =
         format!("{} unread of {} in the Inbox, {} in the Screener", counts.inbox_unread, counts.inbox, counts.screener);
     let human = format!(
-        "Worker:     {} (ok)\nConfig:     {}\nInbox:      {}, {} unread\nScreener:   {} waiting\nMailboxes:  {}\nForwarding: {}",
+        "Worker:      {} (ok)\nConfig:      {}\nInbox:       {}, {} unread\nScreener:    {} waiting\nMailboxes:   {}\nForwarding:  {}",
         client.base_url(),
         config::path().display(),
         crate::mail::plural(counts.inbox as usize, "thread"),
@@ -101,7 +101,7 @@ pub fn status(ctx: &Ctx) -> CliResult {
         });
         for st in &statuses {
             human.push_str(&format!(
-                "\n{:<12}{}",
+                "\n{:<13}{}",
                 format!("{}:", st.label),
                 if st.ok { format!("signed in ({})", st.addresses.join(", ")) } else { st.detail.clone() }
             ));
