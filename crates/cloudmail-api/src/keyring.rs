@@ -6,9 +6,15 @@
 //! the default collection. The client follows icloud-session's (icloud-for-omarchy,
 //! `sessiond/src/secrets.rs`): one bus connection and one "plain" session, since the secret only
 //! crosses the local session bus, as every other call's arguments do.
+//!
+//! A secret is stored as standard base64. GNOME Keyring's unencrypted keyring file writes a text
+//! secret as it is but reads it back unescaped, so a `\` or a newline in one comes back changed,
+//! or not at all, once the file is read again (gnome-keyring#158).
 
 use std::collections::HashMap;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use zbus::blocking::Connection;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
@@ -43,6 +49,14 @@ fn unavailable(e: impl std::fmt::Display) -> Error {
 
 fn failure(msg: &str) -> zbus::Error {
     zbus::Error::Failure(msg.into())
+}
+
+fn encode(secret: &str) -> Vec<u8> {
+    STANDARD.encode(secret).into_bytes()
+}
+
+fn decode(stored: &[u8]) -> Option<String> {
+    String::from_utf8(STANDARD.decode(stored).ok()?).ok()
 }
 
 fn attributes(name: &str) -> HashMap<&'static str, String> {
@@ -134,19 +148,27 @@ impl Open {
 /// The secret stored under `name`, if any.
 pub fn get(name: &str) -> Result<Option<String>> {
     let k = Open::new().map_err(unavailable)?;
-    (|| -> zbus::Result<_> {
-        for item in k.search(&k.default_collection()?, &attributes(name))? {
-            if k.locked(&item, ITEM)? {
-                k.unlock(&item)?;
-            }
-            let (_, _, value, _): Secret = k.call(&item, ITEM, "GetSecret", &(&k.session,))?;
-            if let Ok(text) = String::from_utf8(value) {
-                return Ok(Some(text));
-            }
+    let stored = (|| -> zbus::Result<_> {
+        let Some(item) = k.search(&k.default_collection()?, &attributes(name))?.into_iter().next() else {
+            return Ok(None);
+        };
+        if k.locked(&item, ITEM)? {
+            k.unlock(&item)?;
         }
-        Ok(None)
+        let (_, _, value, _): Secret = k.call(&item, ITEM, "GetSecret", &(&k.session,))?;
+        Ok(Some(value))
     })()
-    .map_err(unavailable)
+    .map_err(unavailable)?;
+    stored
+        .map(|value| {
+            decode(&value).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Config,
+                    format!("the keyring's cloudmail {name} isn't base64, as cloudmail stores it; set it again"),
+                )
+            })
+        })
+        .transpose()
 }
 
 /// Stores (or replaces) the secret `name`.
@@ -161,7 +183,7 @@ pub fn set(name: &str, label: &str, secret: &str) -> Result<()> {
             ("org.freedesktop.Secret.Item.Label", Value::from(label.to_string())),
             ("org.freedesktop.Secret.Item.Attributes", Value::from(attributes(name))),
         ]);
-        let secret = (&k.session, Vec::<u8>::new(), secret.as_bytes(), CONTENT_TYPE);
+        let secret = (&k.session, Vec::<u8>::new(), encode(secret), CONTENT_TYPE);
         let (_, prompt): (OwnedObjectPath, OwnedObjectPath) =
             k.call(&collection, COLLECTION, "CreateItem", &(properties, secret, true))?;
         k.prompt(&prompt)?;
@@ -183,4 +205,18 @@ pub fn delete(name: &str) -> Result<bool> {
         Ok(any)
     })()
     .map_err(unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secrets_round_trip_through_base64() {
+        let secret = "{\"token\":\"a\\\"b\\\\c\"}\nline two";
+        let stored = encode(secret);
+        assert!(stored.iter().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b)), "{stored:?}");
+        assert_eq!(decode(&stored).as_deref(), Some(secret));
+        assert_eq!(decode(b"not base64"), None);
+    }
 }

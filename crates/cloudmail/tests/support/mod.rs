@@ -2,6 +2,8 @@
 //! real ones: a private dbus-daemon, a Secret Service on it, icloud-session on it, and iCloud
 //! Mail's web services (the requests icloud.com's Mail app sends, as `icloud.rs` documents them).
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -177,7 +179,7 @@ impl Item {
     }
 }
 
-/// A Secret Service on the bus, holding these secrets.
+/// A Secret Service on the bus, holding these secrets (stored base64, as cloudmail stores them).
 pub fn keyring(bus: &mut Bus, items: &[(&str, &str)]) -> Keyring {
     let store: Keyring = Arc::default();
     {
@@ -189,7 +191,7 @@ pub fn keyring(bus: &mut Bus, items: &[(&str, &str)]) -> Keyring {
                     ("application".into(), "cloudmail".into()),
                     ("secret".into(), (*name).into()),
                 ]),
-                value: (*value).into(),
+                value: STANDARD.encode(value),
             });
         }
     }
@@ -215,7 +217,7 @@ pub fn secret(store: &Keyring, name: &str) -> Option<String> {
             s.attributes.get("application").map(String::as_str) == Some("cloudmail")
                 && s.attributes.get("secret").map(String::as_str) == Some(name)
         })
-        .map(|s| s.value.clone())
+        .map(|s| String::from_utf8(STANDARD.decode(&s.value).unwrap()).unwrap())
 }
 
 // ---------- icloud-session ----------
