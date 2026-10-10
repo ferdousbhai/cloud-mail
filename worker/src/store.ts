@@ -238,6 +238,27 @@ export async function setSenderStatus(env: Env, email: string, name: string | nu
   return moved.meta.changes ?? 0;
 }
 
+/**
+ * Decisions for many senders at once, for linked accounts (Gmail, iCloud Mail) your Screener
+ * decides for. With `onlyUndecided`, a sender already approved or blocked keeps its decision:
+ * screening in the people an account already corresponds with never overrides a "no".
+ */
+export async function setSenderStatuses(
+  env: Env,
+  senders: { email: string; name: string | null }[],
+  status: "approved" | "blocked",
+  onlyUndecided: boolean,
+): Promise<number> {
+  let changed = 0;
+  for (const s of senders) {
+    const current = await senderStatus(env, s.email);
+    if (current === status || (onlyUndecided && (current === "approved" || current === "blocked"))) continue;
+    await setSenderStatus(env, s.email, s.name, status);
+    changed++;
+  }
+  return changed;
+}
+
 export async function deleteThread(env: Env, threadId: string): Promise<boolean> {
   const messages = await env.DB.prepare("SELECT raw_key, html_key, text_key FROM messages WHERE thread_id = ?")
     .bind(threadId)

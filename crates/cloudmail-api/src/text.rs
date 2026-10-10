@@ -21,11 +21,7 @@ pub fn short_time(ms: i64) -> String {
 }
 
 pub fn long_time(ms: i64) -> String {
-    Local
-        .timestamp_millis_opt(ms)
-        .single()
-        .map(|t| t.format("%a, %b %-d %Y at %H:%M").to_string())
-        .unwrap_or_default()
+    Local.timestamp_millis_opt(ms).single().map(|t| t.format("%a, %b %-d %Y at %H:%M").to_string()).unwrap_or_default()
 }
 
 /// Splits "a@b.com, Last, First <c@d.com>" into addresses, keeping commas that
@@ -63,11 +59,7 @@ pub fn format_addresses(list: &[Address]) -> String {
 pub fn reply_subject(subject: &str) -> String {
     let s = subject.trim();
     let lower = s.to_ascii_lowercase();
-    if lower.starts_with("re:") || lower.starts_with("re :") {
-        s.to_string()
-    } else {
-        format!("Re: {s}")
-    }
+    if lower.starts_with("re:") || lower.starts_with("re :") { s.to_string() } else { format!("Re: {s}") }
 }
 
 pub fn quote(text: &str, who: &str, date_ms: i64) -> String {
@@ -90,7 +82,8 @@ pub fn html_to_text(html: &str) -> String {
             if ch == '>' {
                 in_tag = false;
                 let t = tag.trim().to_ascii_lowercase();
-                let name: String = t.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                let name: String =
+                    t.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
                 if matches!(name.as_str(), "style" | "script" | "head") {
                     skip = !t.starts_with('/');
                 }

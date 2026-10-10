@@ -88,7 +88,7 @@ pub enum Command {
     /// View or change the local config file
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Link other mail accounts (HEY, Gmail) so their mail shows next to yours; opt-in
+    /// Link other mail accounts (HEY, Gmail, iCloud Mail) so their mail shows next to yours; opt-in
     #[command(subcommand)]
     Account(AccountCommand),
 
@@ -99,6 +99,17 @@ pub enum Command {
     Commands,
     /// Print a guide for AI agents: envelope, exit codes and common workflows
     AgentGuide,
+    /// Print the agent skill (SKILL.md) built into cloudmail, or install it for your coding agents
+    Skill {
+        #[command(subcommand)]
+        command: Option<SkillCommand>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillCommand {
+    /// Copy SKILL.md to ~/.agents/skills/cloudmail/ and link it into ~/.claude/skills/ when Claude Code is installed
+    Install,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -186,7 +197,7 @@ pub struct SearchArgs {
 pub enum ThreadCommand {
     /// Show every message in a thread (does not mark it read unless --mark-read)
     Read {
-        /// Thread ID (t_…, or hey:… / gmail:… for a linked account)
+        /// Thread ID (t_…, or hey:… / gmail:… / icloud:… for a linked account)
         id: String,
         /// Output the original HTML bodies instead of plain text
         #[arg(long)]
@@ -307,7 +318,7 @@ pub struct ComposeArgs {
 
 #[derive(Args, Debug)]
 pub struct ReplyArgs {
-    /// Thread ID (t_…, or hey:… / gmail:… to reply through that account)
+    /// Thread ID (t_…, or hey:… / gmail:… / icloud:… to reply through that account)
     pub thread_id: String,
     /// Reply to everyone on the latest message (your own addresses are left out)
     #[arg(long, short = 'a')]
@@ -337,7 +348,7 @@ pub enum AttachmentCommand {
     },
     /// Download an attachment
     Save {
-        /// Attachment ID (a_…, hey:… or gmail:…)
+        /// Attachment ID (a_…, hey:…, gmail:… or icloud:…)
         id: String,
         /// Output file or directory (- for stdout); defaults to the attachment's name in the current directory
         #[arg(long, short = 'o')]
@@ -525,9 +536,9 @@ pub struct SetupArgs {
 pub enum AccountCommand {
     /// Show your worker and every linked account, with whether each is signed in
     List,
-    /// Link an account: `cloudmail account add hey` or `cloudmail account add gmail` (one browser sign-in if needed)
+    /// Link an account: `cloudmail account add hey`, `… add gmail` (one browser sign-in if needed) or `… add icloud` (icloud-session's sign-in window if needed)
     Add {
-        /// Provider to link (hey, gmail)
+        /// Provider to link (hey, gmail, icloud)
         provider: String,
         /// Name for the account, which prefixes its IDs (default: the provider)
         #[arg(long)]
@@ -547,16 +558,16 @@ pub enum AccountCommand {
         /// Don't start a browser sign-in even on a terminal; fail if not signed in
         #[arg(long, conflicts_with = "login")]
         no_login: bool,
-        /// Start the browser sign-in when needed even without a terminal (for a script that shows the browser)
+        /// Start the sign-in when needed even without a terminal (for a script that shows the browser or window)
         #[arg(long)]
         login: bool,
     },
-    /// Sign a linked account in again, when its sign-in expired or was revoked (one browser sign-in)
+    /// Sign a linked account in again, when its sign-in expired or was revoked (a browser sign-in; iCloud: icloud-session's window)
     Login {
         /// Account name (see `cloudmail account list`)
         name: String,
     },
-    /// Unlink an account (nothing changes in the account itself, and its CLI stays signed in)
+    /// Unlink an account (nothing changes in the account itself; Cloudmail's own Gmail sign-in is removed)
     Remove {
         /// Account name (see `cloudmail account list`)
         name: String,

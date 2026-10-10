@@ -1,0 +1,3 @@
+# The code is long-lined and dense; keep it that way. bin/check fails on unformatted code.
+max_width = 120
+use_small_heuristics = "Max"

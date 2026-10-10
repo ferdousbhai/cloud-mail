@@ -8,6 +8,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# A git hook's GIT_DIR (and friends) would point the fixture repositories' git at this one.
+for name in [n for n in os.environ if n.startswith('GIT_')]:
+    del os.environ[name]
+
 
 def executable(path, content):
     path.write_text('#!/bin/bash\nset -eu\n' + content)

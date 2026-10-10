@@ -2,8 +2,12 @@
 
 use clap::{ArgAction, Command};
 use serde_json::{Value, json};
+use std::path::Path;
 
-use crate::output::exit;
+use crate::output::{CliError, CliResult, Response, crumb, exit};
+
+/// The agent skill, printed by `cloudmail skill` and installed by `cloudmail skill install`.
+pub const SKILL: &str = include_str!("../../../skills/cloudmail/SKILL.md");
 
 /// Examples per command path. A test checks that every command has one and every key is real.
 pub const EXAMPLES: &[(&str, &[&str])] = &[
@@ -16,15 +20,27 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("threads list", &["cloudmail threads list --folder screener", "cloudmail threads list --folder all --limit 100"]),
     ("search", &["cloudmail search invoice", "cloudmail search \"coffee next week\" --json"]),
     ("thread", &["cloudmail thread read t_ad7e6e0b172e481aaa3c"]),
-    ("thread read", &["cloudmail thread read t_ad7e6e0b172e481aaa3c", "cloudmail thread read t_ad7e6e0b172e481aaa3c --mark-read --json"]),
-    ("thread archive", &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"]),
+    (
+        "thread read",
+        &[
+            "cloudmail thread read t_ad7e6e0b172e481aaa3c",
+            "cloudmail thread read t_ad7e6e0b172e481aaa3c --mark-read --json",
+        ],
+    ),
+    (
+        "thread archive",
+        &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"],
+    ),
     ("thread unarchive", &["cloudmail thread unarchive t_ad7e6e0b172e481aaa3c"]),
     ("thread unread", &["cloudmail thread unread t_ad7e6e0b172e481aaa3c"]),
     ("thread markread", &["cloudmail thread markread t_1 t_2"]),
     ("thread delete", &["cloudmail thread delete t_ad7e6e0b172e481aaa3c --yes"]),
     ("screener", &["cloudmail screener", "cloudmail screener --json"]),
     ("screener list", &["cloudmail screener list --ids-only"]),
-    ("screener approve", &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"]),
+    (
+        "screener approve",
+        &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"],
+    ),
     ("screener block", &["cloudmail screener block spam@bad.biz"]),
     ("senders", &["cloudmail senders", "cloudmail senders --status blocked"]),
     (
@@ -46,10 +62,33 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("attachment", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c"]),
-    ("attachment list", &["cloudmail attachment list t_ad7e6e0b172e481aaa3c", "cloudmail attachment list t_ad7e6e0b172e481aaa3c --ids-only"]),
-    ("attachment save", &["cloudmail attachment save a_31d5cc4ab87b497b8b79", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o ~/Downloads/", "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o - > menu.pdf"]),
-    ("raw", &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"]),
-    ("watch", &["cloudmail watch", "cloudmail watch --folder screener --interval 60", "cloudmail watch --json | while read -r line; do echo \"$line\" | jq .thread.subject; done"]),
+    (
+        "attachment list",
+        &[
+            "cloudmail attachment list t_ad7e6e0b172e481aaa3c",
+            "cloudmail attachment list t_ad7e6e0b172e481aaa3c --ids-only",
+        ],
+    ),
+    (
+        "attachment save",
+        &[
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79",
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o ~/Downloads/",
+            "cloudmail attachment save a_31d5cc4ab87b497b8b79 -o - > menu.pdf",
+        ],
+    ),
+    (
+        "raw",
+        &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"],
+    ),
+    (
+        "watch",
+        &[
+            "cloudmail watch",
+            "cloudmail watch --folder screener --interval 60",
+            "cloudmail watch --json | while read -r line; do echo \"$line\" | jq .thread.subject; done",
+        ],
+    ),
     ("mailbox", &["cloudmail mailbox list"]),
     ("mailbox list", &["cloudmail mailbox list", "cloudmail mailbox list --json"]),
     (
@@ -59,14 +98,23 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail mailbox add support@example.com --name \"Example Support\" --direct --route",
         ],
     ),
-    ("mailbox set", &["cloudmail mailbox set support@example.com --screen false", "cloudmail mailbox set hi@example.com --position 0"]),
+    (
+        "mailbox set",
+        &[
+            "cloudmail mailbox set support@example.com --screen false",
+            "cloudmail mailbox set hi@example.com --position 0",
+        ],
+    ),
     ("mailbox remove", &["cloudmail mailbox remove old@example.com --yes"]),
     ("settings", &["cloudmail settings get"]),
     ("settings get", &["cloudmail settings get --json"]),
     ("settings set", &["cloudmail settings set forward-to me@elsewhere.com", "cloudmail settings set forward-to \"\""]),
     ("config", &["cloudmail config show"]),
     ("config show", &["cloudmail config show", "cloudmail config show --show-token --json"]),
-    ("config set", &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"]),
+    (
+        "config set",
+        &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"],
+    ),
     ("config path", &["cloudmail config path"]),
     ("account", &["cloudmail account list"]),
     ("account list", &["cloudmail account list", "cloudmail account list --json"]),
@@ -79,10 +127,18 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add hey",
             "cloudmail account add hey --command ~/.local/bin/hey",
             "cloudmail account add hey --no-login --json",
+            "cloudmail account add icloud",
+            "cloudmail account add icloud --no-login --json",
         ],
     ),
-    ("account login", &["cloudmail account login gmail", "cloudmail account login hey"]),
-    ("account remove", &["cloudmail account remove gmail", "cloudmail account remove hey"]),
+    (
+        "account login",
+        &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"],
+    ),
+    (
+        "account remove",
+        &["cloudmail account remove gmail", "cloudmail account remove hey", "cloudmail account remove icloud"],
+    ),
     (
         "setup",
         &[
@@ -94,6 +150,8 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     ("commands", &["cloudmail commands", "cloudmail commands --json"]),
     ("agent-guide", &["cloudmail agent-guide"]),
+    ("skill", &["cloudmail skill", "cloudmail skill > SKILL.md"]),
+    ("skill install", &["cloudmail skill install"]),
 ];
 
 pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
@@ -194,12 +252,17 @@ pub fn commands_json(root: &Command) -> Value {
 pub fn commands_text(tree: &Value) -> String {
     let mut out = String::from("cloudmail commands (run `cloudmail <command> --help` for details)\n");
     for c in tree["commands"].as_array().into_iter().flatten() {
-        out.push_str(&format!("\n{}\n    {}\n", c["usage"].as_str().unwrap_or_default(), c["description"].as_str().unwrap_or_default()));
+        out.push_str(&format!(
+            "\n{}\n    {}\n",
+            c["usage"].as_str().unwrap_or_default(),
+            c["description"].as_str().unwrap_or_default()
+        ));
         for e in c["examples"].as_array().into_iter().flatten() {
             out.push_str(&format!("    $ {}\n", e.as_str().unwrap_or_default()));
         }
     }
-    let globals = tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
+    let globals =
+        tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
     out.push_str(&format!("\nGlobal flags: {}\n\nExit codes:\n", globals.join("  ")));
     for (code, meaning) in exit::TABLE {
         out.push_str(&format!("  {code}  {meaning}\n"));
@@ -223,7 +286,8 @@ When stdout is piped, every command prints one JSON envelope:
 - `breadcrumbs` suggest the next commands; placeholders look like `<id>`.
 - `--quiet` prints only `data`; `--ids-only` prints one ID per line; `--count` prints a number.
 - `--json` forces the envelope on a terminal; `--styled` forces human text when piped.
-- `cloudmail watch` is the exception: it streams one JSON object per line (JSONL), no envelope.
+- Two exceptions: `cloudmail watch` streams one JSON object per line (JSONL), and `cloudmail skill`
+  prints its SKILL.md as plain markdown; neither has an envelope.
 
 Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "..."}}` and exit non-zero:
 
@@ -284,7 +348,7 @@ Send new mail:
 `--attach FILE` (repeatable, on compose and reply) sends files; the type comes from the extension.
 A missing or unreadable file is a usage error before anything is sent. Your worker sends at most
 about 3.5 MiB of attachments (Cloudflare Email Service takes 5 MiB per message once encoded); HEY
-and Gmail 25 MB. Over that is a `bad_request` naming the limit. `--dry-run` lists the files as
+and Gmail 25 MB; iCloud Mail 14 MiB (20 MB per message once encoded). Over that is a `bad_request` naming the limit. `--dry-run` lists the files as
 `{filename, mime_type, size}`; a worker send's `message.attachments` lists them as stored.
 
 Watch for new mail (JSONL, one object per new or updated thread):
@@ -292,19 +356,23 @@ Watch for new mail (JSONL, one object per new or updated thread):
     cloudmail watch --folder all --interval 30
     # {"event":"thread","thread":{"id":"t_…","folder":"screener","from":{…},"subject":"…",…}}
 
-## Linked accounts (HEY, Gmail)
+## Linked accounts (HEY, Gmail, iCloud Mail)
 
 Optional. `cloudmail account add hey` links a HEY account through the official `hey` CLI (it must be
 installed and signed in; on a terminal, add runs `hey auth login` for you, otherwise it fails with
 `not_logged_in` and the hint). `cloudmail account add gmail` links Gmail through Google's Workspace CLI
-`gws` (installed with `npm install -g @googleworkspace/cli`); on a terminal it opens one Google sign-in
+`gws` (when it isn't installed, add installs it with npm into ~/.local/share/cloudmail/gws); on a terminal it opens one Google sign-in
 in the browser (Gmail access only, kept in cloudmail's own gws directory, apart from any gws of yours),
 otherwise it fails with `not_logged_in`; `--login` signs in without a terminal. A build without
 cloudmail's Google client fails with `not_configured` until CLOUDMAIL_GOOGLE_CLIENT_ID/SECRET or
-`--client-id/--client-secret` name one. `cloudmail account list --json` shows each account and whether
-it works.
+`--client-id/--client-secret` name one (the secret is kept in the keyring). `cloudmail account add
+icloud` links iCloud Mail through icloud-session (icloud-for-omarchy), which keeps this computer's
+iCloud sign-in for every app: on a terminal it opens icloud-session's sign-in window if needed,
+otherwise it fails with `not_logged_in` (`--login` opens it anyway); `not_installed` without
+icloud-session. Your addresses and name come from iCloud Mail's own settings. `cloudmail account list
+--json` shows each account and whether it works.
 
-Once linked, their mail appears next to yours with `"account": "hey"` / `"account": "gmail"` on threads
+Once linked, their mail appears next to yours with `"account": "hey"` / `"gmail"` / `"icloud"` on threads
 and HEY's Screener senders (your worker's own mail has no `account` key). IDs are prefixed and go back
 to their account:
 
@@ -313,12 +381,19 @@ to their account:
     hey:<topic>/<entry>      a message        hey:<id>   an attachment or a Screener sender
     gmail:<thread>           a Gmail thread   gmail:<thread>/<message>   a message (also for `raw`)
     gmail:<message>:<part>   a Gmail attachment
+    icloud:t…                an iCloud Mail thread (opaque; it names the mailbox it was listed in,
+                             so list again after moving it)
+    icloud:t…/m…             a message (also for `raw`)       icloud:a…   an iCloud Mail attachment
 
-Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's Inbox; `archive` = your Archive + HEY's Paper
-Trail + Gmail threads out of the Inbox (archiving a HEY thread moves it to Paper Trail, a Gmail thread
-loses its Inbox label; unarchive undoes either); `sent` = yours + Gmail's; `screener` = yours + HEY's
-(a sender waiting in both shows once; Gmail has no Screener, its mail goes straight to the Inbox);
-`blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
+Folders: `inbox` = your Inbox + HEY's Imbox + Gmail's and iCloud's Inboxes; `archive` = your Archive +
+HEY's Paper Trail + Gmail threads out of the Inbox + iCloud's Archive mailbox (archiving a HEY thread
+moves it to Paper Trail, a Gmail thread loses its Inbox label, an iCloud thread moves to Archive;
+unarchive undoes each); `sent` = yours + Gmail's + iCloud's; `screener` = yours + HEY's + Gmail's and
+iCloud's waiting mail (a sender waiting in several places shows once). Gmail and iCloud Mail have no
+Screener, so your worker's decides for them: a new sender's thread waits in `screener` and stays out of
+`inbox` until approved; a blocked sender's is left out of everything but `archive`/`sent`, and blocking
+archives that sender's Inbox threads in the account too. Linking one screens in the people it already
+corresponds with; people you write to through it are screened in. `blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
 feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads its own search syntax).
 
     cloudmail inbox --json                           # merged by time
@@ -330,25 +405,65 @@ feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads 
     cloudmail screener approve hey:5001              # only in HEY
 
 If your worker forwards to a linked address (or Gmail forwards into your worker), the account's copy of
-each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY copies by sender,
+each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY and iCloud copies by sender,
 subject and time. A linked account's failure never fails a command about your own mail: the rest is
 returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
 fails with `account_unauthorized` (exit 3: `cloudmail account login <name>` signs it in again in the
-browser), `account_unavailable` (exit 5: its CLI missing or failing, or Google
-unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
+browser, or icloud-session's window for iCloud), `account_unavailable` (exit 5: its CLI
+missing or failing, or Google or iCloud unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
 and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
-`cloudmail commands --json` lists every command, flag and example.
+`cloudmail commands --json` lists every command, flag and example; `cloudmail skill install` installs
+a short agent skill for Claude Code, Codex and others.
 "#;
 
 pub fn agent_guide() -> String {
-    let rows = exit::TABLE
-        .iter()
-        .map(|(c, d)| format!("| {c} | {d} |"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let rows = exit::TABLE.iter().map(|(c, d)| format!("| {c} | {d} |")).collect::<Vec<_>>().join("\n");
     AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
+}
+
+/// Writes SKILL.md to `~/.agents/skills/cloudmail/` (where Codex and others look) and, when Claude
+/// Code is installed, links `~/.claude/skills/cloudmail` to it. Returns the paths it wrote.
+pub fn write_skill(home: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let dir = home.join(".agents/skills/cloudmail");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("SKILL.md"), SKILL)?;
+    let mut written = vec![dir.join("SKILL.md")];
+    if home.join(".claude").is_dir() {
+        let link = home.join(".claude/skills/cloudmail");
+        std::fs::create_dir_all(home.join(".claude/skills"))?;
+        match std::fs::symlink_metadata(&link) {
+            // A directory of its own (an older copy): update the copy rather than replace it.
+            Ok(m) if m.is_dir() => {
+                std::fs::write(link.join("SKILL.md"), SKILL)?;
+                written.push(link.join("SKILL.md"));
+                return Ok(written);
+            }
+            Ok(_) => std::fs::remove_file(&link)?,
+            Err(_) => {}
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("../../.agents/skills/cloudmail", &link)?;
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(&link)?;
+            std::fs::write(link.join("SKILL.md"), SKILL)?;
+        }
+        written.push(link);
+    }
+    Ok(written)
+}
+
+pub fn install_skill() -> CliResult {
+    let home = dirs::home_dir().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
+    let paths = write_skill(&home)?;
+    let human = paths.iter().map(|p| format!("Installed {}", p.display())).collect::<Vec<_>>().join("\n");
+    Ok(Response::new(json!({ "paths": paths }), "Installed the cloudmail skill").human(human).crumbs(vec![crumb(
+        "show",
+        "cloudmail skill",
+        "Print the skill",
+    )]))
 }
 
 #[cfg(test)]
@@ -375,7 +490,13 @@ mod tests {
             assert!(all.iter().any(|a| a == p), "examples for unknown command `{p}`");
             assert!(!ex.is_empty());
             for e in *ex {
-                assert!(e.starts_with("cloudmail ") || e.contains("| cloudmail") || e.contains("| xargs cloudmail") || e.starts_with("echo "), "{e}");
+                assert!(
+                    e.starts_with("cloudmail ")
+                        || e.contains("| cloudmail")
+                        || e.contains("| xargs cloudmail")
+                        || e.starts_with("echo "),
+                    "{e}"
+                );
             }
         }
     }
@@ -430,7 +551,44 @@ mod tests {
         assert!(!compose["examples"].as_array().unwrap().is_empty());
         assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
         assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
-        assert!(commands_text(&tree).contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n"));
+        assert!(
+            commands_text(&tree)
+                .contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n")
+        );
+    }
+
+    #[test]
+    fn skill_installs_for_agents_and_claude() {
+        let home = std::env::temp_dir().join(format!("cloudmail-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let written = write_skill(&home).unwrap();
+        assert_eq!(written.len(), 2);
+        // Twice is fine: the link is replaced.
+        write_skill(&home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join(".claude/skills/cloudmail/SKILL.md")).unwrap(), SKILL);
+        assert!(std::fs::symlink_metadata(home.join(".claude/skills/cloudmail")).unwrap().file_type().is_symlink());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn skill_commands_are_real() {
+        // Every `cloudmail …` line in the skill's Use block names a real command.
+        let all = {
+            let mut v = Vec::new();
+            paths(&crate::cli::Cli::command(), "", &mut v);
+            v
+        };
+        assert!(SKILL.starts_with("---\nname: cloudmail\n"));
+        for line in SKILL.lines().filter(|l| l.starts_with("cloudmail ")) {
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .skip(1)
+                .take_while(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+                .collect();
+            let found = (1..=words.len().min(2)).rev().any(|n| all.contains(&words[..n].join(" ")));
+            assert!(found, "skill names an unknown command: {line}");
+        }
     }
 
     #[test]

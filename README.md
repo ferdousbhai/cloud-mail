@@ -27,7 +27,7 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 | `worker/` | Cloudflare Worker (TypeScript): inbound handler, Screener, JSON API |
 | `crates/cloudmail` | `cloudmail` CLI |
 | `crates/cloudmail-gtk` | `cloudmail-gtk` desktop app (GTK4 + WebKitGTK), themed from Omarchy if present |
-| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI) |
+| `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI, iCloud Mail through icloud-session) |
 | `docs/API.md` | HTTP API reference |
 
 ## Get started
@@ -44,7 +44,8 @@ cloudmail setup you@yourdomain.com
 
 That's it. `setup` logs you in to Cloudflare in your browser, deploys your mail service to your
 account (a Worker, a D1 database and an R2 bucket), turns on receiving and sending for your domain,
-and connects the app. Open **Cloudmail** from the app launcher.
+and connects the app, keeping its API token in your keyring (GNOME Keyring, or any Secret
+Service). Open **Cloudmail** from the app launcher.
 
 - Several addresses and domains: `cloudmail setup you@a.com support@a.com:direct hello@b.com`.
   `:direct` skips the Screener (good for `support@`, `legal@`, …).
@@ -81,7 +82,7 @@ Cloudmail is also on its way into Omarchy's own repository and *Install › Serv
 ### From source
 
 Needs Node.js and Rust; the desktop app also needs GTK 4 and WebKitGTK 6.0
-(Arch: `pacman -S gtk4 webkitgtk-6.0`).
+(`./install.sh` installs them on Arch).
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
@@ -149,11 +150,11 @@ line says what's wrong with HEY. The CLI puts it in `meta.warnings` and on stder
 Gmail can sit next to your mail the same way, in the app and the CLI, and again nothing changes until
 you add it. Cloudmail reaches Gmail through Google's own
 [Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in and no Google
-Cloud setup of your own: Cloudmail brings its own Google sign-in.
+Cloud setup of your own: Cloudmail brings its own Google sign-in. When `gws` isn't installed,
+`account add gmail` installs it for you with npm, into `~/.local/share/cloudmail/gws` (no sudo).
 
 ```sh
-npm install -g @googleworkspace/cli   # installs `gws`
-cloudmail account add gmail           # opens Google's sign-in in your browser, once
+cloudmail account add gmail           # installs gws if needed, then opens Google's sign-in, once
 cloudmail account list
 cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
 ```
@@ -168,7 +169,7 @@ reads or changes. A second Gmail account links with `cloudmail account add gmail
 |---|---|---|
 | Inbox | Inbox | Inbox (unread = Gmail's unread) |
 | Archive (`e`) | Archive | Gmail's archive: the thread leaves the Inbox, `i` brings it back |
-| Screener | Screener | (Gmail has no Screener: its mail goes straight to the Inbox) |
+| Screener | Screener | your Screener decides (see [One Screener](#one-screener-for-gmail-and-icloud-mail)) |
 | Sent | Sent | Sent |
 | Search | full-text search | Gmail search (its own syntax works: `from:ana has:attachment`) |
 
@@ -189,6 +190,55 @@ one line says what's wrong. When a sign-in has expired or been revoked (Gmail or
 few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
 takes a moment; your own mail doesn't wait for it.
 
+## Your iCloud Mail too (optional)
+
+iCloud Mail can sit next to your mail the same way. Cloudmail reaches it the way icloud.com's own
+Mail does, through its web services, with the iCloud sign-in that
+[icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every app on the
+computer (it comes with icloud-for-omarchy). There's no password to give Cloudmail and no IMAP;
+icloud-session's own window handles Apple's sign-in and two-factor prompts.
+
+```sh
+cloudmail account add icloud      # opens icloud-session's sign-in window if you aren't signed in
+cloudmail account list
+cloudmail account remove icloud   # unlink; icloud-session stays signed in for your other apps
+```
+
+Your addresses, aliases and custom-domain addresses come from iCloud Mail's own settings, and you
+write as the name shown there, else your iCloud account's name.
+
+| In Cloudmail | Your worker | iCloud Mail |
+|---|---|---|
+| Inbox | Inbox | Inbox (unread = not yet read in Mail) |
+| Archive (`e`) | Archive | the Archive mailbox; `i` brings a thread back |
+| Screener | Screener | your Screener decides (below) |
+| Sent | Sent | Sent Messages |
+| Search | full-text search | iCloud's own search of the Inbox, Archive and Sent Messages |
+
+iCloud threads carry a small **iCloud** tag; their IDs start with `icloud:`. Reading, replying
+(threaded), writing from any of your iCloud addresses, attachments, marking read/unread, archiving
+and `cloudmail raw` all go through iCloud. Listing and `cloudmail thread read` never mark mail read;
+opening a thread in the app does, as in Mail.
+
+**If iCloud is unavailable** (offline, signed out, or icloud-session's keyring locked), your own
+mail loads as usual and one line says what's wrong. `cloudmail account login icloud`, or the app's
+**Sign in** button, opens icloud-session's sign-in window.
+
+## One Screener for Gmail and iCloud Mail
+
+Gmail and iCloud Mail have no Screener, so your worker's decides for them: one decision per sender,
+wherever their mail comes.
+
+- Mail from someone with no decision yet waits in the Screener and stays out of your Inbox.
+- Yes: their mail is in your Inbox from then on, in every account.
+- No: their mail is left out of everything but Archive and Sent, and their threads in that
+  account's Inbox are archived there too, so they leave the Inbox on your phone as well. Mail they
+  send later still lands in the account's own Inbox (Gmail and iCloud decide that), but never shows
+  in Cloudmail.
+- Linking an account screens in the people it already corresponds with (its Inbox's senders and
+  whoever its sent mail went to), and whoever you write to through it is screened in, as your
+  worker does for its own mail. A no is never undone by linking.
+
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
@@ -196,9 +246,15 @@ The CLI is its own documentation. When output is piped, every command prints a J
 nothing ever prompts.
 
 ```sh
+cloudmail skill install       # install the agent skill (setup, linking accounts, daily use) for
+                              # Claude Code, Codex and other agents reading ~/.agents/skills
 cloudmail agent-guide         # concepts, output format, exit codes, workflows
 cloudmail commands --json     # every command, flag and example
 ```
+
+The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agent through setting
+up all your domains with the Cloudflare CLI, linking HEY, Gmail and iCloud Mail, and using the CLI,
+in about 1,500 tokens.
 
 ## Releasing
 
@@ -212,7 +268,7 @@ git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
 
 Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
 It drafts the GitHub release from the tag's message, then runs `bin/release`. The native
-package workflow builds and tests unsigned x86_64 and aarch64 packages. The release command
+package workflow, which runs only for version tags, builds and tests unsigned x86_64 and aarch64 packages. The release command
 waits for that exact commit's successful CI run, verifies each artifact's source commit and
 package metadata, and signs the packages and both repository databases locally. The private
 signing key never goes to GitHub. `[cloudmail]` serves x86_64; `[cloudmail-aarch64]` serves ARM,
@@ -239,17 +295,29 @@ bun run dev --port 8799              # cf dev --mode development: local resource
 curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
 bun test && bunx tsc --noEmit
 
-cargo test --workspace && cargo clippy --workspace --all-targets
+bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
 ```
+
+Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
+runs `bin/check` first and stops if it fails (`CLOUDMAIL_NO_CHECK=1` skips it). GitHub only builds
+the release packages, on a version tag.
 
 Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
 `Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls
-through `gws gmail users … --params '<json>'`, and `unified.rs` merges providers, turns their failures
-into warnings and hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
+through `gws gmail users … --params '<json>'`, `icloud.rs` maps the requests icloud.com's own Mail
+app sends (its doc comment says what each is and where that is established) with the session from
+`session.rs` (icloud-session's D-Bus interface), `accounts.rs` links and unlinks accounts for the CLI
+and the app, `keyring.rs` keeps secrets in the Secret Service, and `unified.rs` merges providers,
+screens Gmail and iCloud Mail with your worker's decisions, turns their failures into warnings and
+hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
 its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
 "…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
 and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
 (`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
+The CLI tests never reach the real session bus: each that needs one starts a private `dbus-daemon`
+(the `dbus` package) with stand-ins for the Secret Service and icloud-session, and iCloud Mail's
+web services as an in-process HTTP server (`crates/cloudmail/tests/support`); every other test runs
+with no session bus at all.
 
 Cloudmail's Google sign-in is one OAuth client, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in
 `crates/cloudmail-api/src/gmail.rs` (a desktop client's secret isn't secret). Until those are filled
@@ -269,7 +337,13 @@ Mail that can't be parsed or stored is never bounced: the raw message is kept in
 
 ## Security notes
 
-- The API is protected by a single bearer token: treat `~/.config/cloudmail/config.toml` like a password.
+- The API is protected by a single bearer token, kept in your keyring (the Secret Service) and
+  nowhere else; a config.toml from an older version has its token moved there on first use. Without
+  a keyring, Cloudmail stops and says so rather than keep it in a file.
+- iCloud Mail goes through icloud-session's sign-in; Cloudmail keeps no iCloud credential of its
+  own. Gmail's sign-in is gws's, in Cloudmail's own gws directory: gws keeps its encryption key in a
+  file there because its keyring backend shares one `gws-cli` entry with any gws of yours and still
+  writes that file on Linux. A Gmail OAuth client secret of your own goes in the keyring.
 - Message HTML is untrusted. The desktop app renders it with JavaScript disabled, remote loads
   blocked and links opened in your browser.
 - Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,

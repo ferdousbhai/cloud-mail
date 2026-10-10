@@ -14,10 +14,13 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         body.push_str(&message(m, open, &mut blocked_remote));
     }
     let badge = match detail.thread.account.as_deref().map(crate::api::provider::account_label) {
-        Some(label) => format!(r#" <span class="acct" title="In your linked {0} account">{0}</span>"#, escape_html(&label)),
+        Some(label) => {
+            format!(r#" <span class="acct" title="In your linked {0} account">{0}</span>"#, escape_html(&label))
+        }
         None => String::new(),
     };
-    let heading = format!(r#"<h1 class="subject">{}{badge}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
+    let heading =
+        format!(r#"<h1 class="subject">{}{badge}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
     let note = if blocked_remote && !remote_images {
         r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
     } else {
@@ -78,7 +81,6 @@ fn addr_list(list: &[Address]) -> String {
     list.iter().map(|a| escape_html(&a.display())).collect::<Vec<_>>().join(", ")
 }
 
-
 fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     let mut rcpt = String::new();
     let mut rcpt_full = String::new();
@@ -111,7 +113,9 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     // better as text in the theme's colours.
     let text = m.text.as_deref().filter(|t| !t.trim().is_empty());
     let use_html = match (&m.html, text) {
-        (Some(html), Some(text)) => !html.trim().is_empty() && !m.outgoing && (is_designed(html) || is_stub(text, html)),
+        (Some(html), Some(text)) => {
+            !html.trim().is_empty() && !m.outgoing && (is_designed(html) || is_stub(text, html))
+        }
         (Some(html), None) => !html.trim().is_empty(),
         _ => false,
     };
@@ -187,8 +191,23 @@ fn sanitize(html: &str) -> String {
             b.rm_clean_content_tags(&["style"])
                 .add_tags(&["style", "font", "big", "tfoot", "label"])
                 .add_generic_attributes(&[
-                    "style", "class", "id", "align", "valign", "bgcolor", "background", "width", "height",
-                    "border", "cellpadding", "cellspacing", "color", "face", "size", "dir", "role",
+                    "style",
+                    "class",
+                    "id",
+                    "align",
+                    "valign",
+                    "bgcolor",
+                    "background",
+                    "width",
+                    "height",
+                    "border",
+                    "cellpadding",
+                    "cellspacing",
+                    "color",
+                    "face",
+                    "size",
+                    "dir",
+                    "role",
                 ])
                 .url_schemes(["http", "https", "mailto", "data"].into_iter().collect());
             b
@@ -246,9 +265,7 @@ fn linkify(escaped: &str) -> String {
         };
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
-        let mut end = tail
-            .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
-            .unwrap_or(tail.len());
+        let mut end = tail.find(|c: char| c.is_whitespace() || c == '<' || c == '"').unwrap_or(tail.len());
         if let Some(amp) = tail[..end].find("&gt;") {
             end = amp;
         }
@@ -282,7 +299,19 @@ mod tests {
             let end = lower[start..].find("</style>").map(|e| start + e + 8).unwrap_or(lower.len());
             lower.replace_range(start..end, "");
         }
-        for bad in ["</template", "</details", "</div></div>", "<script", "<iframe", "<object", "<embed", "<math", "<svg", "<meta", "<base"] {
+        for bad in [
+            "</template",
+            "</details",
+            "</div></div>",
+            "<script",
+            "<iframe",
+            "<object",
+            "<embed",
+            "<math",
+            "<svg",
+            "<meta",
+            "<base",
+        ] {
             assert!(!lower.contains(bad), "{bad} survived in {out}");
         }
         assert_eq!(sanitize(&out), out, "not stable under re-sanitising: {input}");
@@ -309,10 +338,14 @@ mod tests {
         // Its <style> must come out as inert text, never as a live element.
         assert!(!sanitize(payload).to_ascii_lowercase().contains("<style"), "{}", sanitize(payload));
         for raw in ["style", "noembed", "noframes", "xmp", "noscript"] {
-            let smuggled = format!(r#"<math><mtext><table><mglyph><{raw}></mglyph></math></template></details><style>.warn{{display:none}}</style></{raw}>"#);
+            let smuggled = format!(
+                r#"<math><mtext><table><mglyph><{raw}></mglyph></math></template></details><style>.warn{{display:none}}</style></{raw}>"#
+            );
             assert_contained(&smuggled);
             assert!(!sanitize(&smuggled).to_ascii_lowercase().contains("<style"), "{raw}: {}", sanitize(&smuggled));
-            assert_contained(&format!(r#"<svg><foreignObject><{raw}></svg></template></details></{raw}></foreignObject></svg>"#));
+            assert_contained(&format!(
+                r#"<svg><foreignObject><{raw}></svg></template></details></{raw}></foreignObject></svg>"#
+            ));
         }
         assert_contained("<svg><style><img src=x onerror=alert(1)></style></svg>");
     }
@@ -328,7 +361,8 @@ mod tests {
     #[test]
     fn a_stub_text_part_does_not_hide_the_html() {
         let body = "<p>".to_string() + &"Here is the whole newsletter, in plain paragraphs. ".repeat(10) + "</p>";
-        let m = Message { text: Some("View this email in your browser.".into()), html: Some(body), ..Default::default() };
+        let m =
+            Message { text: Some("View this email in your browser.".into()), html: Some(body), ..Default::default() };
         assert!(message(&m, true, &mut false).contains("paper"));
         let m = Message { text: Some("Thanks!".into()), html: Some("<div>Thanks!</div>".into()), ..Default::default() };
         assert!(!message(&m, true, &mut false).contains("paper"));
@@ -337,15 +371,34 @@ mod tests {
     #[test]
     fn unclosed_markup_is_balanced() {
         // Whatever a message leaves open is closed before the next message starts.
-        for open in ["<p>hi<!-- never closed <textarea>", "<textarea>", "<title>", "<style>", "<xmp>", "<plaintext>", "<a href=\"x", "<table><tr><td>"] {
+        for open in [
+            "<p>hi<!-- never closed <textarea>",
+            "<textarea>",
+            "<title>",
+            "<style>",
+            "<xmp>",
+            "<plaintext>",
+            "<a href=\"x",
+            "<table><tr><td>",
+        ] {
             assert_contained(&format!("<p>hi</p>{open}rest"));
         }
     }
 
     #[test]
     fn designed_mail_keeps_its_styling() {
-        let out = sanitize(r##"<style>.btn{color:red}</style><table bgcolor="#fff" cellpadding="4"><tr><td align="center" style="padding:8px"><a class="btn" href="https://x.example">Go</a><img src="data:image/png;base64,AA" width="1"></td></tr></table>"##);
-        for keep in ["<style>.btn{color:red}</style>", r##"bgcolor="#fff""##, "cellpadding", r#"style="padding:8px""#, r#"class="btn""#, "https://x.example", "data:image/png"] {
+        let out = sanitize(
+            r##"<style>.btn{color:red}</style><table bgcolor="#fff" cellpadding="4"><tr><td align="center" style="padding:8px"><a class="btn" href="https://x.example">Go</a><img src="data:image/png;base64,AA" width="1"></td></tr></table>"##,
+        );
+        for keep in [
+            "<style>.btn{color:red}</style>",
+            r##"bgcolor="#fff""##,
+            "cellpadding",
+            r#"style="padding:8px""#,
+            r#"class="btn""#,
+            "https://x.example",
+            "data:image/png",
+        ] {
             assert!(out.contains(keep), "{keep} missing from {out}");
         }
         assert!(!sanitize(r#"<a href="javascript:alert(1)">x</a>"#).contains("javascript"));

@@ -1,3 +1,4 @@
+mod accounts;
 pub mod compose;
 #[cfg(debug_assertions)]
 mod devscript;
@@ -12,7 +13,9 @@ use std::rc::Rc;
 use webkit6::prelude::*;
 
 use crate::api::unified::{merge, merge_senders};
-use crate::api::{AccountWarning, Address, Client, Identities, Mail, PendingSender, ThreadDetail, ThreadQuery, ThreadSummary};
+use crate::api::{
+    AccountWarning, Address, Client, Identities, Mail, PendingSender, ThreadDetail, ThreadQuery, ThreadSummary,
+};
 use crate::config::{self, Config};
 use crate::theme::{self, Palette};
 use crate::util::{self, Draft, unused_path};
@@ -230,7 +233,9 @@ impl Ui {
         let mut nav_views = View::NAV.to_vec();
         // HEY's other boxes, under their own small heading; an account without extra folders
         // (Gmail) just merges into the four above.
-        let boxes_from = mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.has_folder(View::Feed.folder())).map(|p| p.label().to_string()));
+        let boxes_from = mail
+            .as_ref()
+            .and_then(|m| m.accounts.iter().find(|p| p.has_folder(View::Feed.folder())).map(|p| p.label().to_string()));
         if let Some(heading) = boxes_from {
             nav_views.extend(View::ACCOUNT_NAV);
             nav.set_header_func(move |row, _| {
@@ -265,6 +270,17 @@ impl Ui {
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
+        let accounts_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        accounts_box.append(&gtk::Label::new(Some("\u{f2c0}")));
+        let accounts_label = gtk::Label::builder().label("Accounts").xalign(0.0).build();
+        accounts_box.append(&accounts_label);
+        let accounts_btn = gtk::Button::builder()
+            .child(&accounts_box)
+            .tooltip_text("Linked accounts: HEY, Gmail, iCloud Mail")
+            .build();
+        accounts_btn.add_css_class("flat");
+        sidebar.append(&accounts_btn);
+        wide_only.push(accounts_label.upcast());
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
         sidebar.append(&hint);
@@ -299,11 +315,8 @@ impl Ui {
         let empty = gtk::Label::builder().wrap(true).justify(gtk::Justification::Center).build();
         empty.add_css_class("empty");
         empty.set_valign(gtk::Align::Start);
-        let scroller = gtk::ScrolledWindow::builder()
-            .child(&list)
-            .vexpand(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .build();
+        let scroller =
+            gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
         scroller.add_css_class("threadlist");
         // ListBox::remove_all() also drops a placeholder, so the empty state is a stack page.
         let list_stack = gtk::Stack::new();
@@ -437,97 +450,169 @@ impl Ui {
         // GTK4 has no resize signal on windows; checking per frame is cheap and
         // catches tiling WM resizes.
         ui.window.add_tick_callback(clone!(
-            #[weak] ui,
-            #[upgrade_or] glib::ControlFlow::Break,
+            #[weak]
+            ui,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
             move |w, _| {
                 ui.apply_width(w.width());
                 glib::ControlFlow::Continue
             }
         ));
 
-        ui.nav.connect_row_selected(clone!(#[weak] ui, move |_, row| {
-            if ui.suppress.get() {
-                return;
-            }
-            if let Some(view) = row.and_then(|r| ui.nav_views.get(r.index() as usize))
-                && *view != ui.view.get() {
+        ui.nav.connect_row_selected(clone!(
+            #[weak]
+            ui,
+            move |_, row| {
+                if ui.suppress.get() {
+                    return;
+                }
+                if let Some(view) = row.and_then(|r| ui.nav_views.get(r.index() as usize))
+                    && *view != ui.view.get()
+                {
                     ui.set_view(*view);
                 }
-        }));
-        ui.list.connect_row_selected(clone!(#[weak] ui, move |_, row| {
-            if ui.suppress.get() {
-                return;
             }
-            if let Some(row) = row {
-                ui.open_index(row.index() as usize);
+        ));
+        ui.list.connect_row_selected(clone!(
+            #[weak]
+            ui,
+            move |_, row| {
+                if ui.suppress.get() {
+                    return;
+                }
+                if let Some(row) = row {
+                    ui.open_index(row.index() as usize);
+                }
             }
-        }));
-        ui.scroller.connect_edge_reached(clone!(#[weak] ui, move |_, pos| {
-            if pos == gtk::PositionType::Bottom {
-                ui.load_more();
+        ));
+        ui.scroller.connect_edge_reached(clone!(
+            #[weak]
+            ui,
+            move |_, pos| {
+                if pos == gtk::PositionType::Bottom {
+                    ui.load_more();
+                }
             }
-        }));
-        ui.search.connect_activate(clone!(#[weak] ui, move |entry| {
-            let q = entry.text().trim().to_string();
-            if q.is_empty() {
-                ui.exit_search();
-            } else {
-                ui.start_search(q);
+        ));
+        ui.search.connect_activate(clone!(
+            #[weak]
+            ui,
+            move |entry| {
+                let q = entry.text().trim().to_string();
+                if q.is_empty() {
+                    ui.exit_search();
+                } else {
+                    ui.start_search(q);
+                }
             }
-        }));
+        ));
 
         // Quitting would take open drafts with it. Close each through its own close-request:
         // untouched ones just close, edited ones ask, and the main window waits for them.
-        ui.window.connect_close_request(clone!(#[weak] ui, #[upgrade_or] glib::Propagation::Proceed, move |_| {
-            let open: Vec<gtk::Window> = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).collect();
-            for w in &open {
-                w.close();
+        ui.window.connect_close_request(clone!(
+            #[weak]
+            ui,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_| {
+                let open: Vec<gtk::Window> = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).collect();
+                for w in &open {
+                    w.close();
+                }
+                let still_open = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).any(|w| w.is_visible());
+                if still_open { glib::Propagation::Stop } else { glib::Propagation::Proceed }
             }
-            let still_open = ui.composes.borrow().iter().filter_map(|w| w.upgrade()).any(|w| w.is_visible());
-            if still_open { glib::Propagation::Stop } else { glib::Propagation::Proceed }
-        }));
-        compose_btn.connect_clicked(clone!(#[weak] ui, move |_| compose::open(&ui, Draft::default())));
-        reply_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(false)));
-        reply_all_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.reply(true)));
-        ui.archive_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("archive")));
-        ui.inbox_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.move_current("inbox")));
-        unread_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.toggle_unread()));
-        images_btn.connect_clicked(clone!(#[weak] ui, move |_| ui.load_images()));
+        ));
+        compose_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| compose::open(&ui, Draft::default())
+        ));
+        reply_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.reply(false)
+        ));
+        reply_all_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.reply(true)
+        ));
+        ui.archive_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.move_current("archive")
+        ));
+        ui.inbox_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.move_current("inbox")
+        ));
+        unread_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.toggle_unread()
+        ));
+        images_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.load_images()
+        ));
 
         ui.webview.connect_decide_policy(clone!(
-            #[weak] ui,
-            #[upgrade_or] false,
+            #[weak]
+            ui,
+            #[upgrade_or]
+            false,
             move |_, decision, kind| ui.decide_policy(decision, kind)
+        ));
+
+        accounts_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| accounts::show(&ui)
         ));
 
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         keys.connect_key_pressed(clone!(
-            #[weak] ui,
-            #[upgrade_or] glib::Propagation::Proceed,
+            #[weak]
+            ui,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
             move |_, key, _, mods| ui.on_key(key, mods)
         ));
         ui.window.add_controller(keys);
 
-        theme::watch(clone!(#[weak] ui, move |palette| {
-            theme::apply(&palette);
-            *ui.palette.borrow_mut() = palette;
-            ui.apply_webview_background();
-            ui.render_current();
-        }));
+        theme::watch(clone!(
+            #[weak]
+            ui,
+            move |palette| {
+                theme::apply(&palette);
+                *ui.palette.borrow_mut() = palette;
+                ui.apply_webview_background();
+                ui.render_current();
+            }
+        ));
 
         if ui.client.is_some() {
             ui.set_view(View::Inbox);
             ui.check_new();
             ui.load_identities();
-            glib::timeout_add_seconds_local(poll_seconds, clone!(
-                #[weak] ui,
-                #[upgrade_or] glib::ControlFlow::Break,
-                move || {
-                    ui.poll();
-                    glib::ControlFlow::Continue
-                }
-            ));
+            glib::timeout_add_seconds_local(
+                poll_seconds,
+                clone!(
+                    #[weak]
+                    ui,
+                    #[upgrade_or]
+                    glib::ControlFlow::Break,
+                    move || {
+                        ui.poll();
+                        glib::ControlFlow::Continue
+                    }
+                ),
+            );
         } else {
             ui.select_nav(View::Inbox);
         }
@@ -659,30 +744,34 @@ impl Ui {
                         _ => Ok((client.threads(view.folder(), None, None, PAGE)?, Vec::new())),
                     }
                 },
-                clone!(#[weak(rename_to = ui)] self, move |result: Result<(Vec<ThreadSummary>, Vec<PendingSender>), String>| {
-                    if ui.list_gen.get() != generation {
-                        return;
-                    }
-                    match result {
-                        Ok((threads, senders)) => {
-                            if view != View::Screener {
-                                ui.exhausted.set(threads.len() < PAGE as usize);
-                            }
-                            ui.parts.borrow_mut().worker = Some((threads, senders));
-                            ui.apply_parts();
+                clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    move |result: Result<(Vec<ThreadSummary>, Vec<PendingSender>), String>| {
+                        if ui.list_gen.get() != generation {
+                            return;
                         }
-                        Err(e) => {
-                            ui.list_loading.set(false);
-                            if soft {
-                                eprintln!("refresh failed: {e}");
-                            } else {
-                                ui.empty.set_label(&format!("Couldn't load mail\n\n{e}\n\nPress R to retry"));
-                                ui.empty.add_css_class("error");
-                                ui.sync_empty();
+                        match result {
+                            Ok((threads, senders)) => {
+                                if view != View::Screener {
+                                    ui.exhausted.set(threads.len() < PAGE as usize);
+                                }
+                                ui.parts.borrow_mut().worker = Some((threads, senders));
+                                ui.apply_parts();
+                            }
+                            Err(e) => {
+                                ui.list_loading.set(false);
+                                if soft {
+                                    eprintln!("refresh failed: {e}");
+                                } else {
+                                    ui.empty.set_label(&format!("Couldn't load mail\n\n{e}\n\nPress R to retry"));
+                                    ui.empty.add_css_class("error");
+                                    ui.sync_empty();
+                                }
                             }
                         }
                     }
-                }),
+                ),
             );
         }
         if let Some(mail) = accounts {
@@ -706,22 +795,26 @@ impl Ui {
                         }
                     })
                 },
-                clone!(#[weak(rename_to = ui)] self, move |result: Result<AccountPart, String>| {
-                    if ui.list_gen.get() != generation {
-                        return;
-                    }
-                    let Ok((threads, senders, warnings)) = result else { return };
-                    ui.show_warnings(&warnings);
-                    // A failed account keeps its last good rows rather than blanking them.
-                    let failed = !warnings.is_empty() && threads.is_empty() && senders.is_empty();
-                    if !failed || ui.parts.borrow().accounts.is_none() {
-                        if view != View::Search && !failed {
-                            ui.account_cache.borrow_mut().insert(view, (threads.clone(), senders.clone()));
+                clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    move |result: Result<AccountPart, String>| {
+                        if ui.list_gen.get() != generation {
+                            return;
                         }
-                        ui.parts.borrow_mut().accounts = Some((threads, senders));
+                        let Ok((threads, senders, warnings)) = result else { return };
+                        ui.show_warnings(&warnings);
+                        // A failed account keeps its last good rows rather than blanking them.
+                        let failed = !warnings.is_empty() && threads.is_empty() && senders.is_empty();
+                        if !failed || ui.parts.borrow().accounts.is_none() {
+                            if view != View::Search && !failed {
+                                ui.account_cache.borrow_mut().insert(view, (threads.clone(), senders.clone()));
+                            }
+                            ui.parts.borrow_mut().accounts = Some((threads, senders));
+                        }
+                        ui.apply_parts();
                     }
-                    ui.apply_parts();
-                }),
+                ),
             );
         }
         if view.account_only() {
@@ -750,7 +843,8 @@ impl Ui {
             *self.senders.borrow_mut() = merge_senders(worker.1, accounts.1);
         } else {
             let oldest = if self.exhausted.get() { None } else { worker.0.last().map(|t| t.last_at) };
-            let extra: Vec<ThreadSummary> = accounts.0.into_iter().filter(|t| oldest.is_none_or(|o| t.last_at >= o)).collect();
+            let extra: Vec<ThreadSummary> =
+                accounts.0.into_iter().filter(|t| oldest.is_none_or(|o| t.last_at >= o)).collect();
             *self.threads.borrow_mut() = merge(worker.0, extra, u32::MAX);
         }
         self.rebuild_rows();
@@ -761,7 +855,13 @@ impl Ui {
     fn show_warnings(self: &Rc<Self>, warnings: &[AccountWarning]) {
         let text = warnings
             .iter()
-            .map(|w| if signed_out(w) { format!("{}: signed out (the sign-in expired or was revoked)", self.account_label(&w.account)) } else { w.message.clone() })
+            .map(|w| {
+                if signed_out(w) {
+                    format!("{}: signed out (the sign-in expired or was revoked)", self.account_label(&w.account))
+                } else {
+                    w.message.clone()
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let details = warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("\n");
@@ -777,14 +877,18 @@ impl Ui {
             let label = self.account_label(&name);
             let button = gtk::Button::with_label(&format!("Sign in to {label}"));
             if self.signing_in.borrow().contains(&name) {
-                button.set_label("Waiting for the browser…");
+                button.set_label("Waiting for the sign-in…");
                 button.set_sensitive(false);
             }
-            button.connect_clicked(clone!(#[weak(rename_to = ui)] self, move |b| {
-                b.set_label("Waiting for the browser…");
-                b.set_sensitive(false);
-                ui.sign_in_account(&name);
-            }));
+            button.connect_clicked(clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |b| {
+                    b.set_label("Waiting for the sign-in…");
+                    b.set_sensitive(false);
+                    ui.sign_in_account(&name);
+                }
+            ));
             self.sign_in.append(&button);
         }
         self.sign_in.set_visible(!expired.is_empty());
@@ -792,33 +896,44 @@ impl Ui {
 
     /// A linked account's service name ("Gmail"), or its config name when it isn't open.
     fn account_label(&self, name: &str) -> String {
-        self.mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.name() == name)).map(|p| p.label().to_string()).unwrap_or_else(|| name.to_string())
+        self.mail
+            .as_ref()
+            .and_then(|m| m.accounts.iter().find(|p| p.name() == name))
+            .map(|p| p.label().to_string())
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Runs the account's browser sign-in, then reloads so its mail comes back.
     fn sign_in_account(self: &Rc<Self>, name: &str) {
-        let Some(account) = self.mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.name() == name)).cloned() else { return };
+        let Some(account) = self.mail.as_ref().and_then(|m| m.accounts.iter().find(|p| p.name() == name)).cloned()
+        else {
+            return;
+        };
         if !self.signing_in.borrow_mut().insert(name.to_string()) {
             return;
         }
         let label = account.label().to_string();
-        self.toast(&format!("Finish signing in to {label} in your browser"));
+        self.toast(&format!("Finish signing in to {label} (in the browser or sign-in window)"));
         let name = name.to_string();
         util::run(
             move || account.sign_in(),
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<(), String>| {
-                ui.signing_in.borrow_mut().remove(&name);
-                match result {
-                    Ok(()) => {
-                        ui.signed_out_notified.borrow_mut().remove(&name);
-                        ui.toast(&format!("Signed in to {label}"));
-                        ui.load_identities();
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<(), String>| {
+                    ui.signing_in.borrow_mut().remove(&name);
+                    match result {
+                        Ok(()) => {
+                            ui.signed_out_notified.borrow_mut().remove(&name);
+                            ui.toast(&format!("Signed in to {label}"));
+                            ui.load_identities();
+                        }
+                        Err(e) => ui.toast(&e),
                     }
-                    Err(e) => ui.toast(&e),
+                    ui.load_list(true);
+                    ui.check_new();
                 }
-                ui.load_list(true);
-                ui.check_new();
-            }),
+            ),
         );
     }
 
@@ -831,7 +946,12 @@ impl Ui {
         for name in expired {
             if notified.insert(name.to_string()) {
                 let label = self.account_label(name);
-                util::notify(&format!("Sign in to {label} again"), &format!("{label}'s sign-in expired or was revoked, so its mail isn't showing. Open Cloudmail and choose Sign in to {label}."));
+                util::notify(
+                    &format!("Sign in to {label} again"),
+                    &format!(
+                        "{label}'s sign-in expired or was revoked, so its mail isn't showing. Open Cloudmail and choose Sign in to {label}."
+                    ),
+                );
             }
         }
     }
@@ -843,7 +963,9 @@ impl Ui {
         }
         let Some(client) = self.client.clone() else { return };
         // Pages follow the worker's own threads; held-back account threads slot in between.
-        let Some(before) = self.parts.borrow().worker.as_ref().and_then(|w| w.0.last()).map(|t| t.last_at) else { return };
+        let Some(before) = self.parts.borrow().worker.as_ref().and_then(|w| w.0.last()).map(|t| t.last_at) else {
+            return;
+        };
         self.loading_more.set(true);
         let generation = self.list_gen.get();
         let query = self.query.borrow().clone();
@@ -852,41 +974,58 @@ impl Ui {
                 let q = (view == View::Search).then_some(query.as_str());
                 client.threads(view.folder(), q, Some(before), PAGE)
             },
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<Vec<ThreadSummary>, String>| {
-                ui.loading_more.set(false);
-                if ui.list_gen.get() != generation {
-                    return;
-                }
-                match result {
-                    Ok(more) => {
-                        let exhausted = more.len() < PAGE as usize;
-                        ui.exhausted.set(exhausted);
-                        let known: HashSet<String> = ui.threads.borrow().iter().map(|t| t.id.clone()).collect();
-                        let fresh: Vec<ThreadSummary> = more.into_iter().filter(|t| !known.contains(&t.id)).collect();
-                        let floor = if exhausted { i64::MIN } else { fresh.last().map_or(i64::MIN, |t| t.last_at) };
-                        let held: Vec<ThreadSummary> = {
-                            let mut parts = ui.parts.borrow_mut();
-                            if let Some(w) = parts.worker.as_mut() {
-                                w.0.extend(fresh.iter().cloned());
-                            }
-                            parts.accounts.as_ref().map(|a| a.0.iter().filter(|t| t.last_at < before && t.last_at >= floor && !known.contains(&t.id)).cloned().collect()).unwrap_or_default()
-                        };
-                        let sent = view == View::Sent;
-                        let default_email = ui.default_email();
-                        for t in merge(fresh, held, u32::MAX) {
-                            ui.list.append(&rows::thread_row(&t, sent, default_email.as_deref()));
-                            ui.threads.borrow_mut().push(t);
-                        }
-                        ui.update_subtitle();
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<Vec<ThreadSummary>, String>| {
+                    ui.loading_more.set(false);
+                    if ui.list_gen.get() != generation {
+                        return;
                     }
-                    Err(e) => ui.toast(&e),
+                    match result {
+                        Ok(more) => {
+                            let exhausted = more.len() < PAGE as usize;
+                            ui.exhausted.set(exhausted);
+                            let known: HashSet<String> = ui.threads.borrow().iter().map(|t| t.id.clone()).collect();
+                            let fresh: Vec<ThreadSummary> =
+                                more.into_iter().filter(|t| !known.contains(&t.id)).collect();
+                            let floor = if exhausted { i64::MIN } else { fresh.last().map_or(i64::MIN, |t| t.last_at) };
+                            let held: Vec<ThreadSummary> = {
+                                let mut parts = ui.parts.borrow_mut();
+                                if let Some(w) = parts.worker.as_mut() {
+                                    w.0.extend(fresh.iter().cloned());
+                                }
+                                parts
+                                    .accounts
+                                    .as_ref()
+                                    .map(|a| {
+                                        a.0.iter()
+                                            .filter(|t| {
+                                                t.last_at < before && t.last_at >= floor && !known.contains(&t.id)
+                                            })
+                                            .cloned()
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            };
+                            let sent = view == View::Sent;
+                            let default_email = ui.default_email();
+                            for t in merge(fresh, held, u32::MAX) {
+                                ui.list.append(&rows::thread_row(&t, sent, default_email.as_deref()));
+                                ui.threads.borrow_mut().push(t);
+                            }
+                            ui.update_subtitle();
+                        }
+                        Err(e) => ui.toast(&e),
+                    }
                 }
-            }),
+            ),
         );
     }
 
     fn rebuild_rows(self: &Rc<Self>) {
-        let keep = self.opening.borrow().clone().or_else(|| self.current.borrow().as_ref().map(|d| d.thread.id.clone()));
+        let keep =
+            self.opening.borrow().clone().or_else(|| self.current.borrow().as_ref().map(|d| d.thread.id.clone()));
         let had_focus = self.list.focus_child().is_some();
         self.empty.remove_css_class("error");
         self.suppress.set(true);
@@ -897,8 +1036,20 @@ impl Ui {
             for (i, s) in self.senders.borrow().iter().enumerate() {
                 let r = rows::sender_row(s);
                 let key = sender_key(s);
-                r.approve.connect_clicked(clone!(#[weak(rename_to = ui)] self, #[strong] key, move |_| ui.decide(&key, "approved")));
-                r.block.connect_clicked(clone!(#[weak(rename_to = ui)] self, #[strong] key, move |_| ui.decide(&key, "blocked")));
+                r.approve.connect_clicked(clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    #[strong]
+                    key,
+                    move |_| ui.decide(&key, "approved")
+                ));
+                r.block.connect_clicked(clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    #[strong]
+                    key,
+                    move |_| ui.decide(&key, "blocked")
+                ));
                 self.list.append(&r.row);
                 let latest = latest_thread_for(&screener_threads, &s.email);
                 if keep.is_some() && latest.map(|t| &t.id) == keep.as_ref() {
@@ -941,11 +1092,7 @@ impl Ui {
         let text = match self.view.get() {
             View::Screener => {
                 let n = self.senders.borrow().len();
-                if n == 0 {
-                    String::new()
-                } else {
-                    format!("{n} new sender{} · y lets them in, n blocks", plural(n))
-                }
+                if n == 0 { String::new() } else { format!("{n} new sender{} · y lets them in, n blocks", plural(n)) }
             }
             View::Search => {
                 let n = self.threads.borrow().len();
@@ -1003,24 +1150,28 @@ impl Ui {
         let id = id.to_string();
         util::run(
             move || mail.provider(&id).thread(&id, true),
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<ThreadDetail, String>| {
-                if ui.open_gen.get() != generation {
-                    return;
-                }
-                *ui.opening.borrow_mut() = None;
-                match result {
-                    Ok(detail) => {
-                        let unread = detail.thread.unread;
-                        let id = detail.thread.id.clone();
-                        *ui.current.borrow_mut() = Some(detail);
-                        ui.render_current();
-                        if unread && ui.view.get() != View::Screener {
-                            ui.set_unread(&id, false);
-                        }
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<ThreadDetail, String>| {
+                    if ui.open_gen.get() != generation {
+                        return;
                     }
-                    Err(e) => ui.toast(&format!("Couldn't open conversation: {e}")),
+                    *ui.opening.borrow_mut() = None;
+                    match result {
+                        Ok(detail) => {
+                            let unread = detail.thread.unread;
+                            let id = detail.thread.id.clone();
+                            *ui.current.borrow_mut() = Some(detail);
+                            ui.render_current();
+                            if unread && ui.view.get() != View::Screener {
+                                ui.set_unread(&id, false);
+                            }
+                        }
+                        Err(e) => ui.toast(&format!("Couldn't open conversation: {e}")),
+                    }
                 }
-            }),
+            ),
         );
     }
 
@@ -1063,7 +1214,8 @@ impl Ui {
     }
 
     fn decide_policy(self: &Rc<Self>, decision: &webkit6::PolicyDecision, kind: webkit6::PolicyDecisionType) -> bool {
-        if !matches!(kind, webkit6::PolicyDecisionType::NavigationAction | webkit6::PolicyDecisionType::NewWindowAction) {
+        if !matches!(kind, webkit6::PolicyDecisionType::NavigationAction | webkit6::PolicyDecisionType::NewWindowAction)
+        {
             return false;
         }
         let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() else { return false };
@@ -1091,12 +1243,9 @@ impl Ui {
         let Some(mail) = self.mail.clone() else { return };
         // Only this thread's own attachments: a link in a message body can't fetch and open
         // some other file by naming its id.
-        let Some(filename) = self
-            .current
-            .borrow()
-            .as_ref()
-            .and_then(|d| d.messages.iter().flat_map(|m| &m.attachments).find(|a| a.id == id && !a.inline).map(|a| a.filename.clone()))
-        else {
+        let Some(filename) = self.current.borrow().as_ref().and_then(|d| {
+            d.messages.iter().flat_map(|m| &m.attachments).find(|a| a.id == id && !a.inline).map(|a| a.filename.clone())
+        }) else {
             return;
         };
         let id = id.to_string();
@@ -1110,13 +1259,17 @@ impl Ui {
                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
                 Ok::<_, String>(path)
             },
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<std::path::PathBuf, String>| match result {
-                Ok(path) => {
-                    ui.toast(&format!("Saved {}", path.display()));
-                    util::open_uri(&gio::File::for_path(&path).uri());
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<std::path::PathBuf, String>| match result {
+                    Ok(path) => {
+                        ui.toast(&format!("Saved {}", path.display()));
+                        util::open_uri(&gio::File::for_path(&path).uri());
+                    }
+                    Err(e) => ui.toast(&format!("Download failed: {e}")),
                 }
-                Err(e) => ui.toast(&format!("Download failed: {e}")),
-            }),
+            ),
         );
     }
 
@@ -1127,7 +1280,9 @@ impl Ui {
     }
 
     fn move_selection(&self, delta: i32) {
-        let count = if self.view.get() == View::Screener { self.senders.borrow().len() } else { self.threads.borrow().len() } as i32;
+        let count =
+            if self.view.get() == View::Screener { self.senders.borrow().len() } else { self.threads.borrow().len() }
+                as i32;
         if count == 0 {
             return;
         }
@@ -1147,7 +1302,10 @@ impl Ui {
             self.list.remove(&row);
             self.suppress.set(false);
         }
-        let next = self.list.row_at_index(idx as i32).or_else(|| idx.checked_sub(1).and_then(|i| self.list.row_at_index(i as i32)));
+        let next = self
+            .list
+            .row_at_index(idx as i32)
+            .or_else(|| idx.checked_sub(1).and_then(|i| self.list.row_at_index(i as i32)));
         match next {
             Some(row) => {
                 self.list.select_row(Some(&row));
@@ -1183,8 +1341,10 @@ impl Ui {
         if already || !is_movable(&current_folder) {
             return;
         }
-        let leaves_view = matches!((view, folder), (View::Inbox, "archive") | (View::Archive, "inbox")) || view.account_only();
-        let new_folder = if folder == "archive" { mail.provider(&id).archive_folder().to_string() } else { folder.to_string() };
+        let leaves_view =
+            matches!((view, folder), (View::Inbox, "archive") | (View::Archive, "inbox")) || view.account_only();
+        let new_folder =
+            if folder == "archive" { mail.provider(&id).archive_folder().to_string() } else { folder.to_string() };
         let new_folder = new_folder.as_str();
         if leaves_view {
             self.threads.borrow_mut().remove(idx);
@@ -1212,13 +1372,17 @@ impl Ui {
         });
         util::run(
             move || mail.provider(&id).move_thread(&id, folder),
-            clone!(#[weak(rename_to = ui)] self, move |result| {
-                if let Err(e) = result {
-                    ui.toast(&format!("Couldn't move conversation: {e}"));
-                    ui.load_list(true);
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result| {
+                    if let Err(e) = result {
+                        ui.toast(&format!("Couldn't move conversation: {e}"));
+                        ui.load_list(true);
+                    }
+                    ui.refresh_counts();
                 }
-                ui.refresh_counts();
-            }),
+            ),
         );
     }
 
@@ -1233,9 +1397,10 @@ impl Ui {
         // The Screener's rows are senders, so only a thread list has a row to restyle.
         if self.view.get() != View::Screener
             && let Some(i) = self.threads.borrow().iter().position(|t| t.id == id)
-            && let Some(row) = self.list.row_at_index(i as i32) {
-                rows::set_row_unread(&row, unread);
-            }
+            && let Some(row) = self.list.row_at_index(i as i32)
+        {
+            rows::set_row_unread(&row, unread);
+        }
         for t in self.threads.borrow_mut().iter_mut().filter(|t| t.id == id) {
             t.unread = unread;
         }
@@ -1256,12 +1421,16 @@ impl Ui {
         }
         util::run(
             move || mail.provider(&id).set_unread(&id, unread),
-            clone!(#[weak(rename_to = ui)] self, move |result| {
-                if let Err(e) = result {
-                    ui.toast(&format!("Couldn't update: {e}"));
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result| {
+                    if let Err(e) = result {
+                        ui.toast(&format!("Couldn't update: {e}"));
+                    }
+                    ui.refresh_counts();
                 }
-                ui.refresh_counts();
-            }),
+            ),
         );
     }
 
@@ -1272,7 +1441,8 @@ impl Ui {
         } else {
             self.selected_index().and_then(|i| self.threads.borrow().get(i).map(|t| (t.id.clone(), t.unread)))
         };
-        let target = from_row.or_else(|| self.current.borrow().as_ref().map(|d| (d.thread.id.clone(), d.thread.unread)));
+        let target =
+            from_row.or_else(|| self.current.borrow().as_ref().map(|d| (d.thread.id.clone(), d.thread.unread)));
         if let Some((id, unread)) = target {
             self.set_unread(&id, !unread);
             self.toast(if unread { "Marked read" } else { "Marked unread" });
@@ -1290,9 +1460,7 @@ impl Ui {
             let (n, unread) = self.account_counts.get();
             self.account_counts.set(((n - 1).max(0), unread));
         }
-        self.screener_threads
-            .borrow_mut()
-            .retain(|t| !t.is_from(&email));
+        self.screener_threads.borrow_mut().retain(|t| !t.is_from(&email));
         {
             let mut guard = self.parts.borrow_mut();
             let parts = &mut *guard;
@@ -1304,28 +1472,28 @@ impl Ui {
         self.account_cache.borrow_mut().remove(&View::Screener);
         self.clear_reader();
         self.remove_row(idx);
-        self.toast(&format!(
-            "{} {}",
-            if status == "approved" { "Let in" } else { "Blocked" },
-            sender.display()
-        ));
+        self.toast(&format!("{} {}", if status == "approved" { "Let in" } else { "Blocked" }, sender.display()));
         let key = key.to_string();
         util::run(
             move || mail.decide_sender(&key, status),
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<(i64, Vec<AccountWarning>), String>| {
-                match result {
-                    Err(e) => {
-                        ui.toast(&format!("Couldn't screen sender: {e}"));
-                        ui.load_list(true);
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<(i64, Vec<AccountWarning>), String>| {
+                    match result {
+                        Err(e) => {
+                            ui.toast(&format!("Couldn't screen sender: {e}"));
+                            ui.load_list(true);
+                        }
+                        Ok((_, warnings)) if !warnings.is_empty() => ui.show_warnings(&warnings),
+                        Ok(_) => {}
                     }
-                    Ok((_, warnings)) if !warnings.is_empty() => ui.show_warnings(&warnings),
-                    Ok(_) => {}
+                    ui.refresh_counts();
+                    if let Some(seen) = ui.seen.borrow_mut().as_mut() {
+                        seen.screener.remove(&sender.email.to_ascii_lowercase());
+                    }
                 }
-                ui.refresh_counts();
-                if let Some(seen) = ui.seen.borrow_mut().as_mut() {
-                    seen.screener.remove(&sender.email.to_ascii_lowercase());
-                }
-            }),
+            ),
         );
     }
 
@@ -1348,7 +1516,11 @@ impl Ui {
     /// Your mailboxes (lowercased): the addresses the worker lets you send from.
     fn mailboxes(&self) -> HashSet<String> {
         let ids = self.identities.borrow();
-        let mut out: HashSet<String> = ids.iter().flat_map(|ids| ids.identities.iter().chain(&ids.default)).map(|a| a.email.to_ascii_lowercase()).collect();
+        let mut out: HashSet<String> = ids
+            .iter()
+            .flat_map(|ids| ids.identities.iter().chain(&ids.default))
+            .map(|a| a.email.to_ascii_lowercase())
+            .collect();
         out.extend(self.account_identities.borrow().iter().map(|(_, a)| a.email.to_ascii_lowercase()));
         out
     }
@@ -1377,10 +1549,16 @@ impl Ui {
             let others: Vec<_> = primary.iter().filter(|a| !mine.contains(&a.email.to_ascii_lowercase())).collect();
             let primary = if others.is_empty() { primary.iter().collect() } else { others };
             let mut seen: HashSet<String> = HashSet::new();
-            let to: Vec<_> = primary.iter().filter(|a| seen.insert(a.email.to_ascii_lowercase())).map(|a| a.formatted()).collect();
+            let to: Vec<_> =
+                primary.iter().filter(|a| seen.insert(a.email.to_ascii_lowercase())).map(|a| a.formatted()).collect();
             seen.extend(mine.iter().cloned());
             let cc: Vec<_> = if all {
-                msg.to.iter().chain(&msg.cc).filter(|a| seen.insert(a.email.to_ascii_lowercase())).map(|a| a.formatted()).collect()
+                msg.to
+                    .iter()
+                    .chain(&msg.cc)
+                    .filter(|a| seen.insert(a.email.to_ascii_lowercase()))
+                    .map(|a| a.formatted())
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -1423,25 +1601,33 @@ impl Ui {
         let Some(client) = self.client.clone() else { return };
         util::run(
             move || client.identities(),
-            clone!(#[weak(rename_to = ui)] self, move |result| match result {
-                Ok(ids) => {
-                    *ui.identities.borrow_mut() = Some(ids);
-                    // A load still in flight will build its rows with the identities in place.
-                    if ui.view.get() != View::Screener && !ui.list_loading.get() {
-                        ui.rebuild_rows();
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result| match result {
+                    Ok(ids) => {
+                        *ui.identities.borrow_mut() = Some(ids);
+                        // A load still in flight will build its rows with the identities in place.
+                        if ui.view.get() != View::Screener && !ui.list_loading.get() {
+                            ui.rebuild_rows();
+                        }
                     }
+                    Err(e) => eprintln!("identities: {e}"),
                 }
-                Err(e) => eprintln!("identities: {e}"),
-            }),
+            ),
         );
         if let Some(mail) = self.mail.clone().filter(|m| m.has_accounts()) {
             util::run(
                 move || Ok::<_, String>(mail.account_identities().0),
-                clone!(#[weak(rename_to = ui)] self, move |result: Result<Vec<(String, Address)>, String>| {
-                    if let Ok(list) = result {
-                        *ui.account_identities.borrow_mut() = list;
+                clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    move |result: Result<Vec<(String, Address)>, String>| {
+                        if let Ok(list) = result {
+                            *ui.account_identities.borrow_mut() = list;
+                        }
                     }
-                }),
+                ),
             );
         }
     }
@@ -1458,19 +1644,23 @@ impl Ui {
         let Some(client) = self.client.clone() else { return };
         util::run(
             move || client.counts(),
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<crate::api::Counts, String>| {
-                let Ok(c) = result else { return };
-                let set = |i: usize, n: i64| {
-                    ui.badges[i].set_label(&n.to_string());
-                    ui.badges[i].set_visible(n > 0);
-                };
-                let (account_screener, account_unread) = ui.account_counts.get();
-                let unread = c.inbox_unread + account_unread;
-                set(0, c.screener + account_screener);
-                set(1, unread);
-                let title = if unread > 0 { format!("Cloudmail ({unread})") } else { "Cloudmail".into() };
-                ui.window.set_title(Some(&title));
-            }),
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<crate::api::Counts, String>| {
+                    let Ok(c) = result else { return };
+                    let set = |i: usize, n: i64| {
+                        ui.badges[i].set_label(&n.to_string());
+                        ui.badges[i].set_visible(n > 0);
+                    };
+                    let (account_screener, account_unread) = ui.account_counts.get();
+                    let unread = c.inbox_unread + account_unread;
+                    set(0, c.screener + account_screener);
+                    set(1, unread);
+                    let title = if unread > 0 { format!("Cloudmail ({unread})") } else { "Cloudmail".into() };
+                    ui.window.set_title(Some(&title));
+                }
+            ),
         );
     }
 
@@ -1492,58 +1682,67 @@ impl Ui {
                 let mut counts = (0, 0);
                 let mut warnings = Vec::new();
                 if let Some(mail) = accounts {
-                    let (threads, list_warnings, _) = mail.accounts_list(&ThreadQuery { folder: "inbox".into(), limit: 50, ..Default::default() });
+                    let (threads, list_warnings, _) =
+                        mail.accounts_list(&ThreadQuery { folder: "inbox".into(), limit: 50, ..Default::default() });
                     let (senders, screener_warnings) = mail.accounts_screener();
                     warnings.extend(list_warnings);
                     warnings.extend(screener_warnings);
-                    let senders = merge_senders(Vec::new(), senders).into_iter().filter(|s| !screener.iter().any(|w| w.email.eq_ignore_ascii_case(&s.email))).collect::<Vec<_>>();
+                    let senders = merge_senders(Vec::new(), senders)
+                        .into_iter()
+                        .filter(|s| !screener.iter().any(|w| w.email.eq_ignore_ascii_case(&s.email)))
+                        .collect::<Vec<_>>();
                     counts = (senders.len() as i64, threads.iter().filter(|t| t.unread).count() as i64);
                     inbox.extend(threads);
                     screener.extend(senders);
                 }
                 Ok::<_, cloudmail_api::Error>((inbox, screener, counts, warnings))
             },
-            clone!(#[weak(rename_to = ui)] self, move |result: Result<NewMail, String>| {
-                let Ok((inbox, screener, counts, warnings)) = result else { return };
-                ui.notify_signed_out(&warnings);
-                if ui.account_counts.replace(counts) != counts {
-                    ui.refresh_counts();
-                }
-                let fresh = Seen {
-                    inbox: inbox.iter().map(|t| (t.id.clone(), t.last_at)).collect(),
-                    screener: screener.iter().map(|s| s.email.to_ascii_lowercase()).collect(),
-                };
-                let mut seen = ui.seen.borrow_mut();
-                if let Some(old) = seen.as_ref() {
-                    let new_mail: Vec<_> = inbox
-                        .iter()
-                        .filter(|t| t.unread && old.inbox.get(&t.id).is_none_or(|prev| t.last_at > *prev))
-                        .collect();
-                    let new_senders: Vec<_> = screener
-                        .iter()
-                        .filter(|s| !old.screener.contains(&s.email.to_ascii_lowercase()))
-                        .collect();
-                    if new_mail.len() > 3 {
-                        util::notify(&format!("{} new emails", new_mail.len()), "");
-                    } else {
-                        for t in new_mail {
-                            let who = t.sender().unwrap_or_default();
-                            util::notify(&who, &t.subject);
-                        }
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result: Result<NewMail, String>| {
+                    let Ok((inbox, screener, counts, warnings)) = result else { return };
+                    ui.notify_signed_out(&warnings);
+                    if ui.account_counts.replace(counts) != counts {
+                        ui.refresh_counts();
                     }
-                    if new_senders.len() > 3 {
-                        util::notify("The Screener", &format!("{} new sender{} waiting", new_senders.len(), plural(new_senders.len())));
-                    } else {
-                        for s in new_senders {
+                    let fresh = Seen {
+                        inbox: inbox.iter().map(|t| (t.id.clone(), t.last_at)).collect(),
+                        screener: screener.iter().map(|s| s.email.to_ascii_lowercase()).collect(),
+                    };
+                    let mut seen = ui.seen.borrow_mut();
+                    if let Some(old) = seen.as_ref() {
+                        let new_mail: Vec<_> = inbox
+                            .iter()
+                            .filter(|t| t.unread && old.inbox.get(&t.id).is_none_or(|prev| t.last_at > *prev))
+                            .collect();
+                        let new_senders: Vec<_> =
+                            screener.iter().filter(|s| !old.screener.contains(&s.email.to_ascii_lowercase())).collect();
+                        if new_mail.len() > 3 {
+                            util::notify(&format!("{} new emails", new_mail.len()), "");
+                        } else {
+                            for t in new_mail {
+                                let who = t.sender().unwrap_or_default();
+                                util::notify(&who, &t.subject);
+                            }
+                        }
+                        if new_senders.len() > 3 {
                             util::notify(
-                                &format!("Screener: {}", s.display()),
-                                s.last_subject.as_deref().unwrap_or(""),
+                                "The Screener",
+                                &format!("{} new sender{} waiting", new_senders.len(), plural(new_senders.len())),
                             );
+                        } else {
+                            for s in new_senders {
+                                util::notify(
+                                    &format!("Screener: {}", s.display()),
+                                    s.last_subject.as_deref().unwrap_or(""),
+                                );
+                            }
                         }
                     }
+                    *seen = Some(fresh);
                 }
-                *seen = Some(fresh);
-            }),
+            ),
         );
     }
 
@@ -1621,10 +1820,7 @@ fn sender_key(s: &PendingSender) -> String {
 }
 
 fn latest_thread_for<'a>(threads: &'a [ThreadSummary], email: &str) -> Option<&'a ThreadSummary> {
-    threads
-        .iter()
-        .filter(|t| t.is_from(email))
-        .max_by_key(|t| t.last_at)
+    threads.iter().filter(|t| t.is_from(email)).max_by_key(|t| t.last_at)
 }
 
 /// The sender's filename with path separators and control characters made harmless.

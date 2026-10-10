@@ -1,4 +1,4 @@
-//! Mail providers: your Cloudmail worker, and linked accounts (HEY, Gmail).
+//! Mail providers: your Cloudmail worker, and linked accounts (HEY, Gmail, iCloud Mail).
 //!
 //! A provider speaks in cloudmail's own types. A linked account prefixes every ID it hands out
 //! with its name (`hey:…`), so any later action on that ID goes back to it; the worker's own IDs
@@ -99,12 +99,25 @@ pub trait Provider: Send + Sync {
     fn download_attachment(&self, id: &str) -> Result<Download>;
     /// A message's original .eml, when the provider gives it out.
     fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
-        Err(Error::new(ErrorKind::BadRequest, format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label())))
+        Err(Error::new(
+            ErrorKind::BadRequest,
+            format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label()),
+        ))
     }
     /// The Message-ID headers of a thread's messages as last listed, for spotting copies of
     /// worker mail exactly; empty when the provider doesn't expose them.
     fn message_ids(&self, _thread_id: &str) -> Vec<String> {
         Vec::new()
+    }
+    /// Whether your worker's Screener decides this account's senders (it has no Screener of its
+    /// own). Its threads then wait in the Screener until their sender is approved.
+    fn screened_by_worker(&self) -> bool {
+        false
+    }
+    /// The people this account already corresponds with (Inbox senders, recipients of sent mail,
+    /// about `limit` conversations of each), screened in when the account is linked.
+    fn correspondents(&self, _limit: u32) -> Result<Vec<Address>> {
+        Ok(Vec::new())
     }
 }
 
@@ -133,7 +146,10 @@ impl Provider for Client {
             provider: "cloudmail".into(),
             label: "Cloudmail".into(),
             ok: health.is_ok(),
-            addresses: self.identities().map(|i| i.identities.into_iter().map(|a| a.email).collect()).unwrap_or_default(),
+            addresses: self
+                .identities()
+                .map(|i| i.identities.into_iter().map(|a| a.email).collect())
+                .unwrap_or_default(),
             detail: match health {
                 Ok(_) => self.base_url().to_string(),
                 Err(e) => e.message,
@@ -191,8 +207,11 @@ impl Provider for Client {
 }
 
 /// Providers cloudmail knows how to link, for `account add` and its help.
-pub const KNOWN_PROVIDERS: &[(&str, &str)] =
-    &[("hey", "HEY (hey.com), through the official `hey` CLI"), ("gmail", "Gmail, through Google's Workspace CLI `gws`")];
+pub const KNOWN_PROVIDERS: &[(&str, &str)] = &[
+    ("hey", "HEY (hey.com), through the official `hey` CLI"),
+    ("gmail", "Gmail, through Google's Workspace CLI `gws`"),
+    ("icloud", "iCloud Mail, through the iCloud sign-in icloud-session keeps"),
+];
 
 /// How an account is named on screen: its provider's name for the usual account names, else the
 /// name it was given.
@@ -200,6 +219,7 @@ pub fn account_label(account: &str) -> String {
     match account {
         "hey" => "HEY".into(),
         "gmail" => "Gmail".into(),
+        "icloud" => "iCloud".into(),
         other => other.to_string(),
     }
 }
@@ -209,16 +229,23 @@ pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
     match cfg.provider(name) {
         "hey" => Ok(Arc::new(crate::hey::Hey::new(name, cfg))),
         "gmail" => Ok(Arc::new(crate::gmail::Gmail::new(name, cfg))),
+        "icloud" => Ok(Arc::new(crate::icloud::Icloud::new(name, cfg))),
         other => Err(Error::new(
             ErrorKind::Config,
-            format!("account {name}: unknown provider \"{other}\" (known: {})", KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")),
+            format!(
+                "account {name}: unknown provider \"{other}\" (known: {})",
+                KNOWN_PROVIDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")
+            ),
         )),
     }
 }
 
 /// Account names become ID prefixes, so they are short lowercase words.
 pub fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 32 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && name != "cloudmail"
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name != "cloudmail"
 }
 
 /// How a linked account's command-line tool ended.
@@ -231,7 +258,9 @@ pub(crate) enum Run {
 
 /// Runs a prepared command (stdout and stderr piped, stdin fed when given), killing it after `timeout`.
 pub(crate) fn run_command(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Run {
-    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Run::Missing,
@@ -278,7 +307,8 @@ pub(crate) struct PrivateDir(PathBuf);
 
 impl PrivateDir {
     pub fn new(parent: &Path, prefix: &str) -> std::io::Result<Self> {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let dir = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
         Self::create(&dir)?;
         Ok(Self(dir))
