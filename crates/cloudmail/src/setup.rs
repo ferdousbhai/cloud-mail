@@ -149,6 +149,16 @@ pub fn parse_r2_buckets(output: &str) -> Vec<String> {
     list["buckets"].as_array().into_iter().flatten().filter_map(|b| b["name"].as_str().map(str::to_string)).collect()
 }
 
+/// The zone ID for `domain` in `cf zones list --name <domain>`.
+pub fn zone_id(output: &str, domain: &str) -> Option<String> {
+    first_json(output)?
+        .as_array()?
+        .iter()
+        .find(|z| z["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(domain)))?["id"]
+        .as_str()
+        .map(String::from)
+}
+
 /// Whether `cf email-routing settings get` says Email Routing is on.
 pub fn routing_enabled(output: &str) -> bool {
     first_json(output).is_some_and(|v| v["enabled"] == true)
@@ -546,9 +556,16 @@ pub fn route_address(
 ) -> CliResult<RouteOutcome> {
     let domain =
         domain_of(address).ok_or_else(|| CliError::usage(format!("not an email address: {address}")))?.to_string();
+    // cf resolves `-z <name>` from the first page of zones only (20), so an account with more
+    // domains gets "Zone not found" for the rest; the zone's ID always works.
+    let zone = w
+        .query(&["zones", "list", "--name", &domain])
+        .ok()
+        .and_then(|o| zone_id(&o, &domain))
+        .unwrap_or_else(|| domain.clone());
 
     let routing_on =
-        |w: &Cf| w.query(&["email-routing", "settings", "get", "-z", &domain]).is_ok_and(|o| routing_enabled(&o));
+        |w: &Cf| w.query(&["email-routing", "settings", "get", "-z", &zone]).is_ok_and(|o| routing_enabled(&o));
     if !routing_zones.contains(&domain) && !routing_on(w) {
         // Enabling Email Routing replaces the domain's MX records: free to do when nothing receives
         // mail there yet, a question when something else does.
@@ -568,26 +585,25 @@ pub fn route_address(
                 return Ok(blocked(w, address, format!("{current}; moving it to Cloudflare replaces its MX records")));
             }
         }
-        w.mutate(&format!("enable Email Routing for {domain}"), &["email-routing", "enable", "-z", &domain], None)?;
+        w.mutate(&format!("enable Email Routing for {domain}"), &["email-routing", "enable", "-z", &zone], None)?;
     }
     routing_zones.push(domain.clone());
 
     let sending_on = |w: &Cf| {
-        w.query(&["email-sending", "subdomains", "list", "-z", &domain]).is_ok_and(|o| sending_enabled(&o, &domain))
+        w.query(&["email-sending", "subdomains", "list", "-z", &zone]).is_ok_and(|o| sending_enabled(&o, &domain))
     };
     if sending_zones.contains(&domain) || sending_on(w) {
         w.record(&format!("sending for {domain}"), "exists", None, None);
     } else {
         w.mutate(
             &format!("enable sending for {domain}"),
-            &["email-sending", "subdomains", "create", "-z", &domain, "--name", &domain],
+            &["email-sending", "subdomains", "create", "-z", &zone, "--name", &domain],
             None,
         )?;
     }
     sending_zones.push(domain.clone());
 
-    let rules =
-        parse_rules(&w.probe(&["email-routing", "rules", "list-account", "-z", &domain, "--per-page", "50"])?);
+    let rules = parse_rules(&w.probe(&["email-routing", "rules", "list-account", "-z", &zone, "--per-page", "50"])?);
     let target = format!("worker:{worker}");
     let matcher = format!("to:{address}");
     let step = format!("route {address}");
@@ -608,7 +624,7 @@ pub fn route_address(
     let actions = json!([{ "type": "worker", "value": [worker] }]).to_string();
     let mut args = vec!["email-routing", "rules", verb];
     args.extend(id);
-    args.extend(["-z", &domain, "--matchers", &matchers, "--actions", &actions, "--enabled"]);
+    args.extend(["-z", &zone, "--matchers", &matchers, "--actions", &actions, "--enabled"]);
     w.mutate(&step, &args, None)?;
     Ok(outcome(if w.dry_run { "planned" } else { status }, detail))
 }
@@ -984,6 +1000,14 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_id_matches_the_domain() {
+        let out = r#"[{"id":"z1","name":"other.com"},{"id":"z2","name":"Example.com"}]"#;
+        assert_eq!(zone_id(out, "example.com").as_deref(), Some("z2"));
+        assert_eq!(zone_id("[]", "example.com"), None);
+        assert_eq!(zone_id("Zone not found", "example.com"), None);
+    }
 
     #[test]
     fn dependencies_reinstall_when_package_json_is_newer() {
