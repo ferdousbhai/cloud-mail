@@ -65,6 +65,8 @@ use crate::types::*;
 pub const INBOX: &str = "INBOX";
 pub const ARCHIVE: &str = "Archive";
 pub const SENT: &str = "Sent Messages";
+/// iCloud Mail's Trash, which empties itself after 30 days.
+pub const TRASH: &str = "Deleted Messages";
 /// How long a sign-in in icloud-session's window may take.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(600);
 /// Most threads one listing asks for.
@@ -642,6 +644,12 @@ impl Provider for Icloud {
         };
         let (_, r) = self.thread_ref(id)?;
         self.call("thread/move", Some(&r.f), json!({ "moveMethod": "MOVE", "destFolder": dest, "threadIds": [r.t] }))
+            .map(drop)
+    }
+
+    fn delete_thread(&self, id: &str) -> Result<()> {
+        let (_, r) = self.thread_ref(id)?;
+        self.call("thread/move", Some(&r.f), json!({ "moveMethod": "MOVE", "destFolder": TRASH, "threadIds": [r.t] }))
             .map(drop)
     }
 

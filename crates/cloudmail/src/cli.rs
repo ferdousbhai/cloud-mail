@@ -226,11 +226,12 @@ pub enum ThreadCommand {
         #[arg(required = true, num_args = 1..)]
         ids: Vec<String>,
     },
-    /// Permanently delete threads, their messages and attachments
+    /// Delete threads: your own mail permanently (messages and attachments); a linked account's
+    /// (Gmail, iCloud Mail, HEY) goes to its own Trash
     Delete {
         #[arg(required = true, num_args = 1..)]
         ids: Vec<String>,
-        /// Confirm without prompting (required when not on a terminal)
+        /// Confirm a permanent delete without prompting (required when not on a terminal)
         #[arg(long, short = 'y')]
         yes: bool,
     },
