@@ -56,13 +56,16 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     snippet.set_hexpand(true);
     bottom.append(&snippet);
     if let (Some(to), Some(default)) = (t.to_address.as_deref(), default_email)
-        && !sent_view && !to.eq_ignore_ascii_case(default) && t.account.is_none() {
-            // Not ellipsized: the snippet gives way so the address stays readable.
-            let to_label = gtk::Label::new(Some(to));
-            to_label.add_css_class("time");
-            to_label.set_tooltip_text(Some(&format!("Sent to {to}")));
-            bottom.append(&to_label);
-        }
+        && !sent_view
+        && !to.eq_ignore_ascii_case(default)
+        && t.account.is_none()
+    {
+        // Not ellipsized: the snippet gives way so the address stays readable.
+        let to_label = gtk::Label::new(Some(to));
+        to_label.add_css_class("time");
+        to_label.set_tooltip_text(Some(&format!("Sent to {to}")));
+        bottom.append(&to_label);
+    }
     body.append(&bottom);
     if t.unread {
         body.add_css_class("unread");
@@ -77,10 +80,8 @@ pub fn set_row_unread(row: &gtk::ListBoxRow, unread: bool) {
     } else {
         body.remove_css_class("unread");
     }
-    if let Some(dot) = body
-        .first_child()
-        .and_then(|top| top.first_child())
-        .and_then(|w| w.downcast::<gtk::Label>().ok())
+    if let Some(dot) =
+        body.first_child().and_then(|top| top.first_child()).and_then(|w| w.downcast::<gtk::Label>().ok())
     {
         dot.set_label(if unread { "●" } else { " " });
     }
@@ -110,10 +111,7 @@ pub fn sender_row(s: &PendingSender) -> SenderRow {
         text.append(&label(&s.email, "snippet"));
     }
     let count = if s.thread_count > 1 { format!("{} emails · ", s.thread_count) } else { String::new() };
-    text.append(&label(
-        &format!("{count}{}", s.last_subject.as_deref().unwrap_or("(no subject)")),
-        "subject",
-    ));
+    text.append(&label(&format!("{count}{}", s.last_subject.as_deref().unwrap_or("(no subject)")), "subject"));
     text.add_css_class("unread");
 
     let approve = gtk::Button::builder().label("Yes").tooltip_text("Let them in (y)").build();

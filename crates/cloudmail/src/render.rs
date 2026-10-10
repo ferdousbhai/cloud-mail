@@ -47,7 +47,11 @@ pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
     let from_w = 22;
     let when_w = 10;
     // Only lists that mix in a linked account get the account column (and room for its box names).
-    let acct_w = list.iter().map(|t| account_tag(t.account.as_deref()).chars().count()).max().map_or(0, |n| if n == 0 { 0 } else { n + 1 });
+    let acct_w = list
+        .iter()
+        .map(|t| account_tag(t.account.as_deref()).chars().count())
+        .max()
+        .map_or(0, |n| if n == 0 { 0 } else { n + 1 });
     let folder_w = match (show_folder, acct_w) {
         (false, _) => 0,
         (true, 0) => 10,
@@ -105,7 +109,9 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
             if m.outgoing { dim("  (sent)") } else { String::new() }
         ));
         if m.unverified() {
-            out.push_str("⚠ sender not verified (its domain didn't authenticate this message): the From address may be forged\n");
+            out.push_str(
+                "⚠ sender not verified (its domain didn't authenticate this message): the From address may be forged\n",
+            );
         }
         out.push_str(&dim(&clean_line(&format!("to {}", format_addresses(&m.to)))));
         if !m.cc.is_empty() {
@@ -120,7 +126,13 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
         if !atts.is_empty() {
             out.push('\n');
             for a in atts {
-                out.push_str(&format!("\n📎 {} ({}, {}) {}", clean_line(&a.filename), clean_line(&a.mime_type), human_size(a.size), dim(&clean_line(&a.id))));
+                out.push_str(&format!(
+                    "\n📎 {} ({}, {}) {}",
+                    clean_line(&a.filename),
+                    clean_line(&a.mime_type),
+                    human_size(a.size),
+                    dim(&clean_line(&a.id))
+                ));
             }
         }
     }
@@ -139,7 +151,13 @@ pub fn screener(list: &[PendingSender]) -> String {
                 (Some(a), Some(id)) => format!("{}  {}", account_tag(Some(a)), clean_line(id)),
                 _ => short_time(s.last_at),
             };
-            format!("{}  {}{}  {}", pad(&truncate(&who, 40), 40), truncate(&subject, w.saturating_sub(62).max(20)), dim(&count), dim(&tail))
+            format!(
+                "{}  {}{}  {}",
+                pad(&truncate(&who, 40), 40),
+                truncate(&subject, w.saturating_sub(62).max(20)),
+                dim(&count),
+                dim(&tail)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -149,7 +167,12 @@ pub fn senders(list: &[Sender]) -> String {
     list.iter()
         .map(|s| {
             let when = s.decided_at.map(short_time).unwrap_or_default();
-            format!("{}  {}  {}", pad(&clean_line(&s.email), 36), pad(&truncate(&clean_line(&s.name), 28), 28), dim(&when))
+            format!(
+                "{}  {}  {}",
+                pad(&clean_line(&s.email), 36),
+                pad(&truncate(&clean_line(&s.name), 28), 28),
+                dim(&when)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")

@@ -136,6 +136,9 @@ case "$method" in
       listing "$(entry t-a1 'x')" "$(entry t-a4 'x')" "$(entry t-a5 'x')"
     fi ;;
   "threads get") thread "$id" "$(param format)"; echo ;;
+  "threads trash")
+    [[ "$id" == t-a* ]] || err 1 404 notFound "Requested entity was not found."
+    printf '{"id":"%s","historyId":"300","messages":[]}\n' "$id" ;;
   "threads modify")
     [[ "$id" == t-a* ]] || err 1 404 notFound "Requested entity was not found."
     printf '{"id":"%s","historyId":"299","messages":[]}\n' "$id" ;;

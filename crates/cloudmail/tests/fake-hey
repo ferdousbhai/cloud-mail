@@ -119,7 +119,7 @@ case "$1 $2" in
     [[ "$2" == 9001 ]] || fail 2 "topic $2 not found" not_found
     ok 'null' "Reply sent" ;;
   "compose "*) ok 'null' "Message sent" ;;
-  "move "*|"seen "*|"unseen "*)
+  "move "*|"seen "*|"unseen "*|"trash "*)
     [[ "$2" =~ ^700[0-9]$ ]] || fail 2 "box item $2 not found" not_found
     ok 'null' "1 thread updated" ;;
 esac

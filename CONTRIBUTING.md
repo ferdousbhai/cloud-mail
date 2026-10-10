@@ -16,8 +16,12 @@ bun run dev --port 8799              # cf dev --mode development: local resource
 curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
 bun test && bunx tsc --noEmit
 
-cargo test --workspace && cargo clippy --workspace --all-targets
+bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
 ```
+
+Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
+runs `bin/check` first and stops if it fails (`CLOUDMAIL_NO_CHECK=1` skips it). GitHub only builds
+releases: the packages on a version tag, and the CLI archives once a release is published.
 
 ## The worker
 
@@ -34,12 +38,20 @@ to `~/.local/share/cloudmail/worker` and deploys from there.
 
 Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
 `Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls
-through `gws gmail users … --params '<json>'`, and `unified.rs` merges providers, turns their failures
-into warnings and hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
+through `gws gmail users … --params '<json>'`, `icloud.rs` maps the requests icloud.com's own Mail
+app sends (its doc comment says what each is and where that is established) with the session from
+`session.rs` (icloud-session's D-Bus interface), `accounts.rs` links and unlinks accounts for the CLI
+and the app, `keyring.rs` keeps secrets in the Secret Service, and `unified.rs` merges providers,
+screens Gmail and iCloud Mail with your worker's decisions, turns their failures into warnings and
+hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
 its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
 "…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
 and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
 (`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
+The CLI tests never reach the real session bus: each that needs one starts a private `dbus-daemon`
+(the `dbus` package) with stand-ins for the Secret Service and icloud-session, and iCloud Mail's
+web services as an in-process HTTP server (`crates/cloudmail/tests/support`); every other test runs
+with no session bus at all.
 
 ## Google sign-in for Gmail
 
@@ -65,16 +77,24 @@ git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
 ```
 
 Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
-It drafts the GitHub release from the tag's message, then runs `bin/release`, which builds the
-package with makepkg, signs it and the `[cloudmail]` repository database with the
-package-signing key (gpg asks for its passphrase in a desktop prompt), attaches them with
-`install.sh`, and has `bin/verify-release` install it with the public one-liner in a clean Arch
-container, and then moves the omarchy-pkgs pull request to the new version (while it is open).
+It drafts the GitHub release from the tag's message, then runs `bin/release`. The native
+package workflow, which runs only for version tags, builds and tests unsigned x86_64 and aarch64 packages. The release command
+waits for that exact commit's successful CI run, verifies each artifact's source commit and
+package metadata, and signs the packages and both repository databases locally. The private
+signing key never goes to GitHub. `[cloudmail]` serves x86_64; `[cloudmail-aarch64]` serves ARM,
+and the installer chooses the native repository automatically.
+
+After publication, GitHub verifies the exact release on native Arch and Arch Linux ARM
+runners. Failed verification reports an error without deleting a release or tag. Run
+`bin/verify-release <version> <architecture>` manually on a matching native host; ARM requires
+`ARM_BUILD_IMAGE` pointing to an Arch Linux ARM Docker image. `bin/build-package <architecture>`
+builds an unsigned package locally with the same native-container process used by CI.
+
+The release hook then moves the omarchy-pkgs pull request to the new version (while open).
 A desktop notification reports the outcome; the log is in
-`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version>` still works by hand,
-and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
+`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version> [CI-run-id]` also works
+by hand, and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
 
 When the release is published, the `release-binaries` GitHub Actions workflow builds the `cloudmail`
-CLI for Linux (x86_64 and aarch64, static musl) and macOS (Apple Silicon and Intel) and attaches the
-archives and a `SHA256SUMS` file to it. Run it by hand from the Actions tab, giving a tag, to
-backfill an older release.
+CLI for Linux (x86_64 and aarch64, static musl) and attaches the archives and a `SHA256SUMS` file
+to it. Run it by hand from the Actions tab, giving a tag, to backfill an older release.

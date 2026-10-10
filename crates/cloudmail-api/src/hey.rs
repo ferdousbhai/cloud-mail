@@ -79,7 +79,9 @@ fn millis(v: &Value) -> i64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|d| d.timestamp_millis())
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").map(|d| d.and_utc().timestamp_millis()))
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").map(|d| d.and_utc().timestamp_millis()))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").map(|d| d.and_utc().timestamp_millis())
+        })
         .unwrap_or(0)
 }
 
@@ -121,7 +123,13 @@ impl Hey {
             .filter(|c| !c.trim().is_empty())
             .or_else(|| cfg.command.clone().filter(|c| !c.trim().is_empty()))
             .unwrap_or_else(|| "hey".into());
-        Self { name: name.to_string(), command, account: cfg.account.clone(), seen: Default::default(), own: Default::default() }
+        Self {
+            name: name.to_string(),
+            command,
+            account: cfg.account.clone(),
+            seen: Default::default(),
+            own: Default::default(),
+        }
     }
 
     pub fn command(&self) -> &str {
@@ -146,11 +154,10 @@ impl Hey {
     /// Runs `hey auth login`, its output on the terminal: HEY's own browser sign-in (OAuth with
     /// PKCE). Gives up after `LOGIN_TIMEOUT`, so a sign-in abandoned in the browser can't hang the app.
     pub fn login(&self) -> Result<()> {
-        let mut child = Command::new(&self.command)
-            .args(["auth", "login"])
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)))?;
+        let mut child =
+            Command::new(&self.command).args(["auth", "login"]).stdin(std::process::Stdio::null()).spawn().map_err(
+                |e| self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)),
+            )?;
         let deadline = std::time::Instant::now() + LOGIN_TIMEOUT;
         let status = loop {
             match child.try_wait() {
@@ -164,7 +171,11 @@ impl Hey {
                 Err(e) => return Err(self.fail(ErrorKind::AccountUnavailable, e.to_string())),
             }
         };
-        if status.success() { Ok(()) } else { Err(self.fail(ErrorKind::AccountAuth, format!("`hey auth login` didn't finish ({status})"))) }
+        if status.success() {
+            Ok(())
+        } else {
+            Err(self.fail(ErrorKind::AccountAuth, format!("`hey auth login` didn't finish ({status})")))
+        }
     }
 
     fn local<'a>(&self, id: &'a str) -> Result<&'a str> {
@@ -195,12 +206,27 @@ impl Hey {
         let (status, stdout, stderr) = match run_command(&mut cmd, stdin, TIMEOUT) {
             Run::Done { status, stdout, stderr } => (status, stdout, stderr),
             Run::Missing => {
-                return Err(self.fail(ErrorKind::AccountUnavailable, format!("the hey CLI isn't installed (no `{}` on PATH); see https://github.com/basecamp/hey-cli", self.command)));
+                return Err(self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!(
+                        "the hey CLI isn't installed (no `{}` on PATH); see https://github.com/basecamp/hey-cli",
+                        self.command
+                    ),
+                ));
             }
             Run::TimedOut => {
-                return Err(self.fail(ErrorKind::AccountUnavailable, format!("`hey {}` took longer than {}s", args.first().map(String::as_str).unwrap_or(""), TIMEOUT.as_secs())));
+                return Err(self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!(
+                        "`hey {}` took longer than {}s",
+                        args.first().map(String::as_str).unwrap_or(""),
+                        TIMEOUT.as_secs()
+                    ),
+                ));
             }
-            Run::Failed(e) => return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command))),
+            Run::Failed(e) => {
+                return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)));
+            }
         };
         if status.success() {
             return Ok(stdout);
@@ -219,7 +245,10 @@ impl Hey {
         let kind = match status.code() {
             Some(2) => ErrorKind::NotFound,
             Some(3) => {
-                return Err(self.fail(ErrorKind::AccountAuth, format!("not signed in ({message}); run `cloudmail account login {}`", self.name)));
+                return Err(self.fail(
+                    ErrorKind::AccountAuth,
+                    format!("not signed in ({message}); run `cloudmail account login {}`", self.name),
+                ));
             }
             Some(1 | 4 | 8) => ErrorKind::BadRequest,
             _ => ErrorKind::AccountUnavailable,
@@ -231,10 +260,20 @@ impl Hey {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<Value> {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let stdout = self.exec(&args, stdin, true)?;
-        let envelope: Value = serde_json::from_slice(&stdout)
-            .map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("`hey {}` answered something that isn't JSON ({e})", args.first().map(String::as_str).unwrap_or(""))))?;
+        let envelope: Value = serde_json::from_slice(&stdout).map_err(|e| {
+            self.fail(
+                ErrorKind::AccountUnavailable,
+                format!(
+                    "`hey {}` answered something that isn't JSON ({e})",
+                    args.first().map(String::as_str).unwrap_or("")
+                ),
+            )
+        })?;
         if envelope["ok"] != json!(true) {
-            return Err(self.fail(ErrorKind::AccountUnavailable, format!("`hey {}` failed: {}", args[0], text(&envelope["error"]))));
+            return Err(self.fail(
+                ErrorKind::AccountUnavailable,
+                format!("`hey {}` failed: {}", args[0], text(&envelope["error"])),
+            ));
         }
         Ok(envelope["data"].clone())
     }
@@ -250,7 +289,13 @@ impl Hey {
         let is_user = |c: &Value| c["contactable_type"] == "User";
         let creator = &p["creator"];
         let from = if is_user(creator) {
-            p["contacts"].as_array().into_iter().flatten().find(|c| !is_user(c)).map(contact).unwrap_or_else(|| contact(creator))
+            p["contacts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|c| !is_user(c))
+                .map(contact)
+                .unwrap_or_else(|| contact(creator))
         } else {
             let mut a = contact(creator);
             if let Some(alt) = nonempty(text(&p["alternative_sender_name"])) {
@@ -258,7 +303,13 @@ impl Hey {
             }
             a
         };
-        let to_address = p["addressed_contacts"].as_array().into_iter().flatten().find(|c| is_user(c)).map(|c| text(&c["email_address"])).and_then(nonempty);
+        let to_address = p["addressed_contacts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| is_user(c))
+            .map(|c| text(&c["email_address"]))
+            .and_then(nonempty);
         let kind = p["box"]["kind"].as_str().unwrap_or(fallback_kind);
         Some(ThreadSummary {
             id: match item {
@@ -381,7 +432,12 @@ fn unwrap_trix(body: &str) -> String {
         let after = &rest[i + OPEN.len()..];
         let Some(q) = after.find('"') else { break };
         let Some(end) = after[q..].find(CLOSE).map(|e| q + e) else { break };
-        let attr = after[..q].replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&#39;", "'").replace("&amp;", "&");
+        let attr = after[..q]
+            .replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&");
         let email = serde_json::from_str::<Value>(&attr)
             .ok()
             .filter(|j| j["contentType"] == "text/html")
@@ -389,7 +445,9 @@ fn unwrap_trix(body: &str) -> String {
         out.push_str(&rest[..i]);
         match email {
             Some(html) => out.push_str(
-                html.trim().trim_start_matches("<shadow-content><template>").trim_end_matches("</template></shadow-content>"),
+                html.trim()
+                    .trim_start_matches("<shadow-content><template>")
+                    .trim_end_matches("</template></shadow-content>"),
             ),
             None => out.push_str(&rest[i..i + OPEN.len() + end + CLOSE.len()]),
         }
@@ -425,7 +483,12 @@ impl Provider for Hey {
     }
 
     fn status(&self) -> AccountStatus {
-        let mut status = AccountStatus { name: self.name.clone(), provider: "hey".into(), label: "HEY".into(), ..Default::default() };
+        let mut status = AccountStatus {
+            name: self.name.clone(),
+            provider: "hey".into(),
+            label: "HEY".into(),
+            ..Default::default()
+        };
         match self.run(&["auth", "status"], None) {
             Ok(data) if data["authenticated"] == json!(true) => {
                 status.ok = true;
@@ -446,8 +509,13 @@ impl Provider for Hey {
             "screener" => self.screener_threads()?,
             "all" => {
                 let boxes = ["imbox", "feedbox", "trailbox", "asidebox", "laterbox"];
-                let results: Vec<Result<Vec<ThreadSummary>>> =
-                    std::thread::scope(|s| boxes.map(|b| s.spawn(move || self.box_threads(b, want))).into_iter().map(|h| h.join().unwrap_or_else(|_| Err(self.shape_error("box view")))).collect());
+                let results: Vec<Result<Vec<ThreadSummary>>> = std::thread::scope(|s| {
+                    boxes
+                        .map(|b| s.spawn(move || self.box_threads(b, want)))
+                        .into_iter()
+                        .map(|h| h.join().unwrap_or_else(|_| Err(self.shape_error("box view"))))
+                        .collect()
+                });
                 let mut all = Vec::new();
                 for r in results {
                     all.extend(r?);
@@ -460,7 +528,9 @@ impl Provider for Hey {
             },
         };
         self.remember(&list);
-        list.retain(|t| q.before.is_none_or(|b| t.last_at < b) && q.since.is_none_or(|s| t.last_at > s) && (!q.unread || t.unread));
+        list.retain(|t| {
+            q.before.is_none_or(|b| t.last_at < b) && q.since.is_none_or(|s| t.last_at > s) && (!q.unread || t.unread)
+        });
         list.sort_by_key(|t| std::cmp::Reverse(t.last_at));
         list.truncate(q.limit.max(1) as usize);
         Ok(list)
@@ -513,7 +583,13 @@ impl Provider for Hey {
             let own = s.spawn(|| self.own_addresses());
             let subject = s.spawn(|| if known.is_some() { None } else { self.subject_of(topic) });
             let entries = self.run(&["thread", "read", &topic.to_string()], None);
-            (entries, bodies.join().unwrap_or_default(), atts.join().unwrap_or_default(), own.join().unwrap_or_default(), subject.join().unwrap_or_default())
+            (
+                entries,
+                bodies.join().unwrap_or_default(),
+                atts.join().unwrap_or_default(),
+                own.join().unwrap_or_default(),
+                subject.join().unwrap_or_default(),
+            )
         });
         let entries = entries?;
         let entries = entries.as_array().ok_or_else(|| self.shape_error("thread read"))?;
@@ -534,7 +610,8 @@ impl Provider for Hey {
                 let entry = e["id"].as_i64().unwrap_or(0);
                 let creator = contact(&e["creator"]);
                 let sender = e.get("sender").map(contact).filter(|a| !a.email.is_empty());
-                let outgoing = own.contains(&creator.email.to_ascii_lowercase()) || sender.as_ref().is_some_and(|s| own.contains(&s.email.to_ascii_lowercase()));
+                let outgoing = own.contains(&creator.email.to_ascii_lowercase())
+                    || sender.as_ref().is_some_and(|s| own.contains(&s.email.to_ascii_lowercase()));
                 let mut from = sender.unwrap_or(creator);
                 if !outgoing && let Some(alt) = nonempty(text(&e["alternative_sender_name"])) {
                     from.name = Some(alt);
@@ -566,7 +643,10 @@ impl Provider for Hey {
             })
             .collect();
         for (message_id, a) in atts {
-            let target = messages.iter().position(|m| m.id.ends_with(&format!("/{message_id}"))).or(messages.len().checked_sub(1));
+            let target = messages
+                .iter()
+                .position(|m| m.id.ends_with(&format!("/{message_id}")))
+                .or(messages.len().checked_sub(1));
             if let Some(i) = target {
                 messages[i].attachments.push(a);
             }
@@ -589,14 +669,36 @@ impl Provider for Hey {
 
     fn move_thread(&self, id: &str, folder: &str) -> Result<()> {
         let (_, item) = self.ids(id)?;
-        let item = item.ok_or_else(|| self.fail(ErrorKind::BadRequest, format!("{id} isn't in a HEY box, so it can't be moved (list a box to get its full ID)")))?;
-        let kind = box_for(folder).ok_or_else(|| self.fail(ErrorKind::BadRequest, format!("HEY has no \"{folder}\" box")))?;
+        let item = item.ok_or_else(|| {
+            self.fail(
+                ErrorKind::BadRequest,
+                format!("{id} isn't in a HEY box, so it can't be moved (list a box to get its full ID)"),
+            )
+        })?;
+        let kind =
+            box_for(folder).ok_or_else(|| self.fail(ErrorKind::BadRequest, format!("HEY has no \"{folder}\" box")))?;
         self.run(&["move", &item.to_string(), "--to", kind], None).map(drop)
+    }
+
+    fn delete_thread(&self, id: &str) -> Result<()> {
+        let (_, item) = self.ids(id)?;
+        let item = item.ok_or_else(|| {
+            self.fail(
+                ErrorKind::BadRequest,
+                format!("{id} isn't in a HEY box, so it can't be deleted (list a box to get its full ID)"),
+            )
+        })?;
+        self.run(&["trash", &item.to_string()], None).map(drop)
     }
 
     fn set_unread(&self, id: &str, unread: bool) -> Result<()> {
         let (_, item) = self.ids(id)?;
-        let item = item.ok_or_else(|| self.fail(ErrorKind::BadRequest, format!("{id} isn't in a HEY box, so it can't be marked (list a box to get its full ID)")))?;
+        let item = item.ok_or_else(|| {
+            self.fail(
+                ErrorKind::BadRequest,
+                format!("{id} isn't in a HEY box, so it can't be marked (list a box to get its full ID)"),
+            )
+        })?;
         self.run(&[if unread { "unseen" } else { "seen" }, &item.to_string()], None).map(drop)
     }
 
@@ -622,7 +724,10 @@ impl Provider for Hey {
     }
 
     fn decide_sender(&self, id: &str, status: &str) -> Result<i64> {
-        let clearance = self.local(id)?.parse::<i64>().map_err(|_| self.fail(ErrorKind::NotFound, format!("no Screener sender {id}")))?;
+        let clearance = self
+            .local(id)?
+            .parse::<i64>()
+            .map_err(|_| self.fail(ErrorKind::NotFound, format!("no Screener sender {id}")))?;
         let verb = match status {
             "approved" => "approve",
             "blocked" => "deny",
@@ -665,7 +770,13 @@ impl Provider for Hey {
             }
             None => {
                 thread_id = String::new();
-                args = vec!["compose".into(), "--to".into(), bare(&req.to).join(","), "--subject".into(), req.subject.clone()];
+                args = vec![
+                    "compose".into(),
+                    "--to".into(),
+                    bare(&req.to).join(","),
+                    "--subject".into(),
+                    req.subject.clone(),
+                ];
                 for (flag, list) in [("--cc", &req.cc), ("--bcc", &req.bcc)] {
                     if !list.is_empty() {
                         args.push(flag.into());
@@ -683,11 +794,14 @@ impl Provider for Hey {
         let files = if req.attachments.is_empty() {
             None
         } else {
-            let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey-send").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}")))?;
+            let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey-send").map_err(|e| {
+                self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}"))
+            })?;
             for (i, a) in req.attachments.iter().enumerate() {
-                let path = dir
-                    .write(&i.to_string(), &crate::attach::safe_filename(&a.filename), &a.content)
-                    .map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not write {} for hey: {e}", a.filename)))?;
+                let path =
+                    dir.write(&i.to_string(), &crate::attach::safe_filename(&a.filename), &a.content).map_err(|e| {
+                        self.fail(ErrorKind::AccountUnavailable, format!("could not write {} for hey: {e}", a.filename))
+                    })?;
                 args.push("--attach".into());
                 args.push(path.to_string_lossy().into_owned());
             }
@@ -706,13 +820,21 @@ impl Provider for Hey {
 
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let local = self.local(id)?.to_string();
-        let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey").map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}")))?;
+        let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey").map_err(|e| {
+            self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}"))
+        })?;
         let result = (|| {
             let target = format!("{}/", dir.path().display());
             let data = self.run(&["attachment", "save", &local, "--output", &target, "--force"], None)?;
-            let path = data["path"].as_str().map(std::path::PathBuf::from).ok_or_else(|| self.shape_error("attachment save"))?;
-            let bytes = std::fs::read(&path).map_err(|e| self.fail(ErrorKind::AccountUnavailable, format!("could not read the saved attachment: {e}")))?;
-            let filename = nonempty(text(&data["filename"])).or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()));
+            let path = data["path"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| self.shape_error("attachment save"))?;
+            let bytes = std::fs::read(&path).map_err(|e| {
+                self.fail(ErrorKind::AccountUnavailable, format!("could not read the saved attachment: {e}"))
+            })?;
+            let filename = nonempty(text(&data["filename"]))
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()));
             Ok(Download { bytes, content_type: None, filename })
         })();
         drop(dir);
@@ -732,7 +854,10 @@ impl Hey {
                     subject: text(&c["subject"]),
                     folder: "screener".into(),
                     snippet: text(&c["summary"]),
-                    from: Some(Address { name: nonempty(text(&c["name"])), email: text(&c["email_address"]).to_ascii_lowercase() }),
+                    from: Some(Address {
+                        name: nonempty(text(&c["name"])),
+                        email: text(&c["email_address"]).to_ascii_lowercase(),
+                    }),
                     to_address: None,
                     message_count: 1,
                     unread: true,
@@ -783,12 +908,15 @@ mod tests {
 
     #[test]
     fn received_html_comes_out_of_its_trix_attachment() {
-        let email = "<shadow-content><template><div style=\"color: red\">Hi &amp; bye</div></template></shadow-content>";
-        let attr = serde_json::to_string(&json!({ "contentType": "text/html", "content": email, "data": "{}" })).unwrap();
+        let email =
+            "<shadow-content><template><div style=\"color: red\">Hi &amp; bye</div></template></shadow-content>";
+        let attr =
+            serde_json::to_string(&json!({ "contentType": "text/html", "content": email, "data": "{}" })).unwrap();
         let attr = attr.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
         let body = format!("<div><figure data-trix-attachment=\"{attr}\"></figure></div>");
         assert_eq!(unwrap_trix(&body), "<div><div style=\"color: red\">Hi &amp; bye</div></div>");
-        let image = "<figure data-trix-attachment=\"{&quot;contentType&quot;:&quot;image/png&quot;}\"><img src=\"x\"></figure>";
+        let image =
+            "<figure data-trix-attachment=\"{&quot;contentType&quot;:&quot;image/png&quot;}\"><img src=\"x\"></figure>";
         assert_eq!(unwrap_trix(image), image, "other attachments stay");
         assert_eq!(unwrap_trix("<p>plain</p>"), "<p>plain</p>");
     }

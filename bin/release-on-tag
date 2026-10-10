@@ -102,7 +102,7 @@ if ((dry_run)); then
   exit 0
 fi
 
-notify "Cloudmail $version" "Building and signing the release; gpg will ask for the signing key's passphrase"
+notify "Cloudmail $version" "Waiting for native package CI, then signing locally"
 step "bin/release $version"
 bin/release "$version" || fail "bin/release stopped"
 
@@ -114,4 +114,4 @@ else
   notify "Cloudmail $version" "Released, but the omarchy-pkgs bump failed (log: $log)"
 fi
 step "Done: Cloudmail $version is released"
-notify "Cloudmail $version released" "Published and verified; omarchy update brings it in"
+notify "Cloudmail $version released" "Published both architectures; native installation checks are running"

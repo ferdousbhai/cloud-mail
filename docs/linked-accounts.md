@@ -1,4 +1,4 @@
-# Linked accounts: HEY and Gmail
+# Linked accounts: HEY, Gmail and iCloud Mail
 
 Optional. Until you add an account, nothing changes. Back to the [README](../README.md).
 
@@ -43,11 +43,11 @@ line says what's wrong with HEY. The CLI puts it in `meta.warnings` and on stder
 Gmail can sit next to your mail the same way, in the app and the CLI, and again nothing changes until
 you add it. Cloudmail reaches Gmail through Google's own
 [Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in and no Google
-Cloud setup of your own: Cloudmail brings its own Google sign-in.
+Cloud setup of your own: Cloudmail brings its own Google sign-in. When `gws` isn't installed,
+`account add gmail` installs it for you with npm, into `~/.local/share/cloudmail/gws` (no sudo).
 
 ```sh
-npm install -g @googleworkspace/cli   # installs `gws`
-cloudmail account add gmail           # opens Google's sign-in in your browser, once
+cloudmail account add gmail           # installs gws if needed, then opens Google's sign-in, once
 cloudmail account list
 cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
 ```
@@ -62,7 +62,7 @@ reads or changes. A second Gmail account links with `cloudmail account add gmail
 |---|---|---|
 | Inbox | Inbox | Inbox (unread = Gmail's unread) |
 | Archive (`e`) | Archive | Gmail's archive: the thread leaves the Inbox, `i` brings it back |
-| Screener | Screener | (Gmail has no Screener: its mail goes straight to the Inbox) |
+| Screener | Screener | your Screener decides (see [One Screener](#one-screener-for-gmail-and-icloud-mail)) |
 | Sent | Sent | Sent |
 | Search | full-text search | Gmail search (its own syntax works: `from:ana has:attachment`) |
 
@@ -82,3 +82,52 @@ one line says what's wrong. When a sign-in has expired or been revoked (Gmail or
 `cloudmail account login gmail` (or `hey`) signs in again. Each listing reads Gmail's threads one `gws` run at a time (a
 few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
 takes a moment; your own mail doesn't wait for it.
+
+## iCloud Mail
+
+iCloud Mail can sit next to your mail the same way. Cloudmail reaches it the way icloud.com's own
+Mail does, through its web services, with the iCloud sign-in that
+[icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every app on the
+computer (it comes with icloud-for-omarchy). There's no password to give Cloudmail and no IMAP;
+icloud-session's own window handles Apple's sign-in and two-factor prompts.
+
+```sh
+cloudmail account add icloud      # opens icloud-session's sign-in window if you aren't signed in
+cloudmail account list
+cloudmail account remove icloud   # unlink; icloud-session stays signed in for your other apps
+```
+
+Your addresses, aliases and custom-domain addresses come from iCloud Mail's own settings, and you
+write as the name shown there, else your iCloud account's name.
+
+| In Cloudmail | Your worker | iCloud Mail |
+|---|---|---|
+| Inbox | Inbox | Inbox (unread = not yet read in Mail) |
+| Archive (`e`) | Archive | the Archive mailbox; `i` brings a thread back |
+| Screener | Screener | your Screener decides (below) |
+| Sent | Sent | Sent Messages |
+| Search | full-text search | iCloud's own search of the Inbox, Archive and Sent Messages |
+
+iCloud threads carry a small **iCloud** tag; their IDs start with `icloud:`. Reading, replying
+(threaded), writing from any of your iCloud addresses, attachments, marking read/unread, archiving
+and `cloudmail raw` all go through iCloud. Listing and `cloudmail thread read` never mark mail read;
+opening a thread in the app does, as in Mail.
+
+**If iCloud is unavailable** (offline, signed out, or icloud-session's keyring locked), your own
+mail loads as usual and one line says what's wrong. `cloudmail account login icloud`, or the app's
+**Sign in** button, opens icloud-session's sign-in window.
+
+## One Screener for Gmail and iCloud Mail
+
+Gmail and iCloud Mail have no Screener, so your worker's decides for them: one decision per sender,
+wherever their mail comes.
+
+- Mail from someone with no decision yet waits in the Screener and stays out of your Inbox.
+- Yes: their mail is in your Inbox from then on, in every account.
+- No: their mail is left out of everything but Archive and Sent, and their threads in that
+  account's Inbox are archived there too, so they leave the Inbox on your phone as well. Mail they
+  send later still lands in the account's own Inbox (Gmail and iCloud decide that), but never shows
+  in Cloudmail.
+- Linking an account screens in the people it already corresponds with (its Inbox's senders and
+  whoever its sent mail went to), and whoever you write to through it is screened in, as your
+  worker does for its own mail. A no is never undone by linking.

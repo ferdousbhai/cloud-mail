@@ -5,6 +5,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter, o", "Focus the message (scroll with arrows/space)"),
     ("e", "Archive"),
     ("i", "Move to Inbox"),
+    ("#", "Delete (a linked account's: to its Trash)"),
     ("u", "Toggle unread"),
     ("r", "Reply"),
     ("a", "Reply all"),

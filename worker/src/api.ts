@@ -1,5 +1,5 @@
 import { deleteMailbox, getSettings, mailboxes, updateSettings, upsertMailbox } from "./mailboxes";
-import { deleteThread, senderStatus, setSenderStatus, storeMessage } from "./store";
+import { deleteThread, senderStatus, setSenderStatus, setSenderStatuses, storeMessage } from "./store";
 import {
   type Address,
   arrayBufferToBase64,
@@ -476,6 +476,35 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
       .bind(status)
       .all();
     return json({ senders: rows.results });
+  }
+
+  // Decisions for linked accounts' senders (Gmail, iCloud Mail), which your Screener decides:
+  // their mail isn't stored here, so these only read and record decisions.
+  if (method === "POST" && path === "/api/senders/lookup") {
+    const body = await readJson<{ emails?: unknown }>(req);
+    if (!Array.isArray(body?.emails) || body.emails.length > 1000) return error("emails must be a list of at most 1000 addresses");
+    const emails = [...new Set(body.emails.filter((e): e is string => typeof e === "string").map(normalizeEmail).filter((e) => e.includes("@")))];
+    const found: { email: string; status: string }[] = [];
+    for (let i = 0; i < emails.length; i += 90) {
+      const chunk = emails.slice(i, i + 90);
+      const rows = await env.DB.prepare(`SELECT email, status FROM senders WHERE email IN (${chunk.map(() => "?").join(",")})`)
+        .bind(...chunk)
+        .all<{ email: string; status: string }>();
+      found.push(...rows.results);
+    }
+    return json({ senders: found });
+  }
+
+  if (method === "POST" && path === "/api/senders/batch") {
+    const body = await readJson<{ senders?: unknown; status?: string; only_undecided?: boolean }>(req);
+    if (body?.status !== "approved" && body?.status !== "blocked") return error("status must be approved or blocked");
+    if (!Array.isArray(body.senders) || body.senders.length > 1000) return error("senders must be a list of at most 1000 {email, name}");
+    const senders = body.senders
+      .filter((s): s is { email: string; name?: unknown } => typeof s === "object" && s !== null && typeof (s as { email?: unknown }).email === "string")
+      .map((s) => ({ email: normalizeEmail(s.email), name: typeof s.name === "string" && s.name.trim() ? s.name.trim() : null }))
+      .filter((s) => s.email.includes("@"));
+    const changed = await setSenderStatuses(env, senders, body.status, body.only_undecided === true);
+    return json({ ok: true, changed });
   }
 
   if (method === "POST" && (m = path.match(/^\/api\/senders\/([^/]+)$/))) {

@@ -1,0 +1,47 @@
+name: Native packages
+# Builds the release packages on native runners for both architectures; bin/release signs and
+# publishes them. Everyday checks run locally with bin/check (and before every push), not here.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash packaging/repo/test.sh
+      - run: python3 packaging/repo/test_arch.py
+      - run: bash -n bin/build-package bin/release bin/verify-release
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare native Arch Linux ARM image
+        if: matrix.arch == 'aarch64'
+        run: |
+          curl --fail --location --retry 3 https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz -o /tmp/archlinuxarm.tar.gz
+          docker import /tmp/archlinuxarm.tar.gz cloudmail-archlinuxarm:ci
+      - name: Build and test native package
+        env:
+          ARM_BUILD_IMAGE: cloudmail-archlinuxarm:ci
+        run: bin/build-package '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloudmail-${{ matrix.arch }}
+          path: |
+            target/packages/${{ matrix.arch }}/*.pkg.tar.zst
+            target/packages/${{ matrix.arch }}/source-commit.txt
+          if-no-files-found: error

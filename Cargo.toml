@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/cloudmail-api", "crates/cloudmail", "crates/cloudmail-gtk"]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 # The CLI and API crates need let chains (1.88); cloudmail-gtk overrides this with 1.92 for gtk4-rs 0.11.
 rust-version = "1.88"
@@ -24,3 +24,10 @@ base64 = "0.23.1"
 [profile.release]
 lto = "thin"
 strip = true
+
+# ureq 3.4.2 hands a timed socket read's EINTR straight back as an error. A child spawned on
+# another thread (gws, hey) can route its SIGCHLD to the thread waiting on the worker, failing
+# that request with "Interrupted system call". Fixed upstream in algesten/ureq#1205, not yet
+# released; drop this once a ureq release after 3.4.2 includes it.
+[patch.crates-io]
+ureq = { git = "https://github.com/algesten/ureq", rev = "0ebb046e1cf269592f9edb3a55f489d508f47a1d" }

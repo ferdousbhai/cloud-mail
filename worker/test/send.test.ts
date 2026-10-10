@@ -219,3 +219,22 @@ test("a reply with an attachment joins the thread", async () => {
   expect(thread.thread.has_attachments).toBe(true);
   expect(thread.messages.map((m) => m.attachments.length)).toEqual([0, 1]);
 });
+
+test("linked accounts' senders: looked up and decided in bulk, a no kept when screening in", async () => {
+  expect((await api("POST", "/api/senders/ann%40x.com", { status: "blocked" })).status).toBe(200);
+  let r = await api("POST", "/api/senders/batch", {
+    senders: [{ email: "Ann@X.com", name: "Ann" }, { email: "bob@y.com", name: "Bob" }, { email: "nope" }],
+    status: "approved",
+    only_undecided: true,
+  });
+  expect(await r.json()).toEqual({ ok: true, changed: 1 });
+  r = await api("POST", "/api/senders/lookup", { emails: ["ANN@x.com", "bob@y.com", "carol@z.com"] });
+  const found = ((await r.json()) as { senders: { email: string; status: string }[] }).senders;
+  expect(found.sort((a, b) => a.email.localeCompare(b.email))).toEqual([
+    { email: "ann@x.com", status: "blocked" },
+    { email: "bob@y.com", status: "approved" },
+  ]);
+  r = await api("POST", "/api/senders/batch", { senders: [{ email: "ann@x.com" }], status: "approved" });
+  expect(await r.json()).toEqual({ ok: true, changed: 1 });
+  expect((await api("POST", "/api/senders/batch", { senders: [], status: "maybe" })).status).toBe(400);
+});

@@ -47,7 +47,14 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         .build();
     window.add_css_class("compose");
 
-    let grid = gtk::Grid::builder().row_spacing(8).column_spacing(10).margin_top(14).margin_bottom(14).margin_start(14).margin_end(14).build();
+    let grid = gtk::Grid::builder()
+        .row_spacing(8)
+        .column_spacing(10)
+        .margin_top(14)
+        .margin_bottom(14)
+        .margin_start(14)
+        .margin_end(14)
+        .build();
     let field = |row: i32, name: &str, widget: &gtk::Widget| {
         let label = gtk::Label::builder().label(name).xalign(1.0).build();
         label.add_css_class("field-label");
@@ -68,7 +75,13 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     let body = gtk::TextView::builder().wrap_mode(gtk::WrapMode::WordChar).accepts_tab(false).vexpand(true).build();
     body.buffer().set_text(&draft.body);
     body.buffer().place_cursor(&body.buffer().start_iter());
-    let chips = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).column_spacing(6).row_spacing(6).max_children_per_line(20).visible(false).build();
+    let chips = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .column_spacing(6)
+        .row_spacing(6)
+        .max_children_per_line(20)
+        .visible(false)
+        .build();
     chips.add_css_class("attachments");
     grid.attach(&chips, 0, 4, 2, 1);
     let scroller = gtk::ScrolledWindow::builder().child(&body).vexpand(true).hexpand(true).build();
@@ -111,14 +124,20 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
 
     *c.initial.borrow_mut() = fields(&c);
     // The title-bar close button and the compositor's close (Super+W) ask first, like Esc.
-    c.window.connect_close_request(clone!(#[weak] c, #[upgrade_or] glib::Propagation::Proceed, move |_| {
-        if is_dirty(&c) {
-            close(&c);
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
+    c.window.connect_close_request(clone!(
+        #[weak]
+        c,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_| {
+            if is_dirty(&c) {
+                close(&c);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
         }
-    }));
+    ));
 
     // Signal handlers only hold weak refs; the window owns the compose state.
     let keep = RefCell::new(Some(c.clone()));
@@ -130,32 +149,57 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         let wanted = draft.from;
         util::run(
             move || client.identities(),
-            clone!(#[weak] ui, #[strong] c, move |result| {
-                if let Ok(ids) = result {
-                    *ui.identities.borrow_mut() = Some(ids);
-                    if c.window.is_visible() {
-                        fill_from(&c, &ui, wanted.as_deref());
+            clone!(
+                #[weak]
+                ui,
+                #[strong]
+                c,
+                move |result| {
+                    if let Ok(ids) = result {
+                        *ui.identities.borrow_mut() = Some(ids);
+                        if c.window.is_visible() {
+                            fill_from(&c, &ui, wanted.as_deref());
+                        }
                     }
                 }
-            }),
+            ),
         );
     }
 
-    c.send.connect_clicked(clone!(#[weak] ui, #[weak] c, move |_| send_message(&c, &ui)));
-    attach.connect_clicked(clone!(#[weak] c, move |_| choose_files(&c)));
+    c.send.connect_clicked(clone!(
+        #[weak]
+        ui,
+        #[weak]
+        c,
+        move |_| send_message(&c, &ui)
+    ));
+    attach.connect_clicked(clone!(
+        #[weak]
+        c,
+        move |_| choose_files(&c)
+    ));
 
     // Files dropped anywhere on the window are attached (before the body could take them as text).
     let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
     drop.set_propagation_phase(gtk::PropagationPhase::Capture);
-    drop.connect_drop(clone!(#[weak] c, #[upgrade_or] false, move |_, value, _, _| on_drop(&c, value)));
+    drop.connect_drop(clone!(
+        #[weak]
+        c,
+        #[upgrade_or]
+        false,
+        move |_, value, _, _| on_drop(&c, value)
+    ));
     c.window.add_controller(drop);
 
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     keys.connect_key_pressed(clone!(
-        #[weak] ui,
-        #[weak] c,
-        #[upgrade_or] glib::Propagation::Proceed,
+        #[weak]
+        ui,
+        #[weak]
+        c,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
         move |_, key, _, mods| {
             if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) && mods.contains(gdk::ModifierType::CONTROL_MASK) {
                 send_message(&c, &ui);
@@ -208,19 +252,22 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
     }
     // A reply in a linked account always goes out through it, from its address, even before
     // that account's addresses have loaded.
-    let account_reply = c.reply_to_message_id.as_deref().and_then(|id| id.split_once(':')).map(|(account, _)| account.to_string());
+    let account_reply =
+        c.reply_to_message_id.as_deref().and_then(|id| id.split_once(':')).map(|(account, _)| account.to_string());
     if let (Some(account), Some(w)) = (account_reply, wanted.filter(|w| !w.is_empty()))
-        && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w)) {
-            options.push(Address { name: None, email: w.to_string() });
-            via.push(Some(crate::api::provider::account_label(&account)));
-        }
+        && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w))
+    {
+        options.push(Address { name: None, email: w.to_string() });
+        via.push(Some(crate::api::provider::account_label(&account)));
+    }
     // Before your mailboxes load, show the wanted address alone; after, only mailboxes can send.
     if let Some(w) = wanted.filter(|w| !w.is_empty())
-        && options.is_empty() {
-            let name = ids.as_ref().and_then(|i| i.default.as_ref()).and_then(|d| d.name.clone());
-            options.push(Address { name, email: w.to_string() });
-            via.push(None);
-        }
+        && options.is_empty()
+    {
+        let name = ids.as_ref().and_then(|i| i.default.as_ref()).and_then(|d| d.name.clone());
+        options.push(Address { name, email: w.to_string() });
+        via.push(None);
+    }
     let labels: Vec<String> = options
         .iter()
         .zip(&via)
@@ -231,9 +278,7 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
         .collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     c.from.set_model(Some(&gtk::StringList::new(&refs)));
-    let selected = wanted
-        .and_then(|w| options.iter().position(|o| o.email.eq_ignore_ascii_case(w)))
-        .unwrap_or(0);
+    let selected = wanted.and_then(|w| options.iter().position(|o| o.email.eq_ignore_ascii_case(w))).unwrap_or(0);
     c.from.set_selected(selected as u32);
     *c.from_emails.borrow_mut() = options.into_iter().map(|a| a.email).collect();
 }
@@ -275,21 +320,27 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
     c.send.set_label("Sending…");
     util::run(
         move || mail.send(&req),
-        clone!(#[weak] ui, #[strong] c, move |result: Result<crate::api::SendResponse, String>| match result {
-            Ok(resp) => {
-                c.window.destroy();
-                match &resp.warning {
-                    Some(w) => ui.toast(&format!("Sent, but {w}")),
-                    None => ui.toast("Sent"),
+        clone!(
+            #[weak]
+            ui,
+            #[strong]
+            c,
+            move |result: Result<crate::api::SendResponse, String>| match result {
+                Ok(resp) => {
+                    c.window.destroy();
+                    match &resp.warning {
+                        Some(w) => ui.toast(&format!("Sent, but {w}")),
+                        None => ui.toast("Sent"),
+                    }
+                    ui.after_send(resp.thread_id.as_deref());
                 }
-                ui.after_send(resp.thread_id.as_deref());
+                Err(e) => {
+                    c.send.set_sensitive(true);
+                    c.send.set_label("Send");
+                    c.error.set_label(&format!("Couldn't send: {e}"));
+                }
             }
-            Err(e) => {
-                c.send.set_sensitive(true);
-                c.send.set_label("Send");
-                c.error.set_label(&format!("Couldn't send: {e}"));
-            }
-        }),
+        ),
     );
 }
 
@@ -299,7 +350,9 @@ fn is_dirty(c: &Compose) -> bool {
 
 /// Whether closing would lose something: an edited, non-empty field, or any attached file.
 fn dirty(now: &[String; 4], initial: &[String; 4], attachments: usize) -> bool {
-    attachments > 0 || (now.iter().zip(initial.iter()).any(|(a, b)| a.trim() != b.trim()) && now.iter().any(|f| !f.trim().is_empty()))
+    attachments > 0
+        || (now.iter().zip(initial.iter()).any(|(a, b)| a.trim() != b.trim())
+            && now.iter().any(|f| !f.trim().is_empty()))
 }
 
 /// "report.pdf" and "1.2 MB", for a chip.
@@ -309,11 +362,22 @@ fn chip_text(a: &OutgoingAttachment) -> (String, String) {
 
 fn choose_files(c: &Rc<Compose>) {
     let dialog = gtk::FileDialog::builder().title("Attach files").accept_label("Attach").modal(true).build();
-    dialog.open_multiple(Some(&c.window), gio::Cancellable::NONE, clone!(#[weak] c, move |result| {
-        if let Ok(model) = result {
-            add_files(&c, (0..model.n_items()).filter_map(|i| model.item(i).and_downcast::<gio::File>()).collect());
-        }
-    }));
+    dialog.open_multiple(
+        Some(&c.window),
+        gio::Cancellable::NONE,
+        clone!(
+            #[weak]
+            c,
+            move |result| {
+                if let Ok(model) = result {
+                    add_files(
+                        &c,
+                        (0..model.n_items()).filter_map(|i| model.item(i).and_downcast::<gio::File>()).collect(),
+                    );
+                }
+            }
+        ),
+    );
 }
 
 fn on_drop(c: &Rc<Compose>, value: &glib::Value) -> bool {
@@ -345,17 +409,21 @@ fn add_files(c: &Rc<Compose>, files: Vec<gio::File>) {
                     .collect::<Vec<_>>(),
             )
         },
-        clone!(#[weak] c, move |result: Result<Vec<Result<OutgoingAttachment, String>>, String>| {
-            let mut problem = None;
-            for r in result.unwrap_or_else(|e| vec![Err(e)]) {
-                match r {
-                    Ok(a) => c.attachments.borrow_mut().push(a),
-                    Err(e) => problem = problem.or(Some(e)),
+        clone!(
+            #[weak]
+            c,
+            move |result: Result<Vec<Result<OutgoingAttachment, String>>, String>| {
+                let mut problem = None;
+                for r in result.unwrap_or_else(|e| vec![Err(e)]) {
+                    match r {
+                        Ok(a) => c.attachments.borrow_mut().push(a),
+                        Err(e) => problem = problem.or(Some(e)),
+                    }
                 }
+                c.error.set_label(&problem.map(|e| format!("Couldn't attach: {e}")).unwrap_or_default());
+                render_chips(&c);
             }
-            c.error.set_label(&problem.map(|e| format!("Couldn't attach: {e}")).unwrap_or_default());
-            render_chips(&c);
-        }),
+        ),
     );
 }
 
@@ -367,19 +435,29 @@ fn render_chips(c: &Rc<Compose>) {
         chip.add_css_class("attachment-chip");
         chip.set_halign(gtk::Align::Start);
         chip.set_tooltip_text(Some(&a.mime_type));
-        chip.append(&gtk::Label::builder().label(&name).ellipsize(gtk::pango::EllipsizeMode::Middle).max_width_chars(32).build());
+        chip.append(
+            &gtk::Label::builder()
+                .label(&name)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .max_width_chars(32)
+                .build(),
+        );
         let size = gtk::Label::new(Some(&size));
         size.add_css_class("dim");
         chip.append(&size);
         let remove = gtk::Button::with_label("×");
         remove.add_css_class("flat");
         remove.set_tooltip_text(Some(&format!("Remove {name}")));
-        remove.connect_clicked(clone!(#[weak] c, move |_| {
-            if i < c.attachments.borrow().len() {
-                c.attachments.borrow_mut().remove(i);
+        remove.connect_clicked(clone!(
+            #[weak]
+            c,
+            move |_| {
+                if i < c.attachments.borrow().len() {
+                    c.attachments.borrow_mut().remove(i);
+                }
+                render_chips(&c);
             }
-            render_chips(&c);
-        }));
+        ));
         chip.append(&remove);
         c.chips.append(&chip);
     }
@@ -389,7 +467,8 @@ fn render_chips(c: &Rc<Compose>) {
 /// Debug builds: drops `path` on the open compose window, as dragging it there would.
 #[cfg(debug_assertions)]
 pub fn drop_on_open(path: &str) -> bool {
-    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let open =
+        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
     let Some(c) = open else { return false };
     on_drop(&c, &gdk::FileList::from_array(&[gio::File::for_path(path)]).to_value())
 }
@@ -397,15 +476,21 @@ pub fn drop_on_open(path: &str) -> bool {
 /// Debug builds: clicks the remove button on the open compose window's `i`th chip.
 #[cfg(debug_assertions)]
 pub fn unattach_on_open(i: usize) -> bool {
-    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
-    let button = open.and_then(|c| c.chips.child_at_index(i as i32)).and_then(|chip| chip.child()).and_then(|b| b.last_child()).and_downcast::<gtk::Button>();
+    let open =
+        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let button = open
+        .and_then(|c| c.chips.child_at_index(i as i32))
+        .and_then(|chip| chip.child())
+        .and_then(|b| b.last_child())
+        .and_downcast::<gtk::Button>();
     button.map(|b| b.emit_clicked()).is_some()
 }
 
 /// Debug builds: the open compose window's attachments, and whether it has unsaved changes.
 #[cfg(debug_assertions)]
 pub fn open_state() -> Option<(Vec<String>, bool)> {
-    let open = OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()))?;
+    let open =
+        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()))?;
     let names = open.attachments.borrow().iter().map(|a| a.filename.clone()).collect();
     Some((names, is_dirty(&open)))
 }
@@ -416,7 +501,11 @@ fn close(c: &Rc<Compose>) {
         return;
     }
     let dialog = gtk::AlertDialog::builder()
-        .message(if c.attachments.borrow().is_empty() { "Discard this draft?" } else { "Discard this draft and its attachments?" })
+        .message(if c.attachments.borrow().is_empty() {
+            "Discard this draft?"
+        } else {
+            "Discard this draft and its attachments?"
+        })
         .detail("Drafts aren't saved.")
         .buttons(["Keep editing", "Discard"])
         .cancel_button(0)
@@ -451,7 +540,11 @@ mod tests {
 
     #[test]
     fn chips_show_name_and_size() {
-        let a = OutgoingAttachment { filename: "report.pdf".into(), mime_type: "application/pdf".into(), content: vec![0; 1536] };
+        let a = OutgoingAttachment {
+            filename: "report.pdf".into(),
+            mime_type: "application/pdf".into(),
+            content: vec![0; 1536],
+        };
         assert_eq!(chip_text(&a), ("report.pdf".to_string(), "2 KB".to_string()));
     }
 }

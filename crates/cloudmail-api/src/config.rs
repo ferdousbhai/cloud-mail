@@ -31,8 +31,15 @@ pub struct AccountConfig {
     /// Gmail: a Google OAuth client to sign in with instead of the one built into cloudmail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The secret of `client_id`. Kept in the keyring (`client_secret_name`), never written here;
+    /// read from the file only to move an older version's into the keyring.
+    #[serde(default, skip_serializing)]
     pub client_secret: Option<String>,
+}
+
+/// The keyring name of a linked account's own OAuth client secret.
+pub fn client_secret_name(account: &str) -> String {
+    format!("client_secret:{account}")
 }
 
 impl AccountConfig {
@@ -46,7 +53,9 @@ impl AccountConfig {
 pub struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Kept in the keyring (`keyring::API_TOKEN`), never written here; read from the file only to
+    /// move an older version's into the keyring.
+    #[serde(default, skip_serializing)]
     pub api_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_seconds: Option<u32>,
@@ -92,12 +101,13 @@ pub fn read_file(path: &Path) -> Result<Option<FileConfig>> {
 pub fn save(file: &FileConfig) -> Result<PathBuf> {
     let p = path();
     let text = toml::to_string(file).map_err(|e| Error::new(ErrorKind::Config, e.to_string()))?;
-    write_private(&p, &text).map_err(|e| Error::new(ErrorKind::Config, format!("could not write {}: {e}", p.display())))?;
+    write_private(&p, &text)
+        .map_err(|e| Error::new(ErrorKind::Config, format!("could not write {}: {e}", p.display())))?;
     Ok(p)
 }
 
-/// Writes a file readable only by the current user (it holds the API token).
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+/// Writes a file readable only by the current user.
+pub(crate) fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -148,15 +158,64 @@ pub fn env_overrides() -> Vec<&'static str> {
     API_URL_ENV.into_iter().zip(API_TOKEN_ENV).flat_map(|(u, t)| [u, t]).filter(|k| env_value(k).is_some()).collect()
 }
 
-/// Loads config from env (CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN, legacy CLOUD_MAIL_*) over the file.
+/// Moves secrets an older version wrote into config.toml (the API token, a Gmail OAuth client's
+/// secret) into the keyring, then rewrites the file without them. Once, on the first load that
+/// finds any; fails, leaving the file as it is, when the keyring can't take them.
+pub fn migrate_secrets(file: &mut FileConfig) -> Result<bool> {
+    let tokens = file.api_token.is_some() || file.accounts.values().any(|a| a.client_secret.is_some());
+    if !tokens {
+        return Ok(false);
+    }
+    let moving = |e: Error| {
+        Error::new(
+            e.kind,
+            format!("{} still holds secrets that belong in the keyring: {}", path().display(), e.message),
+        )
+    };
+    if let Some(token) = file.api_token.take().filter(|t| !t.trim().is_empty()) {
+        crate::keyring::set(crate::keyring::API_TOKEN, "Cloudmail API token", token.trim()).map_err(moving)?;
+    }
+    for (name, account) in &mut file.accounts {
+        if let Some(secret) = account.client_secret.take().filter(|s| !s.trim().is_empty()) {
+            crate::keyring::set(
+                &client_secret_name(name),
+                &format!("Cloudmail {name} OAuth client secret"),
+                secret.trim(),
+            )
+            .map_err(moving)?;
+        }
+    }
+    save(file)?;
+    Ok(true)
+}
+
+/// The API token kept in the keyring, if any.
+pub fn keyring_token() -> Result<Option<String>> {
+    crate::keyring::get(crate::keyring::API_TOKEN)
+}
+
+/// Loads config: the URL from env (CLOUDMAIL_API_URL, legacy CLOUD_MAIL_*) over the file, the token
+/// from env (CLOUDMAIL_API_TOKEN) over the keyring.
 pub fn load() -> Result<Config> {
     migrate_legacy();
-    let file = match read_file(&path())? {
+    let mut file = match read_file(&path())? {
         Some(f) => f,
         None => read_file(&legacy_path())?.unwrap_or_default(),
     };
+    migrate_secrets(&mut file)?;
     let api_url = env(&API_URL_ENV).or(file.api_url).filter(|v| !v.trim().is_empty());
-    let api_token = env(&API_TOKEN_ENV).or(file.api_token).filter(|v| !v.trim().is_empty());
+    let api_token = match env(&API_TOKEN_ENV) {
+        Some(t) => Some(t),
+        // Only an install that has a worker has a token to look for.
+        None if api_url.is_some() => crate::keyring::get(crate::keyring::API_TOKEN)?,
+        None => None,
+    }
+    .filter(|v| !v.trim().is_empty());
+    for (name, account) in &mut file.accounts {
+        if account.client_id.is_some() {
+            account.client_secret = crate::keyring::get(&client_secret_name(name))?;
+        }
+    }
 
     match (api_url, api_token) {
         (Some(api_url), Some(api_token)) => Ok(Config {
@@ -168,9 +227,12 @@ pub fn load() -> Result<Config> {
         (url, _) => Err(Error::new(
             ErrorKind::Config,
             format!(
-                "cloudmail isn't configured: {} is missing from {} (or CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN)",
-                if url.is_none() { "api_url" } else { "api_token" },
-                path().display()
+                "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail setup` sets both",
+                if url.is_none() {
+                    format!("api_url is missing from {}", path().display())
+                } else {
+                    "the API token isn't in the keyring".to_string()
+                }
             ),
         )),
     }
@@ -181,8 +243,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secrets_are_read_but_never_written() {
+        let old: FileConfig = toml::from_str(
+            "api_url = \"https://x\"\napi_token = \"t\"\n[accounts.gmail]\nclient_id = \"i\"\nclient_secret = \"s\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (old.api_token.as_deref(), old.accounts["gmail"].client_secret.as_deref()),
+            (Some("t"), Some("s")),
+            "an older file's secrets can be moved"
+        );
+        let text = toml::to_string(&old).unwrap();
+        assert!(!text.contains("api_token") && !text.contains("client_secret"), "{text}");
+    }
+
+    #[test]
     fn accounts_are_optional_and_round_trip() {
-        let old: FileConfig = toml::from_str("api_url = \"https://x\"\napi_token = \"t\"\n").unwrap();
+        let old: FileConfig = toml::from_str("api_url = \"https://x\"\n").unwrap();
         assert!(old.accounts.is_empty());
         assert!(!toml::to_string(&old).unwrap().contains("accounts"), "a config without accounts is written as before");
         let mut with = old.clone();

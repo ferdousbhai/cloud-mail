@@ -9,6 +9,7 @@ mod setup;
 
 use clap::{CommandFactory, FromArgMatches};
 use std::cell::OnceCell;
+use std::io::Write;
 
 use cli::{Cli, Command};
 use cloudmail_api::{Client, Mail, config};
@@ -90,7 +91,9 @@ fn main() {
                     .collect::<Vec<_>>()
                     .join(" ");
                 let message = message.trim_start_matches("error: ");
-                CliError::usage(if message.is_empty() { "invalid arguments" } else { message }).hint("run `cloudmail commands --json` or `cloudmail <command> --help`").print(mode);
+                CliError::usage(if message.is_empty() { "invalid arguments" } else { message })
+                    .hint("run `cloudmail commands --json` or `cloudmail <command> --help`")
+                    .print(mode);
                 std::process::exit(exit::USAGE);
             }
             let _ = e.print();
@@ -146,5 +149,10 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
             let guide = docs::agent_guide();
             Ok(Response::new(&guide, "cloudmail agent guide").human(guide))
         }
+        Command::Skill { command: None } => {
+            std::io::stdout().write_all(docs::SKILL.as_bytes())?;
+            Ok(Response::silent())
+        }
+        Command::Skill { command: Some(SkillCommand::Install) } => docs::install_skill(),
     }
 }

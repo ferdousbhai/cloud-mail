@@ -14,6 +14,9 @@ pub const WORKER_LIMIT: u64 = 3584 * 1024;
 pub const GMAIL_LIMIT: u64 = 25 * 1024 * 1024;
 /// HEY, like most mail services, takes 25 MB per message.
 pub const HEY_LIMIT: u64 = 25 * 1024 * 1024;
+/// iCloud Mail takes messages of up to 20 MB once encoded, and base64 makes files a third bigger,
+/// so about 14 MiB of files fit; this leaves the body room.
+pub const ICLOUD_LIMIT: u64 = 14 * 1024 * 1024;
 
 const TYPES: &[(&str, &str)] = &[
     ("pdf", "application/pdf"),
@@ -92,7 +95,8 @@ pub fn mime_type(filename: &str) -> &'static str {
 
 /// A file name fit for a header or a file on disk: one line, no path, not empty.
 pub fn safe_filename(name: &str) -> String {
-    let clean: String = name.chars().filter(|c| !c.is_control()).map(|c| if matches!(c, '/' | '\\') { '_' } else { c }).collect();
+    let clean: String =
+        name.chars().filter(|c| !c.is_control()).map(|c| if matches!(c, '/' | '\\') { '_' } else { c }).collect();
     let mut clean = clean.trim().to_string();
     while clean.len() > 200 {
         clean.pop();
@@ -133,7 +137,11 @@ pub fn check_limit(list: &[OutgoingAttachment], limit: u64, via: &str) -> Result
     }
     Err(Error::new(
         ErrorKind::BadRequest,
-        format!("the attachments are too large to send through {via}: {} in all, and it takes at most {}", human_size(total as i64), human_size(limit as i64)),
+        format!(
+            "the attachments are too large to send through {via}: {} in all, and it takes at most {}",
+            human_size(total as i64),
+            human_size(limit as i64)
+        ),
     ))
 }
 
@@ -166,7 +174,10 @@ mod tests {
         let file = dir.join("notes.md");
         std::fs::write(&file, b"# hi").unwrap();
         let a = OutgoingAttachment::from_path(&file).unwrap();
-        assert_eq!((a.filename.as_str(), a.mime_type.as_str(), a.content.as_slice()), ("notes.md", "text/markdown", &b"# hi"[..]));
+        assert_eq!(
+            (a.filename.as_str(), a.mime_type.as_str(), a.content.as_slice()),
+            ("notes.md", "text/markdown", &b"# hi"[..])
+        );
         let missing = OutgoingAttachment::from_path(&dir.join("nope.pdf")).unwrap_err();
         assert!(missing.message.ends_with("nope.pdf: no such file"), "{}", missing.message);
         assert_eq!(missing.kind, ErrorKind::BadRequest);
@@ -180,6 +191,9 @@ mod tests {
         let a = OutgoingAttachment { content: vec![0; 600], ..Default::default() };
         assert!(check_limit(std::slice::from_ref(&a), 1000, "x").is_ok());
         let e = check_limit(&[a.clone(), a], 1000, "Cloudmail").unwrap_err();
-        assert_eq!(e.message, "the attachments are too large to send through Cloudmail: 1 KB in all, and it takes at most 1000 B");
+        assert_eq!(
+            e.message,
+            "the attachments are too large to send through Cloudmail: 1 KB in all, and it takes at most 1000 B"
+        );
     }
 }
