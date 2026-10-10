@@ -21,7 +21,7 @@
 //!   from[], to[], cc[], bcc[], subject, date, flags[], parts[{partId, contentType, isAttach,
 //!   size, fileName, disposition}]}]`: the conversation, across mailboxes.
 //! - `message/get` `{uid, parts: [partId], dontMarkAsRead: true}` (session folder: the message's)
-//!   → `{longHeader, parts[{guid, content}]}`. The app always sends `dontMarkAsRead`; marking is
+//!   → `{longHeader, parts[{guid: "messagepart:<folder>/<uid>-<partId>", content}]}`. The app always sends `dontMarkAsRead`; marking is
 //!   its own call, `thread/flag` `{method: "ADD"|"REMOVE", flags: ["SEEN"], threadIds}`.
 //! - `thread/move` `{moveMethod: "MOVE", destFolder, threadIds}` (session folder: the source).
 //! - Mailboxes by full path: `INBOX`, `Archive`, `Sent Messages` (the app's own constants).
@@ -323,7 +323,13 @@ impl Icloud {
             .as_array()
             .ok_or_else(|| self.unexpected("message/get"))?
             .iter()
-            .filter_map(|p| Some((p["guid"].as_str()?.to_string(), p["content"].as_str()?.to_string())))
+            // Each part's guid is `messagepart:<folder>/<uid>-<partId>`.
+            .filter_map(|p| {
+                let guid = p["guid"].as_str()?;
+                let part =
+                    guid.strip_prefix("messagepart:").and_then(|g| g.rsplit_once('-')).map_or(guid, |(_, id)| id);
+                Some((part.to_string(), p["content"].as_str()?.to_string()))
+            })
             .collect();
         Ok((data["longHeader"].as_str().unwrap_or_default().to_string(), contents))
     }
@@ -730,6 +736,14 @@ impl Provider for Icloud {
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let p = decode::<PartRef>('a', self.local(id)?)
             .ok_or_else(|| self.fail(ErrorKind::NotFound, format!("{id} isn't an iCloud Mail attachment ID")))?;
+        // A Mail Drop file (`mailDropStreamingUrl`, no partId) lives on Apple's servers for 30 days,
+        // not in the message.
+        if p.p.is_empty() {
+            return Err(self.fail(
+                ErrorKind::BadRequest,
+                format!("{} is a Mail Drop link, not part of the message; open it in iCloud Mail on the web", p.n),
+            ));
+        }
         let base = self.session.webservice("mccgateway").map_err(|e| self.wrap(e))?;
         let mut url =
             url::Url::parse(&format!("{base}/mailws2/v1/message/part")).map_err(|_| self.unexpected("message/part"))?;

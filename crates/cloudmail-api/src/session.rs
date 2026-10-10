@@ -166,8 +166,16 @@ impl Session {
         if let Some(j) = self.jar.lock().unwrap().clone() {
             return Ok(j);
         }
-        let (cookie, params, webservices): (String, HashMap<String, String>, HashMap<String, String>) =
+        let (cookie, mut params, webservices): (String, HashMap<String, String>, HashMap<String, String>) =
             self.call("Session", &())?;
+        // The client params captured at sign-in carry no dsid; the daemon has it as the `Dsid`
+        // property, which its own client library appends the same way.
+        if params.get("dsid").is_none_or(|d| d.is_empty()) {
+            let dsid = self.status()?.dsid;
+            if !dsid.is_empty() {
+                params.insert("dsid".into(), dsid);
+            }
+        }
         let jar = Jar { cookie, params, webservices };
         *self.jar.lock().unwrap() = Some(jar.clone());
         Ok(jar)

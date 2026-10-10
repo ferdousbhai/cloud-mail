@@ -285,11 +285,11 @@ impl FakeSession {
         if st.keyring_locked {
             return Err(SessionError::KeyringUnavailable("the login keyring is locked".into()));
         }
+        // As the real daemon: the dsid is only the `Dsid` property, never a client param.
         let params = HashMap::from([
             ("clientBuildNumber".into(), "2636Hotfix65".into()),
             ("clientMasteringNumber".into(), "2636Hotfix65".into()),
             ("clientId".into(), "test-client".into()),
-            ("dsid".into(), "1234".into()),
         ]);
         Ok((COOKIE.into(), params, st.webservices.clone()))
     }
@@ -537,8 +537,11 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
             let parts: Vec<Value> = wanted
                 .iter()
                 .filter_map(|p| match p.as_str() {
-                    "1" => Some(json!({ "guid": "1", "content": m.text })),
-                    "2" => m.html.as_ref().map(|h| json!({ "guid": "2", "content": h })),
+                    "1" => Some(json!({ "guid": format!("messagepart:{folder}/{uid}-1"), "content": m.text })),
+                    "2" => m
+                        .html
+                        .as_ref()
+                        .map(|h| json!({ "guid": format!("messagepart:{folder}/{uid}-2"), "content": h })),
                     _ => None,
                 })
                 .collect();
