@@ -113,7 +113,7 @@ cargo install --locked --git https://github.com/ferdousbhai/cloud-mail cloudmail
 
 ### From source
 
-You need Rust **1.88 or newer** for the CLI and **1.92 or newer** for the desktop app, plus
+You need Rust **1.89 or newer** for the CLI and **1.95 or newer** for the desktop app, plus
 Node.js. The desktop app also needs GTK 4.16 or newer and WebKitGTK 6.0 (`./install.sh` installs
 them on Arch; Debian 13: `apt install libgtk-4-dev libwebkitgtk-6.0-dev`).
 

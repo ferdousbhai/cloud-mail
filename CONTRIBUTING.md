@@ -5,7 +5,7 @@ Thanks for taking a look. Issues and pull requests are welcome at
 
 ## Development
 
-You need Rust 1.88+ (1.92+ for `cloudmail-gtk`), Bun or Node.js, and for the desktop app GTK 4 and
+You need Rust 1.89+ (1.95+ for `cloudmail-gtk`), Bun or Node.js, and for the desktop app GTK 4 and
 WebKitGTK 6.0.
 
 ```sh
