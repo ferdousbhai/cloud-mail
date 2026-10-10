@@ -914,6 +914,31 @@ fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
 }
 
 #[test]
+fn gmail_screener_hides_copies_like_the_inbox() {
+    // Joe is undecided; t-a2 is a copy of the worker's t_1 (same Message-ID), t-a3 isn't.
+    fn handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
+        if req.method == "POST" && req.path == "/api/senders/lookup" {
+            let all: Vec<Value> = req.body["emails"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| json!({ "email": e, "status": if e == "joe@x.com" { "pending" } else { "approved" } }))
+                .collect();
+            return ok(json!({ "senders": all }));
+        }
+        gmail_handler(req)
+    }
+    let m = mock(handler);
+    let h = gmail_home("screener-copies", GMAIL, true);
+    let v = json_out(&h.run(&m, &["threads", "list", "--folder", "screener"], &[]));
+    let waiting: Vec<String> = ids(&v).into_iter().filter(|i| i.starts_with("gmail:")).collect();
+    assert_eq!(waiting, ["gmail:t-a3"], "{v}");
+    let v = json_out(&h.run(&m, &["screener"], &[]));
+    let joe = v["data"].as_array().unwrap().iter().find(|s| s["email"] == "joe@x.com").expect("Joe waits");
+    assert_eq!(joe["thread_count"], 1, "the copy isn't counted: {v}");
+}
+
+#[test]
 fn gmail_folders_map_to_labels() {
     let m = mock(default_handler);
     let h = gmail_home("folders", GMAIL, true);

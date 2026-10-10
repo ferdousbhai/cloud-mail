@@ -239,7 +239,9 @@ impl Mail {
             }
         });
         let results = self.screen(results, folder);
-        self.collect(results, folder != "screener")
+        // The Screener too: a copy of worker mail (your own message to yourself, a forward) never
+        // waits there when its folders hide it.
+        self.collect(results, true)
     }
 
     /// Keeps of each worker-screened account's threads those `folder` shows, by their senders'
