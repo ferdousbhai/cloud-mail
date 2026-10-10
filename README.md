@@ -1,26 +1,48 @@
 # Cloudmail
 
-Your own email service on your own domains, running entirely in your Cloudflare account, with a
-HEY-style **Screener**, a fast native Linux app, and a CLI that AI agents can drive without any
-special setup.
+Email on your own domains that runs entirely in your own Cloudflare account. It has a
+HEY-style **Screener**, a fast native Linux app, and a CLI that AI agents can drive without
+any special setup.
 
-- **Receive** with Cloudflare Email Routing, **send** with Cloudflare Email Service. No mail server,
-  no IMAP, nothing to patch.
-- **Your data stays in your account**: messages in D1 (with full-text search), raw `.eml` files and
-  attachments in R2.
-- **The Screener**: the first email from someone new waits for a yes or no. Yes, and their mail goes
-  to your Inbox from then on. No, and you never hear from them again. People you email are screened
-  in automatically. A message its sender's domain didn't authenticate (DMARC, or aligned DKIM/SPF
-  when the domain has no DMARC policy) can't ride on an approval.
-- **Several domains, one inbox.** Personal addresses are screened; role addresses like `support@`
-  deliver straight to the Inbox. Replies go out from the address the mail was sent to.
-- **Inbox and Archive**, that's it. A reply on an archived thread brings it back.
-- **Privacy by default**: remote images and tracking pixels stay blocked until you ask for them.
+**Screened email · native Linux app · agent-friendly CLI · no mail server.**
+
+<sub>Not affiliated with [maillab/cloud-mail](https://github.com/maillab/cloud-mail) ("Cloud Mail")
+or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to have similar names.</sub>
+
+<p align="center">
+  <img src="docs/images/cloudmail-inbox.webp" alt="Cloudmail in the Tokyo Night theme: the sidebar, an inbox of four conversations, and an open receipt" width="49%">
+  <img src="docs/images/cloudmail-screener.webp" alt="The Screener: two new senders, each with Yes and No" width="49%">
+</p>
+
+## Who it's for
+
+- You own a domain whose DNS is on Cloudflare, and you want its mail out of Google Workspace,
+  Fastmail and the like, without running Postfix on a server.
+- You're on Omarchy or another Arch Linux desktop and want a keyboard-first mail app that
+  follows your theme. The CLI runs on other Linux systems too.
+- You want an inbox your scripts or your local AI agent can read and answer through a plain
+  CLI, without a Gmail API project.
+- You like HEY's Screener and want it on your own domain, in your own account.
+
+## How it works
 
 ```
 sender ─SMTP─▶ Email Routing ─▶ Worker email() ─▶ D1 (threads, messages, search) + R2 (raw mail, attachments)
 cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Service (outgoing mail)
 ```
+
+- **Receive** with Cloudflare Email Routing, **send** with Cloudflare Email Service. No mail server,
+  no IMAP, nothing to patch.
+- **Your data stays in your account**: messages in D1 (with full-text search), raw `.eml` files and
+  attachments in R2. Nothing goes through a service I run.
+- **The Screener**: the first email from someone new waits for a yes or no. Yes, and their mail goes
+  to your Inbox from then on. No, and you never hear from them again. People you email are screened
+  in automatically. If the sender's domain didn't authenticate a message (DMARC, or aligned
+  DKIM/SPF when the domain has no DMARC policy), that message can't ride on an earlier approval.
+- **Several domains, one inbox.** Personal addresses are screened. Role addresses like `support@`
+  deliver straight to the Inbox. Replies go out from the address the mail was sent to.
+- **Inbox and Archive**, that's it. A reply on an archived thread brings it back.
+- **Privacy by default**: remote images and tracking pixels stay blocked until you ask for them.
 
 | Path | What |
 |---|---|
@@ -30,22 +52,87 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 | `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI, iCloud Mail through icloud-session) |
 | `docs/API.md` | HTTP API reference |
 
-## Get started
+## What you need
 
-You need a domain whose DNS is on Cloudflare and a Cloudflare account on the Workers Paid plan
-(about $5/month, with 3,000 emails/month included; needed to send to anyone).
+- A domain whose DNS is on Cloudflare.
+- A Cloudflare account. Receiving works on the free plan. To send to anyone you need the Workers
+  Paid plan (about $5/month, with 3,000 emails/month included).
+- For the desktop app: Omarchy or another Arch Linux desktop (x86_64 and aarch64 packages), or
+  GTK 4.16+ and WebKitGTK 6.0 if you build it yourself.
+- A keyring (GNOME Keyring, KeePassXC or any other Secret Service): Cloudmail keeps its API token
+  there and nowhere else. Omarchy and most Linux desktops have one.
+- Node.js/npm on the machine where you run `cloudmail setup`. It deploys the worker with
+  Cloudflare's `cf` CLI.
 
-On Omarchy or Arch Linux (x86_64 and aarch64):
+## Install
+
+**Omarchy or any Arch Linux (x86_64 and aarch64):**
 
 ```sh
 curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
+```
+
+This trusts Cloudmail's package-signing key (checked against the pinned fingerprint
+`35C47A06567940B6796B4D0F9B3C7BDF85268B31`), adds the signed pacman repository for your
+architecture (`[cloudmail]` on x86_64, `[cloudmail-aarch64]` on ARM), and installs `cloudmail` and
+`npm`. On Omarchy it also adds a hook so the repository survives `omarchy refresh pacman`. Updates
+arrive with `omarchy update` (or `pacman -Syu`). The script is
+[`packaging/repo/install.sh`](packaging/repo/install.sh), if you'd rather read it first or do the
+same steps by hand:
+
+```sh
+repo=cloudmail; [ "$(uname -m)" = aarch64 ] && repo=cloudmail-aarch64
+release=https://github.com/ferdousbhai/cloud-mail/releases/latest/download
+curl -fsSLO "$release/$repo-signing-key.asc"
+gpg --show-keys "$repo-signing-key.asc"       # must show 35C47A06567940B6796B4D0F9B3C7BDF85268B31
+sudo pacman-key --add "$repo-signing-key.asc"
+sudo pacman-key --lsign-key 35C47A06567940B6796B4D0F9B3C7BDF85268B31
+printf '[%s]\nSigLevel = Required DatabaseRequired\nServer = %s\n' "$repo" "$release" \
+  | sudo tee "/etc/pacman.d/$repo.conf"
+echo "Include = /etc/pacman.d/$repo.conf" | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu cloudmail npm                # on Omarchy: omarchy pkg add cloudmail npm
+```
+
+Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu
+([omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724),
+[omarchy#13763](https://github.com/omacom/omarchy/pull/13763)). Until those are merged, use the
+commands above.
+
+**Just the CLI, on other Linux systems:** each release after v0.5.0 has prebuilt `cloudmail`
+archives attached (x86_64 and aarch64, statically linked), with a `SHA256SUMS` file. Each archive
+holds the `cloudmail` binary and the `worker/` source that `cloudmail setup` deploys. Put the
+binary on your `PATH` and keep the unpacked folder: run `cloudmail setup` from inside it (it
+deploys the `worker/` it finds there), or pass `--worker-dir path/to/worker`.
+
+With Rust installed you can build the CLI instead. Run `cloudmail setup` from a clone, because
+that's where `worker/` lives:
+
+```sh
+cargo install --locked --git https://github.com/ferdousbhai/cloud-mail cloudmail
+```
+
+### From source
+
+You need Rust **1.89 or newer** for the CLI and **1.95 or newer** for the desktop app, plus
+Node.js. The desktop app also needs GTK 4.16 or newer and WebKitGTK 6.0 (`./install.sh` installs
+them on Arch; Debian 13: `apt install libgtk-4-dev libwebkitgtk-6.0-dev`).
+
+```sh
+git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
+./install.sh                    # installs cloudmail (alias: cmail) + cloudmail-gtk to ~/.local/bin
+# CLOUDMAIL_NO_GTK=1 ./install.sh   # CLI only
+```
+
+## Set it up
+
+```sh
 cloudmail setup you@yourdomain.com
 ```
 
-That's it. `setup` logs you in to Cloudflare in your browser, deploys your mail service to your
-account (a Worker, a D1 database and an R2 bucket), turns on receiving and sending for your domain,
-and connects the app, keeping its API token in your keyring (GNOME Keyring, or any Secret
-Service). Open **Cloudmail** from the app launcher.
+`setup` logs you in to Cloudflare in your browser, deploys your mail service to your account
+(a Worker, a D1 database and an R2 bucket), turns on receiving and sending for your domain, and
+connects the app, keeping its API token in your keyring (GNOME Keyring, or any Secret Service).
+Open **Cloudmail** from the app launcher.
 
 - Several addresses and domains: `cloudmail setup you@a.com support@a.com:direct hello@b.com`.
   `:direct` skips the Screener (good for `support@`, `legal@`, …).
@@ -74,23 +161,6 @@ Edit), Account Settings (Read); **Zone** (your mail domains): Email Routing Rule
 DNS (Edit), Zone (Read). If setup can't tell which account to use, add `--account <id>` (the Account
 ID on your Cloudflare dashboard's home page).
 
-
-Cloudmail is also on its way into Omarchy's own repository and *Install › Service* menu
-([omarchy-pkgs#724](https://github.com/omacom/omarchy-pkgs/pull/724),
-[omarchy#13763](https://github.com/omacom/omarchy/pull/13763)).
-
-### From source
-
-Needs Node.js and Rust; the desktop app also needs GTK 4 and WebKitGTK 6.0
-(`./install.sh` installs them on Arch).
-
-```sh
-git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
-./install.sh                    # installs cloudmail (alias: cmail) + cloudmail-gtk to ~/.local/bin
-# CLOUDMAIL_NO_GTK=1 ./install.sh   # CLI only
-cloudmail setup you@yourdomain.com
-```
-
 ## Use it
 
 ```sh
@@ -109,136 +179,6 @@ Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `r` reply, `
 `y`/`n` in the Screener, `/` search, `L` load remote images, `?` all keys. To open `mailto:` links
 in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handler/mailto`.
 
-## Your HEY mail too (optional)
-
-If you also have a [HEY](https://hey.com) account, Cloudmail can show it next to your own mail, in the
-app and the CLI. It's opt-in: until you add it, nothing changes. It uses HEY's official
-[`hey` CLI](https://github.com/basecamp/hey-cli), which signs in with one browser login; Cloudmail
-never sees a HEY password or token.
-
-```sh
-cloudmail account add hey     # checks hey is installed; runs `hey auth login` if you aren't signed in
-cloudmail account list        # which accounts are linked and working
-cloudmail account remove hey  # unlink (HEY itself is untouched)
-```
-
-| In Cloudmail | Your worker | HEY |
-|---|---|---|
-| Inbox | Inbox | Imbox (unread = unseen) |
-| Archive (`e`) | Archive | Paper Trail (HEY has no archive, so archiving moves a thread there) |
-| Screener | Screener | The Screener; a sender waiting in both shows once, and a yes/no decides both |
-| Sent | Sent | (HEY's CLI has no Sent box) |
-| The Feed, Paper Trail, Set Aside, Reply Later | | the HEY boxes, under a HEY heading in the app (keys 5–8) and `cloudmail threads list --folder feed` etc. |
-| Search | full-text search | HEY search |
-
-HEY threads carry a small **HEY** tag. Reading, replying (from your HEY address), writing from your
-HEY address (pick it in From), marking read/unread, archiving, attachments and Screener decisions
-all go through `hey`; HEY's IDs start with `hey:`. Opening an unseen HEY thread in the app marks it
-seen in HEY, as opening it in HEY would; `cloudmail thread read` doesn't.
-
-**Forwarding to HEY.** If your worker forwards to your HEY address (`--forward-to you@hey.com`),
-every message is in both places. The HEY copy is hidden when it has the same sender and subject and
-arrived within 15 minutes of a message in your worker; HEY's CLI doesn't expose Message-IDs, so this
-is the most reliable signal it offers. A HEY copy of a thread you've since replied to in Cloudmail,
-or one that arrived much later, can still show.
-
-**If HEY is unavailable** (not installed, signed out, offline), your own mail loads as usual and one
-line says what's wrong with HEY. The CLI puts it in `meta.warnings` and on stderr.
-
-## Your Gmail too (optional)
-
-Gmail can sit next to your mail the same way, in the app and the CLI, and again nothing changes until
-you add it. Cloudmail reaches Gmail through Google's own
-[Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in and no Google
-Cloud setup of your own: Cloudmail brings its own Google sign-in. When `gws` isn't installed,
-`account add gmail` installs it for you with npm, into `~/.local/share/cloudmail/gws` (no sudo).
-
-```sh
-cloudmail account add gmail           # installs gws if needed, then opens Google's sign-in, once
-cloudmail account list
-cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
-```
-
-The sign-in asks for Gmail only (read, label, archive and send; nothing else in your Google account).
-While Cloudmail's Google app awaits Google's verification, Google shows **"Google hasn't verified
-this app"**: choose **Advanced**, then **Go to Cloudmail**. The sign-in is kept in Cloudmail's own
-directory (`~/.config/cloudmail/gws/gmail`), apart from any `gws` you use yourself, which it never
-reads or changes. A second Gmail account links with `cloudmail account add gmail --name work`.
-
-| In Cloudmail | Your worker | Gmail |
-|---|---|---|
-| Inbox | Inbox | Inbox (unread = Gmail's unread) |
-| Archive (`e`) | Archive | Gmail's archive: the thread leaves the Inbox, `i` brings it back |
-| Screener | Screener | your Screener decides (see [One Screener](#one-screener-for-gmail-and-icloud-mail)) |
-| Sent | Sent | Sent |
-| Search | full-text search | Gmail search (its own syntax works: `from:ana has:attachment`) |
-
-Gmail threads carry a small **Gmail** tag. Reading, replying (threaded in Gmail, from your Gmail
-address), writing from your Gmail address or a verified send-as alias (pick it in From), marking
-read/unread, archiving, attachments and `cloudmail raw` all go through `gws`; Gmail's IDs start with
-`gmail:`. Gmail's categories and labels aren't shown separately: everything in Gmail's Inbox,
-Promotions and Social included, is in the Inbox.
-
-**Forwarding.** If your worker forwards to your Gmail address, or Gmail forwards into your worker,
-Gmail's copy is hidden: Gmail gives out Message-IDs, so a copy is matched exactly, message for
-message, however long after the original it arrived.
-
-**If Gmail is unavailable** (gws not installed, signed out, offline), your own mail loads as usual and
-one line says what's wrong. When a sign-in has expired or been revoked (Gmail or HEY), the app shows a
-**Sign in** button next to that line and sends one desktop notification; from a terminal,
-`cloudmail account login gmail` (or `hey`) signs in again. Each listing reads Gmail's threads one `gws` run at a time (a
-few in parallel, 100 at most per list, and only changed threads again), so the first Gmail load
-takes a moment; your own mail doesn't wait for it.
-
-## Your iCloud Mail too (optional)
-
-iCloud Mail can sit next to your mail the same way. Cloudmail reaches it the way icloud.com's own
-Mail does, through its web services, with the iCloud sign-in that
-[icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every app on the
-computer (it comes with icloud-for-omarchy). There's no password to give Cloudmail and no IMAP;
-icloud-session's own window handles Apple's sign-in and two-factor prompts.
-
-```sh
-cloudmail account add icloud      # opens icloud-session's sign-in window if you aren't signed in
-cloudmail account list
-cloudmail account remove icloud   # unlink; icloud-session stays signed in for your other apps
-```
-
-Your addresses, aliases and custom-domain addresses come from iCloud Mail's own settings, and you
-write as the name shown there, else your iCloud account's name.
-
-| In Cloudmail | Your worker | iCloud Mail |
-|---|---|---|
-| Inbox | Inbox | Inbox (unread = not yet read in Mail) |
-| Archive (`e`) | Archive | the Archive mailbox; `i` brings a thread back |
-| Screener | Screener | your Screener decides (below) |
-| Sent | Sent | Sent Messages |
-| Search | full-text search | iCloud's own search of the Inbox, Archive and Sent Messages |
-
-iCloud threads carry a small **iCloud** tag; their IDs start with `icloud:`. Reading, replying
-(threaded), writing from any of your iCloud addresses, attachments, marking read/unread, archiving
-and `cloudmail raw` all go through iCloud. Listing and `cloudmail thread read` never mark mail read;
-opening a thread in the app does, as in Mail.
-
-**If iCloud is unavailable** (offline, signed out, or icloud-session's keyring locked), your own
-mail loads as usual and one line says what's wrong. `cloudmail account login icloud`, or the app's
-**Sign in** button, opens icloud-session's sign-in window.
-
-## One Screener for Gmail and iCloud Mail
-
-Gmail and iCloud Mail have no Screener, so your worker's decides for them: one decision per sender,
-wherever their mail comes.
-
-- Mail from someone with no decision yet waits in the Screener and stays out of your Inbox.
-- Yes: their mail is in your Inbox from then on, in every account.
-- No: their mail is left out of everything but Archive and Sent, and their threads in that
-  account's Inbox are archived there too, so they leave the Inbox on your phone as well. Mail they
-  send later still lands in the account's own Inbox (Gmail and iCloud decide that), but never shows
-  in Cloudmail.
-- Linking an account screens in the people it already corresponds with (its Inbox's senders and
-  whoever its sent mail went to), and whoever you write to through it is screened in, as your
-  worker does for its own mail. A no is never undone by linking.
-
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
@@ -256,84 +196,69 @@ The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agen
 up all your domains with the Cloudflare CLI, linking HEY, Gmail and iCloud Mail, and using the CLI,
 in about 1,500 tokens.
 
-## Releasing
+## Your HEY, Gmail and iCloud Mail too (optional)
 
-Bump `version` in `Cargo.toml` and `pkgver` in the PKGBUILD, commit, then push an annotated tag
-whose message is the release notes:
-
-```sh
-git config core.hooksPath .githooks          # once per clone
-git tag -a v0.3.2 -F notes.md --cleanup=verbatim && git push origin main v0.3.2
-```
-
-Pushing the tag is the release: the pre-push hook starts `bin/release-on-tag` in the background.
-It drafts the GitHub release from the tag's message, then runs `bin/release`. The native
-package workflow, which runs only for version tags, builds and tests unsigned x86_64 and aarch64 packages. The release command
-waits for that exact commit's successful CI run, verifies each artifact's source commit and
-package metadata, and signs the packages and both repository databases locally. The private
-signing key never goes to GitHub. `[cloudmail]` serves x86_64; `[cloudmail-aarch64]` serves ARM,
-and the installer chooses the native repository automatically.
-
-After publication, GitHub verifies the exact release on native Arch and Arch Linux ARM
-runners. Failed verification reports an error without deleting a release or tag. Run
-`bin/verify-release <version> <architecture>` manually on a matching native host; ARM requires
-`ARM_BUILD_IMAGE` pointing to an Arch Linux ARM Docker image. `bin/build-package <architecture>`
-builds an unsigned package locally with the same native-container process used by CI.
-
-The release hook then moves the omarchy-pkgs pull request to the new version (while open).
-A desktop notification reports the outcome; the log is in
-`~/.local/state/cloudmail/release-<version>.log`. `bin/release <version> [CI-run-id]` also works
-by hand, and `CLOUDMAIL_NO_AUTO_RELEASE=1 git push …` pushes a tag without releasing it.
-
-## Development
+If you also have a [HEY](https://hey.com), Gmail or iCloud Mail account, Cloudmail can show it next
+to your own mail, in the app and the CLI. It's opt-in: until you add an account, nothing changes.
+HEY goes through HEY's official [`hey` CLI](https://github.com/basecamp/hey-cli), so Cloudmail never
+sees a HEY password or token. Gmail goes through Google's
+[Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in that asks for
+Gmail only (`account add gmail` installs `gws` for you when it's missing). iCloud Mail goes through
+the sign-in that [icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every
+app on the computer, so there's no password to give Cloudmail and no IMAP.
 
 ```sh
-cd worker && bun install
-bun run db:local                     # schema for the local database (wrangler, see wrangler.local.jsonc)
-printf 'API_TOKEN=dev-token\n' > .dev.vars
-bun run dev --port 8799              # cf dev --mode development: local resources only
-curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
-bun test && bunx tsc --noEmit
-
-bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
+cloudmail account add hey     # checks hey is installed; runs `hey auth login` if you aren't signed in
+cloudmail account add gmail   # installs gws if needed, then opens Google's sign-in, once
+cloudmail account add icloud  # opens icloud-session's sign-in window if you aren't signed in
+cloudmail account list        # which accounts are linked and working
+cloudmail account remove hey  # unlink (HEY itself is untouched)
 ```
 
-Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
-runs `bin/check` first and stops if it fails (`CLOUDMAIL_NO_CHECK=1` skips it). GitHub only builds
-the release packages, on a version tag.
+Gmail and iCloud Mail have no Screener, so yours decides for them too: one decision per sender,
+wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
+Archive and the Screener, how forwarded copies are hidden, and what happens when a sign-in expires:
+[docs/linked-accounts.md](docs/linked-accounts.md).
 
-Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` trait (your worker's
-`Client` implements it too), `hey.rs` maps `hey … --json` into it, `gmail.rs` maps raw Gmail API calls
-through `gws gmail users … --params '<json>'`, `icloud.rs` maps the requests icloud.com's own Mail
-app sends (its doc comment says what each is and where that is established) with the session from
-`session.rs` (icloud-session's D-Bus interface), `accounts.rs` links and unlinks accounts for the CLI
-and the app, `keyring.rs` keeps secrets in the Secret Service, and `unified.rs` merges providers,
-screens Gmail and iCloud Mail with your worker's decisions, turns their failures into warnings and
-hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
-its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
-"…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
-and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
-(`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
-The CLI tests never reach the real session bus: each that needs one starts a private `dbus-daemon`
-(the `dbus` package) with stand-ins for the Secret Service and icloud-session, and iCloud Mail's
-web services as an in-process HTTP server (`crates/cloudmail/tests/support`); every other test runs
-with no session bus at all.
+## Limitations
 
-Cloudmail's Google sign-in is one OAuth client, `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` in
-`crates/cloudmail-api/src/gmail.rs` (a desktop client's secret isn't secret). Until those are filled
-in, `account add gmail` says the sign-in isn't configured; a build can use its own client with
-`CLOUDMAIL_GOOGLE_CLIENT_ID`/`CLOUDMAIL_GOOGLE_CLIENT_SECRET` or `--client-id`/`--client-secret`. To
-make one: a Google Cloud project with the Gmail API enabled, an OAuth consent screen (External,
-published "In production", since test-mode sign-ins expire after 7 days) with the
-`https://www.googleapis.com/auth/gmail.modify` scope, and an OAuth client of type "Desktop app".
-`gmail.modify` is a restricted scope: until Google verifies the app, users see the unverified-app
-screen and at most 100 people can sign in.
+What it doesn't do (yet), so you know before you move a domain:
 
-The worker deploys with Cloudflare's `cf` CLI from `worker/cloudflare.config.ts`, which reads the
-install's names and IDs from `worker/install.json`. `cloudmail setup` writes that file and it is not
-committed (an install made before cf has a generated `wrangler.jsonc` instead; setup carries its
-names over). `cf` still builds the worker through wrangler, which is why both are dev dependencies.
-Mail that can't be parsed or stored is never bounced: the raw message is kept in R2 under `failed/`.
+- **Linux only.** The desktop app (GTK4 + WebKitGTK) is packaged for Arch/Omarchy on x86_64 and
+  aarch64; the CLI runs on other Linux systems too. Both keep their token in a Secret Service
+  keyring, which macOS and Windows don't have.
+- **There's no web or mobile client.** To read mail on your phone for now, `--forward-to` a copy
+  to an inbox you already use there.
+- **Sending needs Cloudflare's Workers Paid plan** (about $5/month, 3,000 emails/month included,
+  then $0.35 per 1,000). Receiving works on the free plan.
+- **Cloudflare's Email Sending is still in beta.** One outgoing message can be at most 5 MiB
+  once encoded, which leaves about 3.5 MiB for attachments. Messages to at most 50 recipients.
+- **No import of existing mail.** Cloudmail starts from the mail that arrives after setup.
+  (Linked HEY, Gmail and iCloud Mail accounts show their own history.)
+- **Gmail linking uses Cloudmail's Google app, which awaits Google's verification.** Until then
+  Google shows "Google hasn't verified this app" at sign-in, and at most 100 people can link a
+  Gmail account with it. You can use your own Google OAuth client instead
+  ([how](CONTRIBUTING.md#google-sign-in-for-gmail)).
+- **One user per deployment.** The API has a single bearer token. It's personal mail with several
+  addresses, not a multi-user mail server.
+- **It's young.** The first release was on 29 September 2026.
+
+## How it compares
+
+- **[cloudflare/agentic-inbox](https://github.com/cloudflare/agentic-inbox)** is Cloudflare's own
+  self-hosted email client on the same platform: a web app with a built-in AI agent (Workers AI),
+  one Durable Object per mailbox, and Cloudflare Access for sign-in. It has a deploy button, but
+  you turn on Email Routing and Email Service yourself in the dashboard. Cloudmail is a native
+  desktop app and CLI instead of a web app. It has the Screener. `cloudmail setup` does the routing,
+  sending and DNS for you. And rather than build an agent in, it gives a CLI to whichever agent
+  you already use.
+- **[maillab/cloud-mail](https://github.com/maillab/cloud-mail)** ("Cloud Mail") is a separate
+  project: a responsive web mail service on Cloudflare Workers, with multiple users and admin
+  roles, sending through Resend, and a live demo. Pick it if you need a browser or phone UI, or
+  accounts for several people. Cloudmail is for one person's mail across several domains, with a
+  Screener and a native app.
+- **HEY** is where the Screener idea comes from. HEY is hosted. Cloudmail runs on your domain in
+  your Cloudflare account, and can show your HEY mail next to it.
 
 ## Security notes
 
@@ -349,6 +274,12 @@ Mail that can't be parsed or stored is never bounced: the raw message is kept in
 - Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,
   for domains without a DMARC policy, DKIM or SPF aligned with the From domain (the same test DMARC
   applies). Mail from a domain with no working SPF or DKIM therefore waits in the Screener each time.
+- Mail that can't be parsed or stored is never bounced: the raw message is kept in R2 under `failed/`.
+
+## Contributing
+
+Development setup, tests, how linked accounts are built and how releases are cut:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

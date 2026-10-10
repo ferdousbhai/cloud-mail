@@ -3,6 +3,7 @@ name = "cloudmail-api"
 description = "API client, types and config for cloudmail"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

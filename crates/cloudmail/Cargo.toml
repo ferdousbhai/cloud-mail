@@ -3,6 +3,7 @@ name = "cloudmail"
 description = "Command-line client for cloudmail, built for people and agents"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]

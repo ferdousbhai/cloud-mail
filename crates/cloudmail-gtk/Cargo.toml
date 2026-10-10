@@ -3,6 +3,7 @@ name = "cloudmail-gtk"
 description = "Native GTK4 client for cloudmail"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.95"  # if-let guards (1.95); gtk4-rs 0.11 and its glib/cairo/gdk crates require 1.92
 license.workspace = true
 
 [dependencies]

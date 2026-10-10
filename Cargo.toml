@@ -5,6 +5,8 @@ members = ["crates/cloudmail-api", "crates/cloudmail", "crates/cloudmail-gtk"]
 [workspace.package]
 version = "0.5.0"
 edition = "2024"
+# The CLI and API crates need let chains (1.88) and uuid (via zbus) needs 1.89; cloudmail-gtk overrides this with 1.95 (if-let guards).
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/ferdousbhai/cloud-mail"
 

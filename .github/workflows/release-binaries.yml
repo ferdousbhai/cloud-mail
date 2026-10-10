@@ -1,0 +1,91 @@
+name: Release binaries
+
+# Builds the cloudmail CLI for Linux and attaches it to the GitHub release. The Arch packages and
+# the signed repositories are still built by packages.yml and signed locally by bin/release; this
+# only adds standalone CLI archives for other Linux systems. (No macOS build: the CLI keeps its
+# token in a Secret Service keyring, which macOS doesn't have.)
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach to (e.g. v0.5.1)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked -p cloudmail --target ${{ matrix.target }}
+
+      - name: Smoke test
+        run: |
+          target/${{ matrix.target }}/release/cloudmail --version
+          target/${{ matrix.target }}/release/cloudmail agent-guide --json > /dev/null
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="cloudmail-${TAG#v}-${{ matrix.target }}"
+          mkdir -p "dist/$name/worker"
+          cp "target/${{ matrix.target }}/release/cloudmail" "dist/$name/"
+          # The worker source `cloudmail setup` deploys, without its tests.
+          tar -C worker -cf - --exclude=./test --exclude=./.gitignore --exclude=./node_modules . \
+            | tar -C "dist/$name/worker" -xf -
+          cp LICENSE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  attach:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum cloudmail-*.tar.gz > SHA256SUMS && cat SHA256SUMS
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

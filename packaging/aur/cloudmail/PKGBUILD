@@ -49,12 +49,12 @@ package() {
   install -Dm644 crates/cloudmail-gtk/data/com.ferdousbhai.Cloudmail.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.ferdousbhai.Cloudmail.svg"
 
-  # Worker source for `cloudmail setup` (copied to ~/.local/share/cloudmail/worker when run).
-  local w="$pkgdir/usr/share/cloudmail/worker"
-  install -Dm644 -t "$w" worker/package.json worker/bun.lock worker/tsconfig.json \
-    worker/cloudflare.config.ts worker/worker-configuration.d.ts
-  install -Dm644 -t "$w/src" worker/src/*.ts
-  install -Dm644 -t "$w/migrations" worker/migrations/*.sql
+  # Worker source for `cloudmail setup` (copied to ~/.local/share/cloudmail/worker when run). The whole
+  # directory minus tests, so adding or renaming a worker file never breaks the package.
+  local w="$pkgdir/usr/share/cloudmail/worker" f
+  while IFS= read -r -d '' f; do
+    install -Dm644 "worker/${f#./}" "$w/${f#./}"
+  done < <(cd worker && find . -type f ! -path './test/*' ! -name .gitignore -print0)
 
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md docs/API.md -t "$pkgdir/usr/share/doc/$pkgname"
