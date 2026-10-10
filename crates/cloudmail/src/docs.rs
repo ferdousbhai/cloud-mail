@@ -361,7 +361,7 @@ Watch for new mail (JSONL, one object per new or updated thread):
 Optional. `cloudmail account add hey` links a HEY account through the official `hey` CLI (it must be
 installed and signed in; on a terminal, add runs `hey auth login` for you, otherwise it fails with
 `not_logged_in` and the hint). `cloudmail account add gmail` links Gmail through Google's Workspace CLI
-`gws` (installed with `npm install -g @googleworkspace/cli`); on a terminal it opens one Google sign-in
+`gws` (when it isn't installed, add installs it with npm into ~/.local/share/cloudmail/gws); on a terminal it opens one Google sign-in
 in the browser (Gmail access only, kept in cloudmail's own gws directory, apart from any gws of yours),
 otherwise it fails with `not_logged_in`; `--login` signs in without a terminal. A build without
 cloudmail's Google client fails with `not_configured` until CLOUDMAIL_GOOGLE_CLIENT_ID/SECRET or

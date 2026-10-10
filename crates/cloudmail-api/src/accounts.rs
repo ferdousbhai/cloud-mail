@@ -208,7 +208,15 @@ fn link_gmail(
     can_sign_in: bool,
     notice: &dyn Fn(&str),
 ) -> std::result::Result<(String, Vec<String>, PathBuf), LinkError> {
-    let g = Gmail::new(name, cfg);
+    let mut g = Gmail::new(name, cfg);
+    // No gws and none named (--command, CLOUDMAIL_GWS_COMMAND): install it, for this user only.
+    if cfg.command.is_none()
+        && std::env::var(gmail::COMMAND_ENV).map_or(true, |c| c.trim().is_empty())
+        && g.is_missing()
+    {
+        install_gws(notice)?;
+        g = Gmail::new(name, cfg);
+    }
     let version =
         g.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: gmail::INSTALL_HINT.into() })?;
     let sign_in = |why: &str| -> std::result::Result<(), LinkError> {
@@ -240,6 +248,28 @@ fn link_gmail(
         Err(e) => return Err(e.into()),
     };
     Ok((version, addresses.into_iter().map(|a| a.email).collect(), g.dir().to_path_buf()))
+}
+
+/// `npm install` of Google's Workspace CLI into [`gmail::bundled_prefix`], which `Gmail` then runs.
+fn install_gws(notice: &dyn Fn(&str)) -> std::result::Result<(), LinkError> {
+    let prefix = gmail::bundled_prefix();
+    notice(&format!("Installing Google's Workspace CLI (gws), which Gmail needs, into {}", prefix.display()));
+    let mut npm = std::process::Command::new("npm");
+    npm.args(["install", "--global", "--no-audit", "--no-fund", "--prefix"]).arg(&prefix).arg(gmail::PACKAGE);
+    let failed = |message: String| LinkError::NotInstalled { message, hint: gmail::INSTALL_HINT.into() };
+    match provider::run_command(&mut npm, None, Duration::from_secs(600)) {
+        provider::Run::Done { status, .. } if status.success() && gmail::bundled_command().is_file() => Ok(()),
+        provider::Run::Done { status, stderr, .. } => {
+            let tail = stderr.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();
+            Err(failed(format!("`npm install {}` failed ({status}): {}", gmail::PACKAGE, tail.join(" "))))
+        }
+        provider::Run::Missing => Err(LinkError::NotInstalled {
+            message: "Gmail needs Google's Workspace CLI, and installing it needs npm, which isn't installed".into(),
+            hint: "install npm (Arch: `sudo pacman -S npm`), then run this again".into(),
+        }),
+        provider::Run::TimedOut => Err(failed(format!("`npm install {}` took over 10 minutes", gmail::PACKAGE))),
+        provider::Run::Failed(e) => Err(failed(format!("could not run npm: {e}"))),
+    }
 }
 
 /// Checks icloud-session is there and signed in (opening its sign-in window when allowed), then

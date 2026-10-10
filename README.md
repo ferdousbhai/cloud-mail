@@ -150,11 +150,11 @@ line says what's wrong with HEY. The CLI puts it in `meta.warnings` and on stder
 Gmail can sit next to your mail the same way, in the app and the CLI, and again nothing changes until
 you add it. Cloudmail reaches Gmail through Google's own
 [Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in and no Google
-Cloud setup of your own: Cloudmail brings its own Google sign-in.
+Cloud setup of your own: Cloudmail brings its own Google sign-in. When `gws` isn't installed,
+`account add gmail` installs it for you with npm, into `~/.local/share/cloudmail/gws` (no sudo).
 
 ```sh
-npm install -g @googleworkspace/cli   # installs `gws`
-cloudmail account add gmail           # opens Google's sign-in in your browser, once
+cloudmail account add gmail           # installs gws if needed, then opens Google's sign-in, once
 cloudmail account list
 cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
 ```

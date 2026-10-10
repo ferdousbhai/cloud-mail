@@ -57,7 +57,7 @@ desktop) or have the user run the command with `!`. Without either, `add` fails 
 | Provider | Needs | Command |
 |---|---|---|
 | HEY | `hey` on PATH (github.com/basecamp/hey-cli) | `cloudmail account add hey --login` |
-| Gmail | `gws` on PATH (`npm install -g @googleworkspace/cli`) | `cloudmail account add gmail --login` (more: `--name work`) |
+| Gmail | `npm` (add installs Google's `gws` CLI if it's missing) | `cloudmail account add gmail --login` (more: `--name work`) |
 | iCloud | icloud-session (github.com/ferdousbhai/icloud-for-omarchy) | `cloudmail account add icloud --login` |
 
 Gmail warns "Google hasn't verified this app": tell the user to click Advanced, then Go to Cloudmail.

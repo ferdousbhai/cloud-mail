@@ -50,6 +50,8 @@ pub const CLIENT_SECRET_ENV: &str = "CLOUDMAIL_GOOGLE_CLIENT_SECRET";
 pub const BROWSER_ENV: &str = "CLOUDMAIL_BROWSER";
 /// Read, label, archive and send; nothing else in your Google account.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+/// Google's Workspace CLI on npm; `cloudmail account add gmail` installs it when it's missing.
+pub const PACKAGE: &str = "@googleworkspace/cli";
 pub const INSTALL_HINT: &str = "install Google's Workspace CLI: `npm install -g @googleworkspace/cli` (or a release binary from https://github.com/googleworkspace/cli/releases), or pass --command <path>";
 
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -301,6 +303,17 @@ fn client_credentials(cfg: &AccountConfig) -> Option<(String, String)> {
 }
 
 /// cloudmail's own gws directory for an account, beside its config file.
+/// Where `cloudmail account add gmail` installs gws when there's none: `<data dir>/cloudmail/gws`
+/// (`~/.local/share/cloudmail/gws`), an npm prefix, so no root and no PATH change.
+pub fn bundled_prefix() -> PathBuf {
+    dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("cloudmail").join("gws")
+}
+
+/// The gws in [`bundled_prefix`], whether or not it's there.
+pub fn bundled_command() -> PathBuf {
+    bundled_prefix().join("bin").join("gws")
+}
+
 pub fn gws_dir(name: &str) -> PathBuf {
     crate::config::path().parent().map(Path::to_path_buf).unwrap_or_default().join("gws").join(name)
 }
@@ -320,6 +333,7 @@ impl Gmail {
     pub fn new(name: &str, cfg: &AccountConfig) -> Self {
         let command = nonblank(std::env::var(COMMAND_ENV).ok())
             .or_else(|| nonblank(cfg.command.clone()))
+            .or_else(|| Some(bundled_command()).filter(|b| b.is_file()).map(|b| b.display().to_string()))
             .unwrap_or_else(|| "gws".into());
         Self {
             name: name.to_string(),
@@ -382,6 +396,11 @@ impl Gmail {
             None => cmd.env_remove("GOOGLE_WORKSPACE_CLI_CLIENT_ID").env_remove("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"),
         };
         cmd
+    }
+
+    /// Whether the gws this account would run isn't there at all.
+    pub fn is_missing(&self) -> bool {
+        matches!(run_command(self.gws().arg("--version"), None, TIMEOUT), Run::Missing)
     }
 
     /// The installed gws's version line, or an error when it isn't installed.

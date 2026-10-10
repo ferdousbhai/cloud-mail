@@ -1117,6 +1117,56 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
 }
 
 #[test]
+fn gmail_account_add_installs_gws_when_missing() {
+    let m = mock(default_handler);
+    let h = gmail_home("install-gws", "poll_seconds = 30\n", false);
+    // A PATH with only a fake npm, which "installs" a gws that is the fake one.
+    let bin = h.home.join("npm-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let npm = bin.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            "#!/bin/sh\nPATH=/usr/bin:/bin\necho \"$@\" >> {log}\nwhile [ $# -gt 0 ]; do [ \"$1\" = --prefix ] && p=$2; shift; done\n\
+             mkdir -p \"$p/bin\"\nprintf '#!/bin/sh\\nPATH=/usr/bin:/bin exec {gws} \"$@\"\\n' > \"$p/bin/gws\"\nchmod +x \"$p/bin/gws\"\n",
+            log = h.home.join("npm.log").display(),
+            gws = fake_gws(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&npm, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let data = h.home.join("data");
+    let env =
+        [("CLOUDMAIL_GWS_COMMAND", ""), ("PATH", bin.to_str().unwrap()), ("XDG_DATA_HOME", data.to_str().unwrap())];
+
+    let o = h.run(&m, &["account", "add", "gmail"], &env);
+    // Installed, then on to the sign-in, which needs a terminal.
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in", "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Installing Google's Workspace CLI (gws)"));
+    let installs = std::fs::read_to_string(h.home.join("npm.log")).unwrap();
+    assert_eq!(
+        installs.trim(),
+        format!(
+            "install --global --no-audit --no-fund --prefix {} @googleworkspace/cli",
+            data.join("cloudmail/gws").display()
+        )
+    );
+    assert!(h.calls().iter().any(|c| c == "--version"), "the installed gws runs: {:?}", h.calls());
+
+    // Installed once: the next run uses it without npm.
+    std::fs::remove_file(&npm).unwrap();
+    let o = h.run(&m, &["account", "add", "gmail"], &env);
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
+
+    // No npm either: say how to get it.
+    std::fs::remove_dir_all(&data).unwrap();
+    let o = h.run(&m, &["account", "add", "gmail"], &env);
+    let v = json_out(&o);
+    assert_eq!(v["error"]["code"], "not_installed");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("pacman -S npm"), "{v}");
+}
+
+#[test]
 fn gmail_account_add_list_remove() {
     let m = mock(default_handler);
     let h = gmail_home("accounts", "poll_seconds = 30\n", false);
