@@ -62,8 +62,14 @@ const LIST_LIMIT: u32 = 100;
 const PARALLEL: usize = 8;
 const META_HEADERS: &[&str] = &["From", "To", "Cc", "Subject", "Date", "Message-ID", "Delivered-To", "Content-Type"];
 
-/// A thread as last listed, kept while its historyId stays the same.
-#[derive(Clone)]
+/// Threads kept on disk, so a CLI run fetches only what changed (each `threads.get` costs 10
+/// of Gmail's 15,000 quota units a minute; the Screener lists up to 200 threads).
+const CACHE_FILE: &str = "threads.json";
+const CACHE_KEEP: usize = 2000;
+
+/// A thread as last listed, kept while its historyId stays the same. Any change to a thread
+/// (labels, read state, a new message) gives it a new historyId, so a kept entry is never stale.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Cached {
     history: String,
     summary: ThreadSummary,
@@ -314,6 +320,11 @@ pub fn bundled_command() -> PathBuf {
     bundled_prefix().join("bin").join("gws")
 }
 
+/// The thread cache a previous run left (empty when there's none or it's unreadable).
+fn load_cache(dir: &Path) -> HashMap<String, Cached> {
+    std::fs::read(dir.join(CACHE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
 pub fn gws_dir(name: &str) -> PathBuf {
     crate::config::path().parent().map(Path::to_path_buf).unwrap_or_default().join("gws").join(name)
 }
@@ -340,8 +351,32 @@ impl Gmail {
             command,
             dir: gws_dir(name),
             client: client_credentials(cfg),
-            cache: Default::default(),
+            cache: Mutex::new(load_cache(&gws_dir(name))),
             own: Default::default(),
+        }
+    }
+
+    /// Writes the cache for the next run: the most recent threads, privately, atomically.
+    fn save_cache(&self) {
+        if !self.dir.is_dir() {
+            return;
+        }
+        let mut entries: Vec<(String, Cached)> =
+            self.cache.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        entries.sort_by_key(|(_, c)| std::cmp::Reverse(c.summary.last_at));
+        entries.truncate(CACHE_KEEP);
+        let map: HashMap<String, Cached> = entries.into_iter().collect();
+        let Ok(body) = serde_json::to_vec(&map) else { return };
+        let tmp = self.dir.join(format!(".{CACHE_FILE}.{}", std::process::id()));
+        let written = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+            f.write_all(&body)?;
+            std::fs::rename(&tmp, self.dir.join(CACHE_FILE))
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 
@@ -508,7 +543,9 @@ impl Gmail {
                 format!("the Google sign-in didn't finish: {}", message.lines().next().unwrap_or("")),
             ));
         }
+        // Maybe another Google account now: nothing listed before it carries over.
         self.cache.lock().unwrap().clear();
+        let _ = std::fs::remove_file(self.dir.join(CACHE_FILE));
         *self.own.lock().unwrap() = None;
         Ok(nonempty(text(&json["account"])).filter(|a| a.contains('@')))
     }
@@ -748,6 +785,9 @@ impl Gmail {
                     }
                 }
             }
+        }
+        if !stale.is_empty() {
+            self.save_cache();
         }
         if found.is_empty()
             && let Some(e) = first_err

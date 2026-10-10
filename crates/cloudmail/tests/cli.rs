@@ -914,6 +914,29 @@ fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
 }
 
 #[test]
+fn gmail_listings_fetch_only_changed_threads_across_runs() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("cache", GMAIL, true);
+    let gets = |h: &GmailHome| h.calls().iter().filter(|c| c.contains("threads get")).count();
+    let first = json_out(&h.run(&m, &["inbox"], &[]));
+    assert!(gets(&h) > 0);
+    let file = h.gws_dir().join("threads.json");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+
+    std::fs::remove_file(&h.log).unwrap();
+    let again = json_out(&h.run(&m, &["inbox"], &[]));
+    assert_eq!(gets(&h), 0, "unchanged historyIds come from the last run: {:?}", h.calls());
+    assert_eq!(ids(&again), ids(&first));
+
+    // A garbled cache is just a cold one.
+    std::fs::write(&file, "not json").unwrap();
+    std::fs::remove_file(&h.log).unwrap();
+    assert_eq!(ids(&json_out(&h.run(&m, &["inbox"], &[]))), ids(&first));
+    assert!(gets(&h) > 0);
+}
+
+#[test]
 fn gmail_screener_hides_copies_like_the_inbox() {
     // Joe is undecided; t-a2 is a copy of the worker's t_1 (same Message-ID), t-a3 isn't.
     fn handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
