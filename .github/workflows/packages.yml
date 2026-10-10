@@ -10,6 +10,7 @@ permissions:
 jobs:
   packaging:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash packaging/repo/test.sh
@@ -25,6 +26,7 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Prepare native Arch Linux ARM image
