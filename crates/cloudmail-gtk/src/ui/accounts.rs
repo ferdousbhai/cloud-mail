@@ -60,6 +60,9 @@ pub fn show(ui: &Rc<Ui>) {
         .build();
     window.add_css_class("cloudmail");
     let a = Rc::new(Accounts { ui: ui.clone(), window, list, status, restart });
+    // Every handler holds `a` weakly, so the window keeps it until it closes.
+    let keep = std::cell::RefCell::new(Some(a.clone()));
+    a.window.connect_destroy(move |_| drop(keep.take()));
 
     for (provider, button) in buttons {
         button.connect_clicked(clone!(
