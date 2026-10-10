@@ -86,6 +86,12 @@ pub trait Provider: Send + Sync {
     /// Moves a thread to "inbox", "archive" or one of the provider's extra folders.
     fn move_thread(&self, id: &str, folder: &str) -> Result<()>;
     fn set_unread(&self, id: &str, unread: bool) -> Result<()>;
+    /// Deletes a thread: a linked account's goes to its own Trash, where it can be restored.
+    fn delete_thread(&self, id: &str) -> Result<()>;
+    /// Whether `delete_thread` is for good (the worker keeps no Trash).
+    fn deletes_permanently(&self) -> bool {
+        false
+    }
     fn screener(&self) -> Result<Vec<PendingSender>>;
     /// Screens a sender in ("approved") or out ("blocked") by the ID `screener` gave it (or its
     /// address, for the worker); returns how many threads moved when known.
@@ -175,6 +181,14 @@ impl Provider for Client {
 
     fn set_unread(&self, id: &str, unread: bool) -> Result<()> {
         Client::set_unread(self, id, unread)
+    }
+
+    fn delete_thread(&self, id: &str) -> Result<()> {
+        Client::delete_thread(self, id)
+    }
+
+    fn deletes_permanently(&self) -> bool {
+        true
     }
 
     fn screener(&self) -> Result<Vec<PendingSender>> {

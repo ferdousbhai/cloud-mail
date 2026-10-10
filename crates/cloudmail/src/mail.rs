@@ -197,15 +197,19 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
         ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| on(id).move_thread(id, "inbox")),
         ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| on(id).set_unread(id, true)),
         ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| on(id).set_unread(id, false)),
+        // Your worker's threads are deleted for good, so that asks first; a linked account's go to
+        // its own Trash (Gmail, iCloud Mail, HEY), where they can be restored.
         ThreadCommand::Delete { ids, yes } => {
-            if let Some(id) = ids.iter().find(|id| mail.account_for(id).is_some()) {
-                return Err(CliError::usage(format!(
-                    "{id} is in a linked account, and cloudmail doesn't delete mail there"
-                ))
-                .hint("archive it instead, or delete it in the account's own app"));
+            let permanent = ids.iter().filter(|id| on(id).deletes_permanently()).count();
+            if permanent > 0 {
+                confirm(yes, &format!("Permanently delete {}?", plural(permanent, "thread")))?;
             }
-            confirm(yes, &format!("Permanently delete {}?", plural(ids.len(), "thread")))?;
-            each(&ids, "deleted", |id| mail.client.delete_thread(id))
+            let verb = match permanent {
+                0 => "moved to the Trash",
+                n if n == ids.len() => "deleted",
+                _ => "deleted (a linked account's to its Trash)",
+            };
+            each(&ids, verb, |id| on(id).delete_thread(id))
         }
     }
 }

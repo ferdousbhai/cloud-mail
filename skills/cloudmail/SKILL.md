@@ -72,6 +72,7 @@ cloudmail threads list --folder all        # screener|inbox|archive|sent|blocked
 cloudmail search "invoice"                 # all folders but blocked; Gmail syntax works for Gmail
 cloudmail thread read <tid> --json         # messages[].text; add --mark-read to mark it read
 cloudmail thread archive|unarchive|markread|unread <tid>...
+cloudmail thread delete <tid>...          # yours: for good (--yes); linked: to its Trash
 cloudmail screener --json                  # senders waiting: [{email, name, thread_count, last_subject}]
 cloudmail screener approve|block <email>... # decides that sender in every account
 cloudmail reply <tid> -m "…" [--all] [--attach f] --dry-run --json   # then without --dry-run

@@ -341,9 +341,10 @@ impl Ui {
         let reply_all_btn = icon_button("\u{f122}", "Reply all (a)");
         let archive_btn = icon_button("\u{f187}", "Archive (e)");
         let inbox_btn = icon_button("\u{f01c}", "Move to Inbox (i)");
+        let delete_btn = icon_button("\u{f1f8}", "Delete (#)");
         let unread_btn = icon_button("\u{f0e0}", "Mark unread (u)");
         let images_btn = icon_button("\u{f03e}", "Load remote images (L)");
-        for b in [&reply_btn, &reply_all_btn, &archive_btn, &inbox_btn, &unread_btn, &images_btn] {
+        for b in [&reply_btn, &reply_all_btn, &archive_btn, &inbox_btn, &delete_btn, &unread_btn, &images_btn] {
             bar.append(b);
         }
         reader.append(&bar);
@@ -548,6 +549,11 @@ impl Ui {
             #[weak]
             ui,
             move |_| ui.move_current("inbox")
+        ));
+        delete_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| ui.delete_current()
         ));
         unread_btn.connect_clicked(clone!(
             #[weak]
@@ -1319,6 +1325,90 @@ impl Ui {
         self.update_subtitle();
     }
 
+    /// Deletes the open conversation: your own mail for good (after asking), a linked account's
+    /// to that account's Trash, where it can be restored.
+    fn delete_current(self: &Rc<Self>) {
+        if self.view.get() == View::Screener {
+            return;
+        }
+        let Some(mail) = self.mail.clone() else { return };
+        let id = {
+            let threads = self.threads.borrow();
+            let current = self.current.borrow();
+            let Some(id) = self
+                .selected_index()
+                .and_then(|i| threads.get(i))
+                .map(|t| t.id.clone())
+                .or_else(|| current.as_ref().map(|d| d.thread.id.clone()))
+            else {
+                return;
+            };
+            id
+        };
+        if !mail.provider(&id).deletes_permanently() {
+            self.finish_delete(id);
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Delete this conversation?")
+            .detail("It's deleted for good, with its attachments. Archive it to keep it out of the way instead.")
+            .buttons(["Cancel", "Delete"])
+            .cancel_button(0)
+            .default_button(0)
+            .modal(true)
+            .build();
+        dialog.choose(
+            Some(&self.window),
+            gio::Cancellable::NONE,
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |res| {
+                    if res == Ok(1) {
+                        ui.finish_delete(id.clone());
+                    }
+                }
+            ),
+        );
+    }
+
+    fn finish_delete(self: &Rc<Self>, id: String) {
+        let Some(mail) = self.mail.clone() else { return };
+        let permanent = mail.provider(&id).deletes_permanently();
+        let label = mail.provider(&id).label().to_string();
+        let idx = self.threads.borrow().iter().position(|t| t.id == id);
+        if let Some(idx) = idx {
+            self.threads.borrow_mut().remove(idx);
+            self.remove_row(idx);
+        }
+        // So a late answer from the other source can't put it back.
+        let mut guard = self.parts.borrow_mut();
+        let parts = &mut *guard;
+        for (threads, _) in parts.worker.iter_mut().chain(parts.accounts.iter_mut()) {
+            threads.retain(|t| t.id != id);
+        }
+        drop(guard);
+        if self.current.borrow().as_ref().is_some_and(|d| d.thread.id == id) {
+            self.clear_reader();
+        }
+        self.forget_account_rows();
+        self.toast(&if permanent { "Deleted".to_string() } else { format!("Moved to {label}'s Trash") });
+        util::run(
+            move || mail.provider(&id).delete_thread(&id),
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result| {
+                    if let Err(e) = result {
+                        ui.toast(&format!("Couldn't delete conversation: {e}"));
+                        ui.load_list(true);
+                    }
+                    ui.refresh_counts();
+                }
+            ),
+        );
+    }
+
     fn move_current(self: &Rc<Self>, folder: &'static str) {
         let view = self.view.get();
         if view == View::Screener {
@@ -1786,6 +1876,7 @@ impl Ui {
                 }
             }
             'e' => self.move_current("archive"),
+            '#' => self.delete_current(),
             'i' => self.move_current("inbox"),
             'u' => self.toggle_unread(),
             'r' => self.reply(false),

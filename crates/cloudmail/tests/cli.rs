@@ -625,9 +625,12 @@ fn hey_moves_marks_and_composes() {
     // A search hit outside any box has no box item to move.
     let o = h.run(&m, &["thread", "archive", "hey:9010"], &[]);
     assert_eq!(o.status.code(), Some(2));
-    // Deleting stays a worker-only action.
-    let o = h.run(&m, &["thread", "delete", "hey:9001:7001", "--yes"], &[]);
-    assert_eq!(o.status.code(), Some(2));
+    // Deleting a HEY thread moves it to HEY's Trash; no --yes, since it can be restored there.
+    let o = h.run(&m, &["thread", "delete", "hey:9001:7001"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(json_out(&o)["summary"].as_str().unwrap().contains("moved to the Trash"));
+    assert!(h.calls().iter().any(|c| c == "trash 7001"), "{:?}", h.calls());
+    assert!(!requests(&m).iter().any(|r| r.method == "DELETE"), "nothing of the worker's is deleted");
 
     let o = h.run(
         &m,
@@ -1063,11 +1066,16 @@ fn gmail_moves_marks_and_composes() {
     assert!(o.status.success());
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
     assert_eq!(h.run(&m, &["thread", "archive", "gmail:nope"], &[]).status.code(), Some(4));
-    assert_eq!(
-        h.run(&m, &["thread", "delete", "gmail:t-a1", "--yes"], &[]).status.code(),
-        Some(2),
-        "deleting stays a worker-only action"
-    );
+    // A Gmail thread goes to Gmail's Trash, without asking; a worker thread with it is deleted
+    // for good, which needs --yes off a terminal.
+    let o = h.run(&m, &["thread", "delete", "gmail:t-a1"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(h.calls().iter().any(|c| c.starts_with("gmail users threads trash") && c.contains(r#""id":"t-a1""#)));
+    let trashed = h.calls().iter().filter(|c| c.contains("threads trash")).count();
+    let o = h.run(&m, &["thread", "delete", "gmail:t-a1", "t_1"], &[]);
+    assert_eq!(json_out(&o)["error"]["code"], "confirmation_required");
+    assert_eq!(h.calls().iter().filter(|c| c.contains("threads trash")).count(), trashed, "asked before anything");
+    assert!(!requests(&m).iter().any(|r| r.method == "DELETE"));
 
     let o = h.run(
         &m,
@@ -1964,11 +1972,9 @@ fn icloud_moves_and_marks() {
     let archived = id_of(&h.json(&m, &["archive"]), "Lunch?");
     h.json(&m, &["thread", "unarchive", &archived]);
     assert_eq!(h.mail.folder_of("12"), "INBOX");
-    assert_eq!(
-        h.run(&m, &["thread", "delete", &id, "--yes"]).status.code(),
-        Some(2),
-        "deleting stays a worker-only action"
-    );
+    // Deleting moves it to iCloud's Trash, where it can be restored for 30 days.
+    assert!(h.run(&m, &["thread", "delete", &id]).status.success());
+    assert_eq!(h.mail.folder_of("12"), "Deleted Messages");
 }
 
 #[test]

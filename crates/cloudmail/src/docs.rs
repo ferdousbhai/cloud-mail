@@ -414,6 +414,7 @@ missing or failing, or Google or iCloud unreachable), or `not_found`. Linked acc
 and `watch` follows your worker only.
 
 Destructive commands (`thread delete`, `mailbox remove`) need `--yes` when not on a terminal.
+`thread delete` of a linked account's thread moves it to that account's Trash instead (no `--yes`).
 `cloudmail commands --json` lists every command, flag and example; `cloudmail skill install` installs
 a short agent skill for Claude Code, Codex and others.
 "#;

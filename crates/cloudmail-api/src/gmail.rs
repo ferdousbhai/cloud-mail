@@ -1049,6 +1049,13 @@ impl Provider for Gmail {
         }
     }
 
+    fn delete_thread(&self, id: &str) -> Result<()> {
+        let thread = self.thread_id(id)?.to_string();
+        self.call(&["threads", "trash"], json!({ "userId": "me", "id": thread }), None)?;
+        self.forget_thread(&thread);
+        Ok(())
+    }
+
     fn set_unread(&self, id: &str, unread: bool) -> Result<()> {
         if unread { self.modify(id, &["UNREAD"], &[]) } else { self.modify(id, &[], &["UNREAD"]) }
     }

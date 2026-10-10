@@ -680,6 +680,17 @@ impl Provider for Hey {
         self.run(&["move", &item.to_string(), "--to", kind], None).map(drop)
     }
 
+    fn delete_thread(&self, id: &str) -> Result<()> {
+        let (_, item) = self.ids(id)?;
+        let item = item.ok_or_else(|| {
+            self.fail(
+                ErrorKind::BadRequest,
+                format!("{id} isn't in a HEY box, so it can't be deleted (list a box to get its full ID)"),
+            )
+        })?;
+        self.run(&["trash", &item.to_string()], None).map(drop)
+    }
+
     fn set_unread(&self, id: &str, unread: bool) -> Result<()> {
         let (_, item) = self.ids(id)?;
         let item = item.ok_or_else(|| {
