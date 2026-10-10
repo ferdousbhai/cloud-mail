@@ -1,15 +1,16 @@
 name: Release binaries
 
-# Builds the cloudmail CLI for Linux and macOS and attaches it to the GitHub release.
-# The Arch package and the [cloudmail] repository are still built and signed locally by
-# bin/release; this only adds standalone CLI archives for everyone else.
+# Builds the cloudmail CLI for Linux and attaches it to the GitHub release. The Arch packages and
+# the signed repositories are still built by packages.yml and signed locally by bin/release; this
+# only adds standalone CLI archives for other Linux systems. (No macOS build: the CLI keeps its
+# token in a Secret Service keyring, which macOS doesn't have.)
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build and attach to (e.g. v0.4.2)"
+        description: "Release tag to build and attach to (e.g. v0.5.1)"
         required: true
 
 permissions:
@@ -22,14 +23,13 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest,    musl: true,  run: true }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, musl: true,  run: true }
-          - { target: aarch64-apple-darwin,       os: macos-latest,     musl: false, run: true }
-          - { target: x86_64-apple-darwin,        os: macos-latest,     musl: false, run: false }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,14 +40,12 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install musl tools
-        if: matrix.musl
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
         run: cargo build --release --locked -p cloudmail --target ${{ matrix.target }}
 
       - name: Smoke test
-        if: matrix.run
         run: |
           target/${{ matrix.target }}/release/cloudmail --version
           target/${{ matrix.target }}/release/cloudmail agent-guide --json > /dev/null
@@ -74,6 +72,7 @@ jobs:
   attach:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
