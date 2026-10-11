@@ -364,7 +364,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cloudmail"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "clap",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "cloudmail-api"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "chrono",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "cloudmail-gtk"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ammonia",
  "cloudmail-api",
