@@ -20,7 +20,7 @@ docker run --rm --platform "$platform" -e BUILD_ARCH="$architecture" -e BUILD_VE
     sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
     pacman-key --init
     if [[ $BUILD_ARCH == aarch64 ]]; then pacman-key --populate archlinuxarm; else pacman-key --populate archlinux; fi
-    pacman -Syu --needed --noconfirm base-devel cargo git gtk4 webkitgtk-6.0
+    pacman -Syu --needed --noconfirm base-devel cargo git gtk4 webkitgtk-6.0 gnome-keyring
     git config --global --add safe.directory /source
     git config --global --add safe.directory /source/.git
     commit=$(git -C /source rev-parse HEAD)
