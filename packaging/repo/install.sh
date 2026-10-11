@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPO=cloudmail
 RELEASES=${CLOUDMAIL_RELEASES_URL:-https://github.com/ferdousbhai/cloud-mail/releases/latest/download}
-SIGNING_KEY_FINGERPRINT=35C47A06567940B6796B4D0F9B3C7BDF85268B31
+SIGNING_KEY_FINGERPRINT=52130299581DAD685226900CA89CA1A6A1E74251
 PACKAGES=(cloudmail npm)
 
 # --- add_signed_repo (shared) ---
