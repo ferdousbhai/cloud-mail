@@ -7,7 +7,7 @@ version=${1:?usage: bin/release <version> [native-package-workflow-run-id]}
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid version' >&2; exit 1; }
 tag=v$version
 gh_repo=ferdousbhai/cloud-mail
-fingerprint=35C47A06567940B6796B4D0F9B3C7BDF85268B31
+fingerprint=52130299581DAD685226900CA89CA1A6A1E74251
 step() { printf '\n==> %s\n' "$*"; }
 source_commit=$(git rev-parse "$tag^{commit}")
 cargo_version=$(git show "$source_commit:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)

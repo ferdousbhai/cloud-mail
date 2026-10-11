@@ -73,7 +73,7 @@ curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
 ```
 
 This trusts Cloudmail's package-signing key (checked against the pinned fingerprint
-`35C47A06567940B6796B4D0F9B3C7BDF85268B31`), adds the signed pacman repository for your
+`52130299581DAD685226900CA89CA1A6A1E74251`), adds the signed pacman repository for your
 architecture (`[cloudmail]` on x86_64, `[cloudmail-aarch64]` on ARM), and installs `cloudmail` and
 `npm`. On Omarchy it also adds a hook so the repository survives `omarchy refresh pacman`. Updates
 arrive with `omarchy update` (or `pacman -Syu`). The script is
@@ -84,9 +84,9 @@ same steps by hand:
 repo=cloudmail; [ "$(uname -m)" = aarch64 ] && repo=cloudmail-aarch64
 release=https://github.com/ferdousbhai/cloud-mail/releases/latest/download
 curl -fsSLO "$release/$repo-signing-key.asc"
-gpg --show-keys "$repo-signing-key.asc"       # must show 35C47A06567940B6796B4D0F9B3C7BDF85268B31
+gpg --show-keys "$repo-signing-key.asc"       # must show 52130299581DAD685226900CA89CA1A6A1E74251
 sudo pacman-key --add "$repo-signing-key.asc"
-sudo pacman-key --lsign-key 35C47A06567940B6796B4D0F9B3C7BDF85268B31
+sudo pacman-key --lsign-key 52130299581DAD685226900CA89CA1A6A1E74251
 printf '[%s]\nSigLevel = Required DatabaseRequired\nServer = %s\n' "$repo" "$release" \
   | sudo tee "/etc/pacman.d/$repo.conf"
 echo "Include = /etc/pacman.d/$repo.conf" | sudo tee -a /etc/pacman.conf
