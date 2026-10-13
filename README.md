@@ -39,9 +39,11 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
   to your Inbox from then on. No, and you never hear from them again. People you email are screened
   in automatically. If the sender's domain didn't authenticate a message (DMARC, or aligned
   DKIM/SPF when the domain has no DMARC policy), that message can't ride on an earlier approval.
+  More: [docs/screening.md](docs/screening.md).
 - **Several domains, one inbox.** Personal addresses are screened. Role addresses like `support@`
   deliver straight to the Inbox. Replies go out from the address the mail was sent to.
-- **Inbox and Archive**, that's it. A reply on an archived thread brings it back.
+- **Inbox and Archive**, that's it. A reply on an archived thread brings it back. Delete removes a
+  thread (for a linked account, it goes to that account's Trash).
 - **Privacy by default**: remote images and tracking pixels stay blocked until you ask for them.
 
 | Path | What |
@@ -98,7 +100,7 @@ Cloudmail is also on its way into Omarchy's own repository and *Install › Serv
 [omarchy#13763](https://github.com/omacom/omarchy/pull/13763)). Until those are merged, use the
 commands above.
 
-**Just the CLI, on other Linux systems:** each release after v0.5.0 has prebuilt `cloudmail`
+**Just the CLI, on other Linux systems:** each release since v0.6.1 has prebuilt `cloudmail`
 archives attached (x86_64 and aarch64, statically linked), with a `SHA256SUMS` file. Each archive
 holds the `cloudmail` binary and the `worker/` source that `cloudmail setup` deploys. Put the
 binary on your `PATH` and keep the unpacked folder: run `cloudmail setup` from inside it (it
@@ -175,7 +177,7 @@ cloudmail compose --to a@example.com --subject Invoice -m "Attached." --attach i
 cloudmail watch --folder all  # stream new mail (JSON lines when piped)
 ```
 
-Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `r` reply, `a` reply all, `c` compose,
+Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `#` delete, `r` reply, `a` reply all, `c` compose,
 `y`/`n` in the Screener, `/` search, `L` load remote images, `?` all keys. To open `mailto:` links
 in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handler/mailto`.
 
