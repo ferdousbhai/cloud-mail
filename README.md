@@ -14,6 +14,10 @@ or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to
   <img src="docs/images/cloudmail-screener.webp" alt="The Screener: two new senders, each with Yes and No" width="49%">
 </p>
 
+<p align="center">
+  <img src="docs/images/cloudmail-demo.gif" alt="28-second demo: the Screener, forged-mail protection, linked Gmail and iCloud, the JSON CLI, and install" width="100%">
+</p>
+
 ## Who it's for
 
 - You own a domain whose DNS is on Cloudflare, and you want its mail out of Google Workspace,
