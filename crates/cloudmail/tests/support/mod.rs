@@ -57,8 +57,14 @@ impl Bus {
             .spawn()
             .expect("dbus-daemon runs (the tests need the dbus package)");
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        Bus { child, address: line.trim().to_string(), conns: Vec::new() }
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        Bus {
+            child,
+            address: line.trim().to_string(),
+            conns: Vec::new(),
+        }
     }
 
     fn serve(
@@ -100,7 +106,10 @@ impl SecretService {
         if algorithm != "plain" {
             return Err(zbus::fdo::Error::NotSupported(algorithm));
         }
-        Ok((OwnedValue::try_from(ZValue::from("")).unwrap(), opath("/org/freedesktop/secrets/session/s1")))
+        Ok((
+            OwnedValue::try_from(ZValue::from("")).unwrap(),
+            opath("/org/freedesktop/secrets/session/s1"),
+        ))
     }
 
     fn read_alias(&self, name: String) -> OwnedObjectPath {
@@ -144,10 +153,17 @@ impl Collection {
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
             let path = format!("{LOGIN}/i{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
             assert!(!label.is_empty(), "items are labelled for the keyring's own UI");
-            items.push(Secret { path: path.clone(), attributes, value: String::from_utf8(secret.2).unwrap() });
+            items.push(Secret {
+                path: path.clone(),
+                attributes,
+                value: String::from_utf8(secret.2).unwrap(),
+            });
             path
         };
-        server.at(path.as_str(), Item(self.0.clone(), path.clone())).await.unwrap();
+        server
+            .at(path.as_str(), Item(self.0.clone(), path.clone()))
+            .await
+            .unwrap();
         (opath(&path), opath("/"))
     }
 
@@ -163,8 +179,10 @@ struct Item(Keyring, String);
 impl Item {
     fn get_secret(&self, session: OwnedObjectPath) -> zbus::fdo::Result<(OwnedObjectPath, Vec<u8>, Vec<u8>, String)> {
         let items = self.0.lock().unwrap();
-        let s =
-            items.iter().find(|s| s.path == self.1).ok_or_else(|| zbus::fdo::Error::UnknownObject(self.1.clone()))?;
+        let s = items
+            .iter()
+            .find(|s| s.path == self.1)
+            .ok_or_else(|| zbus::fdo::Error::UnknownObject(self.1.clone()))?;
         Ok((session, Vec::new(), s.value.clone().into_bytes(), "text/plain".into()))
     }
 
@@ -198,7 +216,11 @@ pub fn keyring(bus: &mut Bus, items: &[(&str, &str)]) -> Keyring {
     let seeded: Vec<String> = store.lock().unwrap().iter().map(|s| s.path.clone()).collect();
     let s = store.clone();
     bus.serve("org.freedesktop.secrets", move |mut b| {
-        b = b.serve_at(SECRETS, SecretService).unwrap().serve_at(LOGIN, Collection(s.clone())).unwrap();
+        b = b
+            .serve_at(SECRETS, SecretService)
+            .unwrap()
+            .serve_at(LOGIN, Collection(s.clone()))
+            .unwrap();
         for p in seeded {
             b = b.serve_at(p.clone(), Item(s.clone(), p)).unwrap();
         }
@@ -266,7 +288,11 @@ impl FakeSession {
     }
     #[zbus(property, name = "AppleId")]
     fn apple_id(&self) -> String {
-        if self.0.lock().unwrap().signed_in { "ann@example.com".into() } else { String::new() }
+        if self.0.lock().unwrap().signed_in {
+            "ann@example.com".into()
+        } else {
+            String::new()
+        }
     }
     #[zbus(property, name = "FullName")]
     fn full_name(&self) -> String {
@@ -274,7 +300,11 @@ impl FakeSession {
     }
     #[zbus(property, name = "Dsid")]
     fn dsid(&self) -> String {
-        if self.0.lock().unwrap().signed_in { "1234".into() } else { String::new() }
+        if self.0.lock().unwrap().signed_in {
+            "1234".into()
+        } else {
+            String::new()
+        }
     }
 
     #[zbus(name = "Session")]
@@ -340,7 +370,8 @@ pub fn icloud_session(bus: &mut Bus, mail_url: &str, signed_in: bool) -> Session
     }));
     let s = st.clone();
     bus.serve("io.github.ferdousbhai.ICloudSession", move |b| {
-        b.serve_at("/io/github/ferdousbhai/ICloudSession", FakeSession(s)).unwrap()
+        b.serve_at("/io/github/ferdousbhai/ICloudSession", FakeSession(s))
+            .unwrap()
     });
     st
 }
@@ -447,15 +478,35 @@ pub struct FakeMail {
 
 impl FakeMail {
     pub fn log(&self, path: &str) -> Vec<Request> {
-        self.state.lock().unwrap().log.iter().filter(|r| r.path.ends_with(path)).cloned().collect()
+        self.state
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .filter(|r| r.path.ends_with(path))
+            .cloned()
+            .collect()
     }
 
     pub fn seen(&self, uid: &str) -> bool {
-        self.state.lock().unwrap().messages.iter().find(|m| m.uid == uid).is_some_and(|m| m.seen)
+        self.state
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .find(|m| m.uid == uid)
+            .is_some_and(|m| m.seen)
     }
 
     pub fn folder_of(&self, uid: &str) -> String {
-        self.state.lock().unwrap().messages.iter().find(|m| m.uid == uid).map(|m| m.folder.clone()).unwrap_or_default()
+        self.state
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .find(|m| m.uid == uid)
+            .map(|m| m.folder.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -483,8 +534,12 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
     match (r.method.as_str(), r.path.as_str()) {
         ("POST", "/mailws2/v1/thread/search") => {
             let words = r.body["searchText"].as_str().map(str::to_lowercase);
-            let mut threads: Vec<String> =
-                st.messages.iter().filter(|m| m.folder == folder).map(|m| m.thread.clone()).collect();
+            let mut threads: Vec<String> = st
+                .messages
+                .iter()
+                .filter(|m| m.folder == folder)
+                .map(|m| m.thread.clone())
+                .collect();
             threads.sort();
             threads.dedup();
             let mut list: Vec<Value> = threads
@@ -492,14 +547,19 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
                 .map(|t| st.messages.iter().filter(|m| &m.thread == t).collect::<Vec<_>>())
                 .filter(|l| {
                     words.as_ref().is_none_or(|w| {
-                        l.iter().any(|m| m.subject.to_lowercase().contains(w) || m.text.to_lowercase().contains(w))
+                        l.iter()
+                            .any(|m| m.subject.to_lowercase().contains(w) || m.text.to_lowercase().contains(w))
                     })
                 })
                 .filter(|l| {
                     r.body["filters"]["unseen"] != json!(true) || l.iter().any(|m| m.folder == folder && !m.seen)
                 })
                 .map(|l| thread_digest(&l, &folder))
-                .filter(|d| r.body["before"].as_i64().is_none_or(|b| d["timestamp"].as_i64().unwrap() < b))
+                .filter(|d| {
+                    r.body["before"]
+                        .as_i64()
+                        .is_none_or(|b| d["timestamp"].as_i64().unwrap() < b)
+                })
                 .collect();
             list.sort_by_key(|d| std::cmp::Reverse(d["timestamp"].as_i64().unwrap()));
             list.truncate(r.body["maxResults"].as_u64().unwrap_or(50) as usize);
@@ -561,7 +621,11 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
                 .collect();
             let seen = r.body["method"] == "ADD";
             assert_eq!(r.body["flags"], json!(["SEEN"]));
-            for m in st.messages.iter_mut().filter(|m| ids.contains(&m.thread) && m.folder == folder) {
+            for m in st
+                .messages
+                .iter_mut()
+                .filter(|m| ids.contains(&m.thread) && m.folder == folder)
+            {
                 m.seen = seen;
             }
             ok(json!({ "sessionHeaders": headers }))
@@ -574,7 +638,11 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
                 .filter_map(|t| t.as_str().map(str::to_string))
                 .collect();
             let dest = r.body["destFolder"].as_str().unwrap_or("").to_string();
-            for m in st.messages.iter_mut().filter(|m| ids.contains(&m.thread) && m.folder == folder) {
+            for m in st
+                .messages
+                .iter_mut()
+                .filter(|m| ids.contains(&m.thread) && m.folder == folder)
+            {
                 m.folder = dest.clone();
             }
             ok(json!({ "sessionHeaders": headers }))
@@ -594,7 +662,10 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
                     st.sent.push(d);
                     ok(json!({}))
                 }
-                None => (404, br#"{"errorCode":"NOT_FOUND","errorDescription":"no such draft"}"#.to_vec()),
+                None => (
+                    404,
+                    br#"{"errorCode":"NOT_FOUND","errorDescription":"no such draft"}"#.to_vec(),
+                ),
             }
         }
         ("POST", "/mailws2/v1/message/part") => {
@@ -626,7 +697,10 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
         ("GET", "/cc/mail/v1/account/1234/preference/web/all") => {
             ok(json!({ "account": st.account, "clientPreference": {}, "serverPreference": {} }))
         }
-        _ => (404, br#"{"errorCode":"UNKNOWN","errorDescription":"no such endpoint"}"#.to_vec()),
+        _ => (
+            404,
+            br#"{"errorCode":"UNKNOWN","errorDescription":"no such endpoint"}"#.to_vec(),
+        ),
     }
 }
 
@@ -656,8 +730,10 @@ pub fn icloud_mail(messages: Vec<FMessage>) -> FakeMail {
                         return;
                     }
                     let mut parts = line.split_whitespace();
-                    let (method, target) =
-                        (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+                    let (method, target) = (
+                        parts.next().unwrap_or("").to_string(),
+                        parts.next().unwrap_or("").to_string(),
+                    );
                     let (mut len, mut cookie) = (0usize, String::new());
                     loop {
                         let mut h = String::new();
@@ -708,7 +784,11 @@ pub fn icloud_mail(messages: Vec<FMessage>) -> FakeMail {
                         head.push_str("set-cookie: X-APPLE-WEBAUTH-TOKEN=rotated; Path=/; Domain=.icloud.com\r\n");
                     }
                     head.push_str("\r\n");
-                    if stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(&body)).is_err() {
+                    if stream
+                        .write_all(head.as_bytes())
+                        .and_then(|_| stream.write_all(&body))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -730,5 +810,7 @@ fn url_pairs(q: &str) -> HashMap<String, String> {
 }
 
 fn urlencoding_decode(s: &str) -> String {
-    urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string())
+    urlencoding::decode(s)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| s.to_string())
 }

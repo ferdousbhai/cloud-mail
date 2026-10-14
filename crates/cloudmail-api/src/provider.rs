@@ -50,7 +50,11 @@ pub struct AccountWarning {
 
 impl AccountWarning {
     pub fn new(account: &str, e: &Error) -> Self {
-        Self { account: account.to_string(), code: e.kind.code().to_string(), message: e.message.clone() }
+        Self {
+            account: account.to_string(),
+            code: e.kind.code().to_string(),
+            message: e.message.clone(),
+        }
     }
 }
 
@@ -77,7 +81,10 @@ pub trait Provider: Send + Sync {
     /// Signs in again in the browser (the provider's own sign-in), for an account whose sign-in
     /// expired or was revoked. Blocks until the sign-in finishes.
     fn sign_in(&self) -> Result<()> {
-        Err(Error::new(ErrorKind::BadRequest, format!("{} has no sign-in", self.label())))
+        Err(Error::new(
+            ErrorKind::BadRequest,
+            format!("{} has no sign-in", self.label()),
+        ))
     }
     fn threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>>;
     fn search(&self, query: &str, limit: u32) -> Result<Vec<ThreadSummary>>;
@@ -107,7 +114,11 @@ pub trait Provider: Send + Sync {
     fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
         Err(Error::new(
             ErrorKind::BadRequest,
-            format!("{id} is a {} message, and {} doesn't give out original .eml files", self.label(), self.label()),
+            format!(
+                "{id} is a {} message, and {} doesn't give out original .eml files",
+                self.label(),
+                self.label()
+            ),
         ))
     }
     /// The Message-ID headers of a thread's messages as last listed, for spotting copies of
@@ -168,7 +179,12 @@ impl Provider for Client {
     }
 
     fn search(&self, query: &str, limit: u32) -> Result<Vec<ThreadSummary>> {
-        self.list_threads(&ThreadQuery { folder: "all".into(), q: Some(query.into()), limit, ..Default::default() })
+        self.list_threads(&ThreadQuery {
+            folder: "all".into(),
+            q: Some(query.into()),
+            limit,
+            ..Default::default()
+        })
     }
 
     fn thread(&self, id: &str, _html: bool) -> Result<ThreadDetail> {
@@ -258,13 +274,19 @@ pub fn open(name: &str, cfg: &AccountConfig) -> Result<Arc<dyn Provider>> {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && name != "cloudmail"
 }
 
 /// How a linked account's command-line tool ended.
 pub(crate) enum Run {
-    Done { status: ExitStatus, stdout: Vec<u8>, stderr: String },
+    Done {
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: String,
+    },
     Missing,
     TimedOut,
     Failed(std::io::Error),
@@ -311,7 +333,9 @@ pub(crate) fn run_command(cmd: &mut Command, stdin: Option<&str>, timeout: Durat
         }
     };
     let stdout = out.join().unwrap_or_default();
-    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).trim().to_string();
+    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default())
+        .trim()
+        .to_string();
     Run::Done { status, stdout, stderr }
 }
 
@@ -321,8 +345,10 @@ pub(crate) struct PrivateDir(PathBuf);
 
 impl PrivateDir {
     pub fn new(parent: &Path, prefix: &str) -> std::io::Result<Self> {
-        let nanos =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
         Self::create(&dir)?;
         Ok(Self(dir))

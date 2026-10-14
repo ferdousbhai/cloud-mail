@@ -94,7 +94,10 @@ pub fn read_file(path: &Path) -> Result<Option<FileConfig>> {
             .map(Some)
             .map_err(|e| Error::new(ErrorKind::Config, format!("could not parse {}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(Error::new(ErrorKind::Config, format!("could not read {}: {e}", path.display()))),
+        Err(e) => Err(Error::new(
+            ErrorKind::Config,
+            format!("could not read {}: {e}", path.display()),
+        )),
     }
 }
 
@@ -155,7 +158,12 @@ fn env(keys: &[&str]) -> Option<String> {
 
 /// The environment variables that are set and so override the config file.
 pub fn env_overrides() -> Vec<&'static str> {
-    API_URL_ENV.into_iter().zip(API_TOKEN_ENV).flat_map(|(u, t)| [u, t]).filter(|k| env_value(k).is_some()).collect()
+    API_URL_ENV
+        .into_iter()
+        .zip(API_TOKEN_ENV)
+        .flat_map(|(u, t)| [u, t])
+        .filter(|k| env_value(k).is_some())
+        .collect()
 }
 
 /// Moves secrets an older version wrote into config.toml (the API token, a Gmail OAuth client's
@@ -169,7 +177,11 @@ pub fn migrate_secrets(file: &mut FileConfig) -> Result<bool> {
     let moving = |e: Error| {
         Error::new(
             e.kind,
-            format!("{} still holds secrets that belong in the keyring: {}", path().display(), e.message),
+            format!(
+                "{} still holds secrets that belong in the keyring: {}",
+                path().display(),
+                e.message
+            ),
         )
     };
     if let Some(token) = file.api_token.take().filter(|t| !t.trim().is_empty()) {
@@ -261,9 +273,18 @@ mod tests {
     fn accounts_are_optional_and_round_trip() {
         let old: FileConfig = toml::from_str("api_url = \"https://x\"\n").unwrap();
         assert!(old.accounts.is_empty());
-        assert!(!toml::to_string(&old).unwrap().contains("accounts"), "a config without accounts is written as before");
+        assert!(
+            !toml::to_string(&old).unwrap().contains("accounts"),
+            "a config without accounts is written as before"
+        );
         let mut with = old.clone();
-        with.accounts.insert("hey".into(), AccountConfig { command: Some("/opt/hey".into()), ..Default::default() });
+        with.accounts.insert(
+            "hey".into(),
+            AccountConfig {
+                command: Some("/opt/hey".into()),
+                ..Default::default()
+            },
+        );
         let text = toml::to_string(&with).unwrap();
         assert!(text.contains("[accounts.hey]"), "{text}");
         let back: FileConfig = toml::from_str(&text).unwrap();

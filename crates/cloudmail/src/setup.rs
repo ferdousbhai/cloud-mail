@@ -37,9 +37,12 @@ pub fn strip_ansi(s: &str) -> String {
 /// The first JSON value in a command's output (cf may print notices around it, and they can
 /// contain brackets too, as in "▲ [WARNING] …").
 pub fn first_json(output: &str) -> Option<Value> {
-    output
-        .match_indices(['[', '{'])
-        .find_map(|(i, _)| serde_json::Deserializer::from_str(&output[i..]).into_iter::<Value>().next()?.ok())
+    output.match_indices(['[', '{']).find_map(|(i, _)| {
+        serde_json::Deserializer::from_str(&output[i..])
+            .into_iter::<Value>()
+            .next()?
+            .ok()
+    })
 }
 
 /// What `cloudmail setup` records about an install in `install.json`, which cloudflare.config.ts reads.
@@ -130,7 +133,9 @@ pub fn jsonc_field(jsonc: &str, key: &str) -> Option<String> {
     let mut rest = jsonc;
     while let Some(i) = rest.find(&needle) {
         rest = &rest[i + needle.len()..];
-        let Some(after) = rest.trim_start().strip_prefix(':') else { continue };
+        let Some(after) = rest.trim_start().strip_prefix(':') else {
+            continue;
+        };
         let after = after.trim_start().strip_prefix('"')?;
         return after.split('"').next().map(str::to_string);
     }
@@ -140,13 +145,21 @@ pub fn jsonc_field(jsonc: &str, key: &str) -> Option<String> {
 /// The id of the D1 database called `name` in `cf d1 list`.
 pub fn parse_d1_list(output: &str, name: &str) -> Option<String> {
     let list = first_json(output)?;
-    list.as_array()?.iter().find(|d| d["name"] == name).and_then(|d| d["uuid"].as_str().map(str::to_string))
+    list.as_array()?
+        .iter()
+        .find(|d| d["name"] == name)
+        .and_then(|d| d["uuid"].as_str().map(str::to_string))
 }
 
 /// Bucket names in `cf r2 buckets list`.
 pub fn parse_r2_buckets(output: &str) -> Vec<String> {
     let list = first_json(output).unwrap_or_default();
-    list["buckets"].as_array().into_iter().flatten().filter_map(|b| b["name"].as_str().map(str::to_string)).collect()
+    list["buckets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// The zone ID for `domain` in `cf zones list --name <domain>`.
@@ -221,15 +234,20 @@ pub fn parse_destinations(output: &str) -> Vec<(String, bool)> {
         .into_iter()
         .flatten()
         .filter_map(|d| {
-            Some((d["email"].as_str()?.to_ascii_lowercase(), d["verified"].as_str().is_some_and(|v| !v.is_empty())))
+            Some((
+                d["email"].as_str()?.to_ascii_lowercase(),
+                d["verified"].as_str().is_some_and(|v| !v.is_empty()),
+            ))
         })
         .collect()
 }
 
 /// A domain's public MX hosts (DNS over HTTPS); None when the lookup failed three times.
 fn mx_hosts(domain: &str) -> Option<Vec<String>> {
-    let agent: ureq::Agent =
-        ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(5))).build().into();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .build()
+        .into();
     let lookup = || -> Option<Value> {
         agent
             .get("https://cloudflare-dns.com/dns-query")
@@ -255,7 +273,10 @@ pub fn parse_mx_answer(body: &Value) -> Vec<String> {
         .filter(|a| a["type"] == 15)
         .filter_map(|a| {
             let (priority, host) = a["data"].as_str()?.split_once(' ')?;
-            Some((priority.parse().ok()?, host.trim().trim_end_matches('.').to_ascii_lowercase()))
+            Some((
+                priority.parse().ok()?,
+                host.trim().trim_end_matches('.').to_ascii_lowercase(),
+            ))
         })
         .collect();
     mx.sort();
@@ -279,7 +300,11 @@ pub fn parse_mailbox_spec(spec: &str) -> CliResult<(String, bool)> {
     let screen = match mode {
         None | Some("screen") | Some("screened") => true,
         Some("direct") => false,
-        Some(other) => return Err(CliError::usage(format!("unknown mailbox mode `{other}` (use :direct or :screen)"))),
+        Some(other) => {
+            return Err(CliError::usage(format!(
+                "unknown mailbox mode `{other}` (use :direct or :screen)"
+            )));
+        }
     };
     Ok((addr, screen))
 }
@@ -307,9 +332,13 @@ pub struct Step {
 /// A command line for display, quoting arguments the shell would split or expand.
 fn shell_line(program: &[String], args: &[&str]) -> String {
     let mut parts = program.to_vec();
-    parts.extend(
-        args.iter().map(|a| if a.contains([' ', '"', '[', '{', '*', '$']) { format!("'{a}'") } else { a.to_string() }),
-    );
+    parts.extend(args.iter().map(|a| {
+        if a.contains([' ', '"', '[', '{', '*', '$']) {
+            format!("'{a}'")
+        } else {
+            a.to_string()
+        }
+    }));
     parts.join(" ")
 }
 
@@ -326,7 +355,14 @@ pub struct Cf {
 impl Cf {
     pub fn new(program: &str, dir: PathBuf, dry_run: bool, interactive: bool) -> Self {
         let program = program.split_whitespace().map(str::to_string).collect();
-        Self { program, dir, account: None, dry_run, interactive, steps: Vec::new() }
+        Self {
+            program,
+            dir,
+            account: None,
+            dry_run,
+            interactive,
+            steps: Vec::new(),
+        }
     }
 
     /// Runs every later cf command against this Cloudflare account.
@@ -349,11 +385,19 @@ impl Cf {
     pub fn record(&mut self, step: &str, status: &str, command: Option<String>, detail: Option<String>) {
         if self.interactive {
             eprintln!("[{status:>7}] {step}\x1b[K");
-            if let Some(d) = detail.as_ref().filter(|_| matches!(status, "blocked" | "skipped" | "pending")) {
+            if let Some(d) = detail
+                .as_ref()
+                .filter(|_| matches!(status, "blocked" | "skipped" | "pending"))
+            {
                 eprintln!("          {d}");
             }
         }
-        self.steps.push(Step { step: step.into(), status: status.into(), command, detail });
+        self.steps.push(Step {
+            step: step.into(),
+            status: status.into(),
+            command,
+            detail,
+        });
     }
 
     /// Does a step that changes something, or records it as planned during --dry-run.
@@ -397,11 +441,15 @@ impl Cf {
 
     pub fn run_program(&mut self, step: &str, program: &[&str]) -> CliResult<()> {
         let (bin, args) = program.split_first().expect("a program to run");
-        self.perform(step, Some(program.join(" ")), None, |w| w.exec(&[bin.to_string()], args, None).map(drop))
+        self.perform(step, Some(program.join(" ")), None, |w| {
+            w.exec(&[bin.to_string()], args, None).map(drop)
+        })
     }
 
     fn command(&self, program: &[String], args: &[&str]) -> CliResult<Command> {
-        let (bin, pre) = program.split_first().ok_or_else(|| CliError::usage("empty --cf command"))?;
+        let (bin, pre) = program
+            .split_first()
+            .ok_or_else(|| CliError::usage("empty --cf command"))?;
         let mut cmd = Command::new(bin);
         cmd.args(pre).args(args).current_dir(&self.dir);
         if let Some(id) = &self.account {
@@ -415,7 +463,11 @@ impl Cf {
         let status = self.command(&self.program, args)?.status().map_err(|e| {
             CliError::generic(format!("could not run `{}`: {e}", self.program[0])).hint("install Node.js (npm)")
         })?;
-        if status.success() { Ok(()) } else { Err(CliError::generic(format!("`{}` failed", self.render(args)))) }
+        if status.success() {
+            Ok(())
+        } else {
+            Err(CliError::generic(format!("`{}` failed", self.render(args))))
+        }
     }
 
     fn exec(&self, program: &[String], args: &[&str], stdin: Option<&str>) -> CliResult<String> {
@@ -433,12 +485,19 @@ impl Cf {
             pipe.write_all(input.as_bytes())?;
         }
         let out = child.wait_with_output()?;
-        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
         if !out.status.success() {
             let clean = strip_ansi(&text);
             let tail: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
             let tail = tail[tail.len().saturating_sub(6)..].join("\n");
-            return Err(CliError::generic(format!("`{}` failed:\n{tail}", shell_line(program, args))));
+            return Err(CliError::generic(format!(
+                "`{}` failed:\n{tail}",
+                shell_line(program, args)
+            )));
         }
         Ok(text)
     }
@@ -464,8 +523,10 @@ fn resolve_worker_dir_in(flag: Option<&Path>, local: &Path, packaged: &[&Path], 
         if is_worker_dir(dir) {
             return Ok(dir.to_path_buf());
         }
-        return Err(CliError::usage(format!("{} is not a cloudmail worker directory", dir.display()))
-            .hint("pass the worker/ directory of a cloudmail checkout"));
+        return Err(
+            CliError::usage(format!("{} is not a cloudmail worker directory", dir.display()))
+                .hint("pass the worker/ directory of a cloudmail checkout"),
+        );
     }
     if is_worker_dir(local) {
         return Ok(local.to_path_buf());
@@ -483,7 +544,10 @@ fn resolve_worker_dir_in(flag: Option<&Path>, local: &Path, packaged: &[&Path], 
 /// refreshes package.json in the copied worker, so its dependencies must follow).
 fn deps_current(dir: &Path) -> bool {
     let modified = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (modified(dir.join("node_modules/.package-lock.json")), modified(dir.join("package.json"))) {
+    match (
+        modified(dir.join("node_modules/.package-lock.json")),
+        modified(dir.join("package.json")),
+    ) {
         (Some(installed), Some(manifest)) => installed >= manifest,
         (Some(_), None) => true,
         _ => false,
@@ -512,8 +576,10 @@ fn wait_until_live(client: &Client) -> CliResult<()> {
             Ok(_) => return Ok(()),
             Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_secs(3)),
             Err(e) => {
-                return Err(CliError::generic(format!("the worker was deployed but isn't answering yet: {e}"))
-                    .hint("wait a minute, then run `cloudmail status`; re-running setup is safe"));
+                return Err(
+                    CliError::generic(format!("the worker was deployed but isn't answering yet: {e}"))
+                        .hint("wait a minute, then run `cloudmail status`; re-running setup is safe"),
+                );
             }
         }
     }
@@ -540,7 +606,11 @@ fn blocked(w: &mut Cf, address: &str, detail: String) -> RouteOutcome {
         _ => format!("{detail}; re-run with --yes to do it"),
     };
     w.record(&format!("route {address}"), "blocked", None, Some(detail.clone()));
-    RouteOutcome { address: address.into(), status: "blocked".into(), detail }
+    RouteOutcome {
+        address: address.into(),
+        status: "blocked".into(),
+        detail,
+    }
 }
 
 /// Makes sure the address's domain receives mail through Email Routing and can send, and that the
@@ -554,8 +624,9 @@ pub fn route_address(
     sending_zones: &mut Vec<String>,
     routing_zones: &mut Vec<String>,
 ) -> CliResult<RouteOutcome> {
-    let domain =
-        domain_of(address).ok_or_else(|| CliError::usage(format!("not an email address: {address}")))?.to_string();
+    let domain = domain_of(address)
+        .ok_or_else(|| CliError::usage(format!("not an email address: {address}")))?
+        .to_string();
     // cf resolves `-z <name>` from the first page of zones only (20), so an account with more
     // domains gets "Zone not found" for the rest; the zone's ID always works.
     let zone = w
@@ -564,14 +635,20 @@ pub fn route_address(
         .and_then(|o| zone_id(&o, &domain))
         .unwrap_or_else(|| domain.clone());
 
-    let routing_on =
-        |w: &Cf| w.query(&["email-routing", "settings", "get", "-z", &zone]).is_ok_and(|o| routing_enabled(&o));
+    let routing_on = |w: &Cf| {
+        w.query(&["email-routing", "settings", "get", "-z", &zone])
+            .is_ok_and(|o| routing_enabled(&o))
+    };
     if !routing_zones.contains(&domain) && !routing_on(w) {
         // Enabling Email Routing replaces the domain's MX records: free to do when nothing receives
         // mail there yet, a question when something else does.
         let mx = if yes { None } else { mx_hosts(&domain) };
-        let elsewhere: Vec<String> =
-            mx.iter().flatten().filter(|h| !h.ends_with(".mx.cloudflare.net")).cloned().collect();
+        let elsewhere: Vec<String> = mx
+            .iter()
+            .flatten()
+            .filter(|h| !h.ends_with(".mx.cloudflare.net"))
+            .cloned()
+            .collect();
         let safe = mx.is_some() && elsewhere.is_empty();
         if !safe {
             // A failed lookup says so: "receives mail at somewhere" reads as mail elsewhere.
@@ -582,15 +659,24 @@ pub fn route_address(
             };
             let question = format!("{current}. Move all of {domain}'s mail to Cloudflare (replaces its MX records)?");
             if !consent(w, yes, &question) {
-                return Ok(blocked(w, address, format!("{current}; moving it to Cloudflare replaces its MX records")));
+                return Ok(blocked(
+                    w,
+                    address,
+                    format!("{current}; moving it to Cloudflare replaces its MX records"),
+                ));
             }
         }
-        w.mutate(&format!("enable Email Routing for {domain}"), &["email-routing", "enable", "-z", &zone], None)?;
+        w.mutate(
+            &format!("enable Email Routing for {domain}"),
+            &["email-routing", "enable", "-z", &zone],
+            None,
+        )?;
     }
     routing_zones.push(domain.clone());
 
     let sending_on = |w: &Cf| {
-        w.query(&["email-sending", "subdomains", "list", "-z", &zone]).is_ok_and(|o| sending_enabled(&o, &domain))
+        w.query(&["email-sending", "subdomains", "list", "-z", &zone])
+            .is_ok_and(|o| sending_enabled(&o, &domain))
     };
     if sending_zones.contains(&domain) || sending_on(w) {
         w.record(&format!("sending for {domain}"), "exists", None, None);
@@ -603,19 +689,40 @@ pub fn route_address(
     }
     sending_zones.push(domain.clone());
 
-    let rules = parse_rules(&w.probe(&["email-routing", "rules", "list-account", "-z", &zone, "--per-page", "50"])?);
+    let rules = parse_rules(&w.probe(&[
+        "email-routing",
+        "rules",
+        "list-account",
+        "-z",
+        &zone,
+        "--per-page",
+        "50",
+    ])?);
     let target = format!("worker:{worker}");
     let matcher = format!("to:{address}");
     let step = format!("route {address}");
-    let outcome =
-        |status: &str, detail: String| RouteOutcome { address: address.into(), status: status.into(), detail };
+    let outcome = |status: &str, detail: String| RouteOutcome {
+        address: address.into(),
+        status: status.into(),
+        detail,
+    };
     let (verb, id, status, detail) = match rules.iter().find(|r| r.matcher.eq_ignore_ascii_case(&matcher)) {
         Some(r) if r.action == target => {
             w.record(&step, "exists", None, Some(target.clone()));
             return Ok(outcome("exists", target));
         }
-        Some(r) if !consent(w, yes, &format!("{address} is routed to {}. Send it to Cloudmail instead?", r.action)) => {
-            return Ok(blocked(w, address, format!("an existing rule sends {address} to {}", r.action)));
+        Some(r)
+            if !consent(
+                w,
+                yes,
+                &format!("{address} is routed to {}. Send it to Cloudmail instead?", r.action),
+            ) =>
+        {
+            return Ok(blocked(
+                w,
+                address,
+                format!("an existing rule sends {address} to {}", r.action),
+            ));
         }
         Some(r) => ("update", Some(r.id.as_str()), "updated", format!("was {}", r.action)),
         None => ("create", None, "created", target),
@@ -668,7 +775,12 @@ fn login(w: &mut Cf, cf: &str) -> CliResult<Value> {
         return Ok(out);
     }
     if w.dry_run {
-        w.record("Cloudflare login", "planned", Some(format!("{cf} auth login")), Some("opens your browser".into()));
+        w.record(
+            "Cloudflare login",
+            "planned",
+            Some(format!("{cf} auth login")),
+            Some("opens your browser".into()),
+        );
         return Ok(Value::Null);
     }
     if w.interactive {
@@ -745,7 +857,10 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         }
         specs.push(addr);
     }
-    let mailboxes = specs.iter().map(|m| parse_mailbox_spec(m)).collect::<CliResult<Vec<_>>>()?;
+    let mailboxes = specs
+        .iter()
+        .map(|m| parse_mailbox_spec(m))
+        .collect::<CliResult<Vec<_>>>()?;
 
     let dir = resolve_worker_dir(args.worker_dir.as_deref())?;
     let install_path = dir.join(INSTALL_FILE);
@@ -762,7 +877,10 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     if deps_current(&dir) {
         w.record("install worker dependencies", "exists", None, None);
     } else {
-        w.run_program("install worker dependencies", &["npm", "install", "--no-audit", "--no-fund"])?;
+        w.run_program(
+            "install worker dependencies",
+            &["npm", "install", "--no-audit", "--no-fund"],
+        )?;
     }
 
     // 2. login and account
@@ -774,14 +892,21 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     }
 
     // 3. D1 + R2
-    let find_db = |w: &Cf| w.query(&["d1", "list", "--name", &db_name]).map(|o| parse_d1_list(&o, &db_name));
+    let find_db = |w: &Cf| {
+        w.query(&["d1", "list", "--name", &db_name])
+            .map(|o| parse_d1_list(&o, &db_name))
+    };
     let database_id = match find_db(&w).ok().flatten() {
         Some(id) => {
             w.record(&format!("D1 database {db_name}"), "exists", None, Some(id.clone()));
             id
         }
         None => {
-            w.mutate(&format!("create D1 database {db_name}"), &["d1", "create", "--name", &db_name], None)?;
+            w.mutate(
+                &format!("create D1 database {db_name}"),
+                &["d1", "create", "--name", &db_name],
+                None,
+            )?;
             if args.dry_run {
                 "<new-database-id>".into()
             } else {
@@ -807,19 +932,28 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     let install = Install {
         name: worker_name.clone(),
         account_id: account.clone(),
-        database: Database { name: db_name.clone(), id: database_id.clone() },
+        database: Database {
+            name: db_name.clone(),
+            id: database_id.clone(),
+        },
         bucket: bucket_name.clone(),
     };
     let rendered = render_install(&install);
     let write_install = |_: &Cf| Ok(std::fs::write(&install_path, &rendered)?);
     match previous.file {
         Some(INSTALL_FILE) => {
-            let status = if previous.text.as_deref() == Some(rendered.as_str()) { "exists" } else { "kept" };
+            let status = if previous.text.as_deref() == Some(rendered.as_str()) {
+                "exists"
+            } else {
+                "kept"
+            };
             w.record(
                 "write install.json",
                 status,
                 None,
-                Some(format!("using the existing file (worker \"{worker_name}\"); --force regenerates it")),
+                Some(format!(
+                    "using the existing file (worker \"{worker_name}\"); --force regenerates it"
+                )),
             );
         }
         // A setup from before cf left wrangler.jsonc; its names carry over.
@@ -829,11 +963,20 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
             Some(format!("from {legacy} (worker \"{worker_name}\")")),
             write_install,
         )?,
-        None => w.perform("write install.json", None, Some(install_path.display().to_string()), write_install)?,
+        None => w.perform(
+            "write install.json",
+            None,
+            Some(install_path.display().to_string()),
+            write_install,
+        )?,
     }
 
     // 5. schema + deploy
-    w.mutate("apply database migrations", &["d1", "migrations", "apply", &database_id], None)?;
+    w.mutate(
+        "apply database migrations",
+        &["d1", "migrations", "apply", &database_id],
+        None,
+    )?;
     // A new Cloudflare account has no workers.dev subdomain yet, and cf asks for one. With someone
     // at the terminal, let cf ask (it then deploys), and deploy again to read the URL.
     let deploy_out = match w.mutate("deploy worker", &["deploy"], None) {
@@ -866,7 +1009,10 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         }
     };
     // The token is in the keyring (or, from an older version, still in the file).
-    let reused = match existing_cfg.as_ref().filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker)) {
+    let reused = match existing_cfg
+        .as_ref()
+        .filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker))
+    {
         Some(c) => match c.api_token.clone() {
             Some(t) => Some(t),
             None => config::keyring_token()?,
@@ -878,22 +1024,40 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         token
     } else if !first_time && !args.force {
         if !args.dry_run {
-            return Err(CliError::generic(format!("{} already points at another worker", cfg_path.display()))
-                .hint("re-run with --force to rotate the token and overwrite the config"));
+            return Err(
+                CliError::generic(format!("{} already points at another worker", cfg_path.display()))
+                    .hint("re-run with --force to rotate the token and overwrite the config"),
+            );
         }
         w.record(
             "API token",
             "blocked",
             None,
-            Some(format!("{} points at another worker; setup would stop here without --force", cfg_path.display())),
+            Some(format!(
+                "{} points at another worker; setup would stop here without --force",
+                cfg_path.display()
+            )),
         );
         String::new()
     } else {
-        let token = if args.dry_run { "<generated>".to_string() } else { random_token()? };
+        let token = if args.dry_run {
+            "<generated>".to_string()
+        } else {
+            random_token()?
+        };
         let secret = json!({ "name": "API_TOKEN", "type": "secret_text", "text": token }).to_string();
         w.mutate(
             "set API_TOKEN secret",
-            &["workers", "secrets", "update", "API_TOKEN", "--worker", &worker_name, "--body", "@/dev/stdin"],
+            &[
+                "workers",
+                "secrets",
+                "update",
+                "API_TOKEN",
+                "--worker",
+                &worker_name,
+                "--body",
+                "@/dev/stdin",
+            ],
             Some(&secret),
         )?;
         let file = config::FileConfig {
@@ -903,10 +1067,15 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
             // Linked accounts survive a token rotation.
             accounts: existing_cfg.as_ref().map(|c| c.accounts.clone()).unwrap_or_default(),
         };
-        w.perform("keep the API token in the keyring", None, Some("Secret Service".into()), |_| {
-            cloudmail_api::keyring::set(cloudmail_api::keyring::API_TOKEN, "Cloudmail API token", &token)?;
-            Ok(())
-        })?;
+        w.perform(
+            "keep the API token in the keyring",
+            None,
+            Some("Secret Service".into()),
+            |_| {
+                cloudmail_api::keyring::set(cloudmail_api::keyring::API_TOKEN, "Cloudmail API token", &token)?;
+                Ok(())
+            },
+        )?;
         w.perform("write config", None, Some(cfg_path.display().to_string()), |_| {
             config::save(&file)?;
             Ok(())
@@ -921,7 +1090,9 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         poll_seconds: config::DEFAULT_POLL_SECONDS,
         accounts: Default::default(),
     });
-    w.perform("wait for the worker", None, Some(url.clone()), |_| wait_until_live(&client))?;
+    w.perform("wait for the worker", None, Some(url.clone()), |_| {
+        wait_until_live(&client)
+    })?;
 
     // 8. mailboxes and routes
     let mut routes = Vec::new();
@@ -929,15 +1100,33 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     for (addr, screen) in &mailboxes {
         let kind = if *screen { "screened" } else { "direct" };
         w.perform(&format!("mailbox {addr}"), None, Some(kind.into()), |_| {
-            client.put_mailbox(addr, &MailboxUpdate { screen: Some(*screen), ..Default::default() })?;
+            client.put_mailbox(
+                addr,
+                &MailboxUpdate {
+                    screen: Some(*screen),
+                    ..Default::default()
+                },
+            )?;
             Ok(())
         })?;
-        routes.push(route_address(&mut w, addr, &worker_name, args.yes, &mut sending, &mut routing)?);
+        routes.push(route_address(
+            &mut w,
+            addr,
+            &worker_name,
+            args.yes,
+            &mut sending,
+            &mut routing,
+        )?);
     }
 
     // 9. forwarding: Email Routing only forwards to verified destinations, and Cloudflare verifies
     // one by emailing it a link
-    if let Some(fwd) = args.forward_to.as_deref().map(str::to_ascii_lowercase).filter(|f| !f.is_empty()) {
+    if let Some(fwd) = args
+        .forward_to
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .filter(|f| !f.is_empty())
+    {
         let known = parse_destinations(&w.probe(&["email-routing", "addresses", "list", "--per-page", "50"])?)
             .into_iter()
             .find(|(a, _)| *a == fwd);
@@ -962,7 +1151,10 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
 
     let needs_attention = |s: &&Step| matches!(s.status.as_str(), "blocked" | "pending");
     let mut summary = if args.dry_run {
-        format!("Planned {} steps (dry run, nothing changed)", w.steps.iter().filter(|s| s.status == "planned").count())
+        format!(
+            "Planned {} steps (dry run, nothing changed)",
+            w.steps.iter().filter(|s| s.status == "planned").count()
+        )
     } else {
         format!("Cloudmail is running at {url}")
     };
@@ -1090,8 +1282,14 @@ mod tests {
 
     #[test]
     fn reads_worker_name_from_workers_dev_url() {
-        assert_eq!(worker_name_from_url("https://cloud-mail.ferdousbd.workers.dev").as_deref(), Some("cloud-mail"));
-        assert_eq!(worker_name_from_url("https://cm.sub.workers.dev/api").as_deref(), Some("cm"));
+        assert_eq!(
+            worker_name_from_url("https://cloud-mail.ferdousbd.workers.dev").as_deref(),
+            Some("cloud-mail")
+        );
+        assert_eq!(
+            worker_name_from_url("https://cm.sub.workers.dev/api").as_deref(),
+            Some("cm")
+        );
         assert_eq!(worker_name_from_url("https://mail.example.com"), None);
         assert_eq!(worker_name_from_url("https://sub.workers.dev"), None);
         assert_eq!(worker_name_from_url("http://cm.sub.workers.dev"), None);
@@ -1102,7 +1300,10 @@ mod tests {
         let mut install = Install {
             name: "cloudmail".into(),
             account_id: None,
-            database: Database { name: "cloudmail-db".into(), id: "abc-123".into() },
+            database: Database {
+                name: "cloudmail-db".into(),
+                id: "abc-123".into(),
+            },
             bucket: "cloudmail-bucket".into(),
         };
         let text = render_install(&install);
@@ -1129,7 +1330,12 @@ mod tests {
         let r = recorded(&dir);
         assert_eq!(r.file, Some(LEGACY_FILE));
         assert_eq!(
-            (r.worker.as_deref(), r.database.as_deref(), r.bucket.as_deref(), r.account.as_deref()),
+            (
+                r.worker.as_deref(),
+                r.database.as_deref(),
+                r.bucket.as_deref(),
+                r.account.as_deref()
+            ),
             (Some("cloud-mail"), Some("cloud-mail-db"), Some("mail"), Some("0af9"))
         );
 
@@ -1137,14 +1343,22 @@ mod tests {
         let install = Install {
             name: "cm".into(),
             account_id: None,
-            database: Database { name: "cm-db".into(), id: "u".into() },
+            database: Database {
+                name: "cm-db".into(),
+                id: "u".into(),
+            },
             bucket: "cm-r2".into(),
         };
         std::fs::write(dir.join(INSTALL_FILE), render_install(&install)).unwrap();
         let r = recorded(&dir);
         assert_eq!(r.file, Some(INSTALL_FILE));
         assert_eq!(
-            (r.worker.as_deref(), r.database.as_deref(), r.bucket.as_deref(), r.account),
+            (
+                r.worker.as_deref(),
+                r.database.as_deref(),
+                r.bucket.as_deref(),
+                r.account
+            ),
             (Some("cm"), Some("cm-db"), Some("cm-r2"), None)
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1153,8 +1367,14 @@ mod tests {
     #[test]
     fn parses_deploy_output() {
         let out = "│  Uploaded cloudmail (4.39 sec)\n│  Deployed cloudmail triggers (2.15 sec)\n│    https://cloudmail.example-sub.workers.dev\n│  Current Version ID: x";
-        assert_eq!(parse_deploy_url(out).as_deref(), Some("https://cloudmail.example-sub.workers.dev"));
-        assert_eq!(parse_deploy_url("It will be accessible at https://<subdomain>.workers.dev"), None);
+        assert_eq!(
+            parse_deploy_url(out).as_deref(),
+            Some("https://cloudmail.example-sub.workers.dev")
+        );
+        assert_eq!(
+            parse_deploy_url("It will be accessible at https://<subdomain>.workers.dev"),
+            None
+        );
         assert_eq!(parse_deploy_url("no url here"), None);
     }
 
@@ -1180,13 +1400,22 @@ mod tests {
         );
         assert!(parse_accounts(&json!({"authenticated": false})).is_empty());
         let list = json!([{"id": "0123456789abcdef0123456789abcdef", "name": "Me's Account", "type": "standard"}]);
-        assert_eq!(parse_accounts(&list), vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into())]);
+        assert_eq!(
+            parse_accounts(&list),
+            vec![("Me's Account".into(), "0123456789abcdef0123456789abcdef".into())]
+        );
         assert!(parse_accounts(&json!({"authenticated": true, "accounts": []})).is_empty());
         let dests = r#"[{"id": "b51d", "email": "Me@Hey.com", "verified": "2025-12-26T05:50:19Z", "status": "verified"},
                         {"id": "87be", "email": "new@gmail.com", "verified": null, "status": "pending"}]"#;
-        assert_eq!(parse_destinations(dests), vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]);
+        assert_eq!(
+            parse_destinations(dests),
+            vec![("me@hey.com".into(), true), ("new@gmail.com".into(), false)]
+        );
         let mx = json!({"Answer": [{"type": 15, "data": "20 route2.mx.cloudflare.net."}, {"type": 5, "data": "x."}, {"type": 15, "data": "10 ASPMX.L.Google.com."}]});
-        assert_eq!(parse_mx_answer(&mx), vec!["aspmx.l.google.com", "route2.mx.cloudflare.net"]);
+        assert_eq!(
+            parse_mx_answer(&mx),
+            vec!["aspmx.l.google.com", "route2.mx.cloudflare.net"]
+        );
         assert!(parse_mx_answer(&json!({"Status": 3})).is_empty());
     }
 
@@ -1198,7 +1427,9 @@ mod tests {
         let r2 = "{\"buckets\": [{\"name\": \"cloud-mail\", \"creation_date\": \"2026\"}, {\"name\": \"cloudmail\"}]}";
         assert_eq!(parse_r2_buckets(r2), vec!["cloud-mail", "cloudmail"]);
         assert!(parse_r2_buckets("").is_empty());
-        assert!(routing_enabled("{\"name\": \"example.com\", \"enabled\": true, \"status\": \"ready\"}"));
+        assert!(routing_enabled(
+            "{\"name\": \"example.com\", \"enabled\": true, \"status\": \"ready\"}"
+        ));
         assert!(!routing_enabled("{\"name\": \"example.com\", \"enabled\": false}"));
         let sending = "[{\"name\": \"example.com\", \"enabled\": true}, {\"name\": \"news.other.com\", \"enabled\": true}, {\"name\": \"off.com\", \"enabled\": false}]";
         assert!(sending_enabled(sending, "example.com"));
@@ -1208,8 +1439,14 @@ mod tests {
 
     #[test]
     fn parses_mailbox_specs() {
-        assert_eq!(parse_mailbox_spec("Hi@Example.com").unwrap(), ("hi@example.com".into(), true));
-        assert_eq!(parse_mailbox_spec("support@example.com:direct").unwrap(), ("support@example.com".into(), false));
+        assert_eq!(
+            parse_mailbox_spec("Hi@Example.com").unwrap(),
+            ("hi@example.com".into(), true)
+        );
+        assert_eq!(
+            parse_mailbox_spec("support@example.com:direct").unwrap(),
+            ("support@example.com".into(), false)
+        );
         assert!(parse_mailbox_spec("nope").is_err());
         assert!(parse_mailbox_spec("a@b.com:weird").is_err());
     }
@@ -1244,19 +1481,30 @@ mod tests {
         let dir = worker_dir("setup-test");
         let resp = run_with_config(&dry_run_args(&dir, true), false, None).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
-        let planned: Vec<&str> =
-            steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
+        let planned: Vec<&str> = steps
+            .iter()
+            .filter(|s| s["status"] == "planned")
+            .filter_map(|s| s["command"].as_str())
+            .collect();
         assert!(planned.contains(&"false d1 create --name cloudmail"));
         assert!(planned.contains(&"false r2 buckets create --name cloudmail"));
         assert!(planned.contains(&"false d1 migrations apply <new-database-id>"));
         assert!(planned.contains(&"false deploy"));
-        assert!(planned.iter().any(|c| c.starts_with("false email-routing rules create -z example.com")
-            && c.contains(r#""value":"hi@example.com""#)));
+        assert!(
+            planned
+                .iter()
+                .any(|c| c.starts_with("false email-routing rules create -z example.com")
+                    && c.contains(r#""value":"hi@example.com""#))
+        );
         assert!(planned.contains(&"false email-sending subdomains create -z example.com --name example.com"));
         assert!(planned.contains(&"false email-routing enable -z example.com"));
         assert!(planned.contains(&"false email-routing addresses create --email me@elsewhere.com"));
         assert!(planned.contains(&"false auth login"));
-        assert!(steps.iter().any(|s| s["step"] == "write install.json" && s["status"] == "planned"));
+        assert!(
+            steps
+                .iter()
+                .any(|s| s["step"] == "write install.json" && s["status"] == "planned")
+        );
         assert!(!dir.join(INSTALL_FILE).exists());
         assert_eq!(resp.data["dry_run"], true);
         std::fs::remove_dir_all(dir).ok();
@@ -1277,10 +1525,17 @@ mod tests {
         };
         let resp = run_with_config(&dry_run_args(&dir, false), false, Some(existing_cfg)).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
-        let planned: Vec<&str> =
-            steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
+        let planned: Vec<&str> = steps
+            .iter()
+            .filter(|s| s["status"] == "planned")
+            .filter_map(|s| s["command"].as_str())
+            .collect();
         assert_eq!(resp.data["worker"], "cloud-mail");
-        assert!(steps.iter().any(|s| s["step"] == "API token" && s["status"] == "exists"));
+        assert!(
+            steps
+                .iter()
+                .any(|s| s["step"] == "API token" && s["status"] == "exists")
+        );
         assert!(planned.contains(&"false d1 create --name cm-db"));
         assert!(planned.contains(&"false r2 buckets create --name cm-r2"));
         let write = steps.iter().find(|s| s["step"] == "write install.json").unwrap();

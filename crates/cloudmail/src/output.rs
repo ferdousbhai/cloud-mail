@@ -17,14 +17,26 @@ pub mod exit {
 
     pub const TABLE: &[(i32, &str)] = &[
         (OK, "success"),
-        (GENERIC, "other failure (local I/O, a setup step, a cancelled confirmation or editor)"),
-        (USAGE, "invalid arguments, a destructive command run without --yes, or a request the worker rejected"),
+        (
+            GENERIC,
+            "other failure (local I/O, a setup step, a cancelled confirmation or editor)",
+        ),
+        (
+            USAGE,
+            "invalid arguments, a destructive command run without --yes, or a request the worker rejected",
+        ),
         (
             AUTH,
             "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in",
         ),
-        (NOT_FOUND, "the thread, message, attachment, mailbox or sender does not exist"),
-        (API, "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed"),
+        (
+            NOT_FOUND,
+            "the thread, message, attachment, mailbox or sender does not exist",
+        ),
+        (
+            API,
+            "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed",
+        ),
     ];
 }
 
@@ -79,7 +91,11 @@ pub struct Breadcrumb {
 }
 
 pub fn crumb(action: &str, command: &str, description: &str) -> Breadcrumb {
-    Breadcrumb { action: action.into(), command: command.into(), description: description.into() }
+    Breadcrumb {
+        action: action.into(),
+        command: command.into(),
+        description: description.into(),
+    }
 }
 
 /// What a command produced; rendered according to the output mode.
@@ -99,11 +115,18 @@ pub struct Response {
 
 impl Response {
     pub fn new(data: impl Serialize, summary: impl Into<String>) -> Self {
-        Self { data: serde_json::to_value(data).unwrap_or(Value::Null), summary: summary.into(), ..Default::default() }
+        Self {
+            data: serde_json::to_value(data).unwrap_or(Value::Null),
+            summary: summary.into(),
+            ..Default::default()
+        }
     }
 
     pub fn silent() -> Self {
-        Self { silent: true, ..Default::default() }
+        Self {
+            silent: true,
+            ..Default::default()
+        }
     }
 
     pub fn human(mut self, text: impl Into<String>) -> Self {
@@ -122,7 +145,8 @@ impl Response {
     }
 
     pub fn meta(mut self, key: &str, value: impl Serialize) -> Self {
-        self.meta.insert(key.into(), serde_json::to_value(value).unwrap_or(Value::Null));
+        self.meta
+            .insert(key.into(), serde_json::to_value(value).unwrap_or(Value::Null));
         self
     }
 
@@ -158,9 +182,11 @@ impl Response {
             Mode::Count => self.count().to_string(),
             Mode::Ids => match &self.ids {
                 // IDs can be addresses a sender chose, so they get the same terminal treatment.
-                Some(ids) => {
-                    ids.iter().map(|id| terminal_safe(id).replace(['\n', '\t'], " ")).collect::<Vec<_>>().join("\n")
-                }
+                Some(ids) => ids
+                    .iter()
+                    .map(|id| terminal_safe(id).replace(['\n', '\t'], " "))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 // The command has already run (it may have changed something), so say so rather than fail.
                 None => {
                     eprintln!("note: this command has no IDs to list; printing its result instead");
@@ -168,7 +194,11 @@ impl Response {
                 }
             },
             Mode::Human => {
-                let mut out = terminal_safe(if self.human.trim().is_empty() { &self.summary } else { &self.human });
+                let mut out = terminal_safe(if self.human.trim().is_empty() {
+                    &self.summary
+                } else {
+                    &self.human
+                });
                 if !self.breadcrumbs.is_empty() && stdout_is_tty() {
                     out.push_str("\n\n");
                     out.push_str(&dim("Next:"));
@@ -201,7 +231,11 @@ pub fn terminal_safe(s: &str) -> String {
             rest = &rest[code.len()..];
             continue;
         }
-        out.push(if c.is_control() && c != '\n' && c != '\t' { '?' } else { c });
+        out.push(if c.is_control() && c != '\n' && c != '\t' {
+            '?'
+        } else {
+            c
+        });
         rest = &rest[c.len_utf8()..];
     }
     out
@@ -212,7 +246,11 @@ pub fn terminal_safe(s: &str) -> String {
 /// plain id/address characters is single-quoted.
 pub fn shell_arg(s: &str) -> String {
     let plain = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "@._+-%/:=,".contains(c));
-    if plain { s.to_string() } else { format!("'{}'", s.replace('\'', r"'\''")) }
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
 }
 
 pub fn pretty(v: &Value) -> String {
@@ -267,7 +305,12 @@ pub struct CliError {
 
 impl CliError {
     pub fn new(code: &str, exit: i32, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into(), hint: None, exit }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            hint: None,
+            exit,
+        }
     }
 
     pub fn usage(message: impl Into<String>) -> Self {
@@ -327,7 +370,10 @@ impl From<ApiError> for CliError {
             ),
             ErrorKind::NotFound => (exit::NOT_FOUND, None),
             ErrorKind::BadRequest => (exit::USAGE, None),
-            ErrorKind::Network => (exit::API, Some("check api_url with `cloudmail config show` and your connection")),
+            ErrorKind::Network => (
+                exit::API,
+                Some("check api_url with `cloudmail config show` and your connection"),
+            ),
             ErrorKind::Api | ErrorKind::Decode => (exit::API, None),
             // The message already says which account and what to run.
             ErrorKind::AccountAuth => (exit::AUTH, None),
@@ -357,7 +403,10 @@ impl Response {
         if mode == Mode::Human {
             for w in warnings {
                 // The message already names the account ("HEY: …", "Gmail: …").
-                eprintln!("{}", terminal_safe(&format!("warning: {} (showing the rest)", w.message)));
+                eprintln!(
+                    "{}",
+                    terminal_safe(&format!("warning: {} (showing the rest)", w.message))
+                );
             }
         }
         self.meta("warnings", warnings)
@@ -381,7 +430,10 @@ mod tests {
     fn shell_args_are_quoted_when_they_need_to_be() {
         assert_eq!(shell_arg("t_1a2b"), "t_1a2b");
         assert_eq!(shell_arg("alice@example.com"), "alice@example.com");
-        assert_eq!(shell_arg("x;touch${IFS}/tmp/pwn;@evil.example"), "'x;touch${IFS}/tmp/pwn;@evil.example'");
+        assert_eq!(
+            shell_arg("x;touch${IFS}/tmp/pwn;@evil.example"),
+            "'x;touch${IFS}/tmp/pwn;@evil.example'"
+        );
         assert_eq!(shell_arg("it's"), r"'it'\''s'");
         assert_eq!(shell_arg(""), "''");
     }

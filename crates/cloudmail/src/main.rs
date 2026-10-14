@@ -95,9 +95,13 @@ fn main() {
                     .collect::<Vec<_>>()
                     .join(" ");
                 let message = message.trim_start_matches("error: ");
-                CliError::usage(if message.is_empty() { "invalid arguments" } else { message })
-                    .hint("run `cloudmail commands --json` or `cloudmail <command> --help`")
-                    .print(mode);
+                CliError::usage(if message.is_empty() {
+                    "invalid arguments"
+                } else {
+                    message
+                })
+                .hint("run `cloudmail commands --json` or `cloudmail <command> --help`")
+                .print(mode);
                 std::process::exit(exit::USAGE);
             }
             let _ = e.print();
@@ -111,7 +115,10 @@ fn main() {
             std::process::exit(exit::USAGE);
         }
     };
-    let ctx = Ctx { mode: mode_for(&cli.global), mail: OnceCell::new() };
+    let ctx = Ctx {
+        mode: mode_for(&cli.global),
+        mail: OnceCell::new(),
+    };
     match dispatch(&ctx, cli.command) {
         Ok(r) => {
             r.print(ctx.mode);
@@ -126,7 +133,9 @@ fn main() {
 
 fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
     use cli::*;
-    let Some(command) = command else { return Ok(admin::orientation()) };
+    let Some(command) = command else {
+        return Ok(admin::orientation());
+    };
     match command {
         Command::Status => admin::status(ctx),
         Command::Inbox(a) => mail::list(ctx, Folder::Inbox, &a),
@@ -157,7 +166,11 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
             std::io::stdout().write_all(docs::SKILL.as_bytes())?;
             Ok(Response::silent())
         }
-        Command::Skill { command: Some(SkillCommand::Install) } => docs::install_skill(),
-        Command::Skill { command: Some(SkillCommand::Remove) } => docs::remove_skill(),
+        Command::Skill {
+            command: Some(SkillCommand::Install),
+        } => docs::install_skill(),
+        Command::Skill {
+            command: Some(SkillCommand::Remove),
+        } => docs::remove_skill(),
     }
 }

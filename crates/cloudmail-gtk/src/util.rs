@@ -34,8 +34,15 @@ pub fn parse_mailto(uri: &str) -> Draft {
     // GIO hands us "mailto:///a@b.com" for URIs passed on the command line.
     let rest = uri.strip_prefix("mailto:").unwrap_or(uri).trim_start_matches('/');
     let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
-    let decode = |s: &str| urlencoding::decode(s).map(|c| c.into_owned()).unwrap_or_else(|_| s.to_string());
-    let mut draft = Draft { to: decode(addr), ..Default::default() };
+    let decode = |s: &str| {
+        urlencoding::decode(s)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| s.to_string())
+    };
+    let mut draft = Draft {
+        to: decode(addr),
+        ..Default::default()
+    };
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let v = decode(v);
@@ -75,11 +82,18 @@ pub fn open_uri(uri: &str) {
 }
 
 pub fn subject_or_placeholder(subject: &str) -> &str {
-    if subject.trim().is_empty() { "(no subject)" } else { subject }
+    if subject.trim().is_empty() {
+        "(no subject)"
+    } else {
+        subject
+    }
 }
 
 pub fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]

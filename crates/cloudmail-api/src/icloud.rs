@@ -111,7 +111,10 @@ struct PartRef {
 }
 
 fn encode(tag: char, v: &impl Serialize) -> String {
-    format!("{tag}{}", URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap_or_default()))
+    format!(
+        "{tag}{}",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap_or_default())
+    )
 }
 
 fn decode<T: for<'d> Deserialize<'d>>(tag: char, s: &str) -> Option<T> {
@@ -134,7 +137,12 @@ fn str_of(v: &Value) -> String {
 }
 
 fn strings(v: &Value) -> Vec<String> {
-    v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
 }
 
 fn has_flag(v: &Value, flag: &str) -> bool {
@@ -188,8 +196,10 @@ impl Icloud {
     fn call(&self, path: &str, folder: Option<&str>, mut body: Value) -> Result<Value> {
         let base = self.session.webservice("mccgateway").map_err(|e| self.wrap(e))?;
         body["sessionHeaders"] = json!({ "folder": folder, "modseq": null, "threadmodseq": null, "condstore": 1, "qresync": 1, "threadmode": 1 });
-        let reply =
-            self.session.send("POST", &format!("{base}/mailws2/v1/{path}"), Some(&body)).map_err(|e| self.wrap(e))?;
+        let reply = self
+            .session
+            .send("POST", &format!("{base}/mailws2/v1/{path}"), Some(&body))
+            .map_err(|e| self.wrap(e))?;
         let parsed: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
         if !(200..300).contains(&reply.status) {
             let code = str_of(&parsed["errorCode"]);
@@ -198,7 +208,11 @@ impl Icloud {
             } else {
                 format!("{code}: {}", str_of(&parsed["errorDescription"]))
             };
-            let kind = if reply.status == 404 { ErrorKind::NotFound } else { ErrorKind::AccountUnavailable };
+            let kind = if reply.status == 404 {
+                ErrorKind::NotFound
+            } else {
+                ErrorKind::AccountUnavailable
+            };
             return Err(self.fail(kind, format!("{path} failed ({what})")));
         }
         if !parsed.is_object() {
@@ -239,10 +253,24 @@ impl Icloud {
             .map(|s| address_from(s))
             .filter(|a| a.email.contains('@'))
             .collect();
-        let from =
-            senders.iter().rev().find(|a| !own.contains(&a.email.to_ascii_lowercase())).or(senders.last()).cloned();
+        let from = senders
+            .iter()
+            .rev()
+            .find(|a| !own.contains(&a.email.to_ascii_lowercase()))
+            .or(senders.last())
+            .cloned();
         Some(ThreadSummary {
-            id: format!("{}:{}", self.name, encode('t', &ThreadRef { f: mailbox.into(), t: thread_id.into() })),
+            id: format!(
+                "{}:{}",
+                self.name,
+                encode(
+                    't',
+                    &ThreadRef {
+                        f: mailbox.into(),
+                        t: thread_id.into()
+                    }
+                )
+            ),
             subject: str_of(&t["subject"]),
             folder: folder_for(mailbox).into(),
             snippet: str_of(&t["preview"]),
@@ -257,7 +285,11 @@ impl Icloud {
     }
 
     fn search_mailbox(&self, mailbox: &str, q: &ThreadQuery, text: Option<&str>) -> Result<Vec<ThreadSummary>> {
-        let own: Vec<String> = self.load_identities()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
+        let own: Vec<String> = self
+            .load_identities()?
+            .into_iter()
+            .map(|a| a.email.to_ascii_lowercase())
+            .collect();
         let mut body = json!({ "responseType": "THREAD_DIGEST", "includeFolderStatus": true, "maxResults": q.limit.clamp(1, LIST_LIMIT) });
         if let Some(before) = q.before {
             body["before"] = json!(before);
@@ -273,7 +305,9 @@ impl Icloud {
             body["filters"] = json!({ "unseen": true });
         }
         let data = self.call("thread/search", Some(mailbox), body)?;
-        let list = data["threadList"].as_array().ok_or_else(|| self.unexpected("thread/search"))?;
+        let list = data["threadList"]
+            .as_array()
+            .ok_or_else(|| self.unexpected("thread/search"))?;
         Ok(list.iter().filter_map(|t| self.summary(t, mailbox, &own)).collect())
     }
 
@@ -300,9 +334,10 @@ impl Icloud {
             .ok_or_else(|| self.unexpected("preference/web/all"))
             .and_then(|own| {
                 if own.is_empty() {
-                    return Err(
-                        self.fail(ErrorKind::AccountUnavailable, "this account has no address iCloud Mail sends from")
-                    );
+                    return Err(self.fail(
+                        ErrorKind::AccountUnavailable,
+                        "this account has no address iCloud Mail sends from",
+                    ));
                 }
                 *self.own.lock().unwrap() = Some(own.clone());
                 Ok(own)
@@ -311,16 +346,26 @@ impl Icloud {
 
     /// The conversation's messages, oldest first.
     fn thread_messages(&self, folder: &str, thread_id: &str) -> Result<Vec<Value>> {
-        let data = self.call("thread/get", Some(folder), json!({ "threadId": thread_id, "includeLabelIds": false }))?;
-        let mut list = data["messageMetadataList"].as_array().cloned().ok_or_else(|| self.unexpected("thread/get"))?;
+        let data = self.call(
+            "thread/get",
+            Some(folder),
+            json!({ "threadId": thread_id, "includeLabelIds": false }),
+        )?;
+        let mut list = data["messageMetadataList"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| self.unexpected("thread/get"))?;
         list.sort_by_key(|m| m["date"].as_i64().unwrap_or(0));
         Ok(list)
     }
 
     /// A message's header block and the contents of the given parts, never marking it read.
     fn message_parts(&self, folder: &str, uid: &str, parts: &[String]) -> Result<(String, HashMap<String, String>)> {
-        let data =
-            self.call("message/get", Some(folder), json!({ "uid": uid, "parts": parts, "dontMarkAsRead": true }))?;
+        let data = self.call(
+            "message/get",
+            Some(folder),
+            json!({ "uid": uid, "parts": parts, "dontMarkAsRead": true }),
+        )?;
         let contents = data["parts"]
             .as_array()
             .ok_or_else(|| self.unexpected("message/get"))?
@@ -328,8 +373,10 @@ impl Icloud {
             // Each part's guid is `messagepart:<folder>/<uid>-<partId>`.
             .filter_map(|p| {
                 let guid = p["guid"].as_str()?;
-                let part =
-                    guid.strip_prefix("messagepart:").and_then(|g| g.rsplit_once('-')).map_or(guid, |(_, id)| id);
+                let part = guid
+                    .strip_prefix("messagepart:")
+                    .and_then(|g| g.rsplit_once('-'))
+                    .map_or(guid, |(_, id)| id);
                 Some((part.to_string(), p["content"].as_str()?.to_string()))
             })
             .collect();
@@ -339,7 +386,11 @@ impl Icloud {
     fn get_bytes(&self, url: &str) -> Result<Download> {
         let reply = self.session.send("GET", url, None).map_err(|e| self.wrap(e))?;
         match reply.status {
-            200..=299 => Ok(Download { bytes: reply.body, content_type: reply.content_type, filename: None }),
+            200..=299 => Ok(Download {
+                bytes: reply.body,
+                content_type: reply.content_type,
+                filename: None,
+            }),
             404 => Err(self.fail(ErrorKind::NotFound, "that message or attachment is gone")),
             s => Err(self.fail(ErrorKind::AccountUnavailable, format!("download failed (HTTP {s})"))),
         }
@@ -348,8 +399,10 @@ impl Icloud {
     /// Uploads a file for a draft (`message/part`), returning its `attachments` entry.
     fn upload(&self, a: &OutgoingAttachment, n: usize) -> Result<Value> {
         let base = self.session.webservice("mccgateway").map_err(|e| self.wrap(e))?;
-        let nanos =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let mut url =
             url::Url::parse(&format!("{base}/mailws2/v1/message/part")).map_err(|_| self.unexpected("message/part"))?;
         url.query_pairs_mut()
@@ -357,7 +410,10 @@ impl Icloud {
             .append_pair("X-type", &a.mime_type)
             .append_pair("X-size", &a.content.len().to_string())
             .append_pair("X-name", &a.filename);
-        let reply = self.session.post_bytes(url.as_str(), &a.content).map_err(|e| self.wrap(e))?;
+        let reply = self
+            .session
+            .post_bytes(url.as_str(), &a.content)
+            .map_err(|e| self.wrap(e))?;
         if !(200..300).contains(&reply.status) {
             return Err(self.fail(
                 ErrorKind::AccountUnavailable,
@@ -400,7 +456,9 @@ fn own_addresses(account: &Value, session_name: &str) -> Option<Vec<Address>> {
         return None;
     }
     let name_of = |v: &Value| {
-        Some(str_of(v)).filter(|n| !n.is_empty()).or_else(|| Some(session_name.to_string()).filter(|n| !n.is_empty()))
+        Some(str_of(v))
+            .filter(|n| !n.is_empty())
+            .or_else(|| Some(session_name.to_string()).filter(|n| !n.is_empty()))
     };
     let account_name = name_of(&account["fullName"]);
     // (can send, address, is the primary icloud.com one)
@@ -411,14 +469,22 @@ fn own_addresses(account: &Value, session_name: &str) -> Option<Vec<Address>> {
             if !domain.is_empty() {
                 all.push((
                     d["allowSendFrom"] == json!(true),
-                    Address { name: name.clone(), email: format!("{id}@{domain}") },
+                    Address {
+                        name: name.clone(),
+                        email: format!("{id}@{domain}"),
+                    },
                     primary && domain == "icloud.com",
                 ));
             }
         }
     };
     on_domains(&email_id, &account["supportedDomains"], account_name.clone(), true);
-    for alias in account["aliases"].as_array().into_iter().flatten().filter(|a| a["isActive"] == json!(true)) {
+    for alias in account["aliases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["isActive"] == json!(true))
+    {
         on_domains(
             &str_of(&alias["emailId"]),
             &alias["supportedDomains"],
@@ -431,7 +497,10 @@ fn own_addresses(account: &Value, session_name: &str) -> Option<Vec<Address>> {
         if !id.is_empty() && !domain.is_empty() {
             all.push((
                 c["allowSendFrom"] == json!(true),
-                Address { name: name_of(&c["fullName"]).or(account_name.clone()), email: format!("{id}@{domain}") },
+                Address {
+                    name: name_of(&c["fullName"]).or(account_name.clone()),
+                    email: format!("{id}@{domain}"),
+                },
                 false,
             ));
         }
@@ -439,9 +508,17 @@ fn own_addresses(account: &Value, session_name: &str) -> Option<Vec<Address>> {
     if all.len() == 1 {
         all[0].0 = true;
     }
-    let can_send: Vec<Address> = all.iter().filter(|(send, _, _)| *send).map(|(_, a, _)| a.clone()).collect();
+    let can_send: Vec<Address> = all
+        .iter()
+        .filter(|(send, _, _)| *send)
+        .map(|(_, a, _)| a.clone())
+        .collect();
     Some(if can_send.is_empty() {
-        all.into_iter().filter(|(_, _, primary)| *primary).map(|(_, a, _)| a).take(1).collect()
+        all.into_iter()
+            .filter(|(_, _, primary)| *primary)
+            .map(|(_, a, _)| a)
+            .take(1)
+            .collect()
     } else {
         can_send
     })
@@ -491,7 +568,11 @@ impl Provider for Icloud {
     }
 
     fn threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>> {
-        let folder = if q.folder.is_empty() { "inbox" } else { q.folder.as_str() };
+        let folder = if q.folder.is_empty() {
+            "inbox"
+        } else {
+            q.folder.as_str()
+        };
         let mailboxes: Vec<&str> = match folder {
             "all" => vec![INBOX, ARCHIVE, SENT],
             f => match mailbox_for(f) {
@@ -509,15 +590,27 @@ impl Provider for Icloud {
     }
 
     fn search(&self, query: &str, limit: u32) -> Result<Vec<ThreadSummary>> {
-        self.threads(&ThreadQuery { folder: "all".into(), q: Some(query.to_string()), limit, ..Default::default() })
+        self.threads(&ThreadQuery {
+            folder: "all".into(),
+            q: Some(query.to_string()),
+            limit,
+            ..Default::default()
+        })
     }
 
     fn thread(&self, id: &str, _html: bool) -> Result<ThreadDetail> {
         let (key, r) = self.thread_ref(id)?;
-        let own: Vec<String> = self.load_identities()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
+        let own: Vec<String> = self
+            .load_identities()?
+            .into_iter()
+            .map(|a| a.email.to_ascii_lowercase())
+            .collect();
         let list = self.thread_messages(&r.f, &r.t)?;
         if list.is_empty() {
-            return Err(self.fail(ErrorKind::NotFound, format!("no iCloud Mail thread {id} (moved or deleted?)")));
+            return Err(self.fail(
+                ErrorKind::NotFound,
+                format!("no iCloud Mail thread {id} (moved or deleted?)"),
+            ));
         }
         let thread_id = format!("{}:{key}", self.name);
         let mut messages = Vec::new();
@@ -527,7 +620,10 @@ impl Provider for Icloud {
             let is_attachment = |p: &Value| p["isAttach"] == json!(true) || !str_of(&p["fileName"]).is_empty();
             let body_part = |p: &&Value| {
                 !is_attachment(p)
-                    && matches!(str_of(&p["contentType"]).to_ascii_lowercase().as_str(), "text/plain" | "text/html")
+                    && matches!(
+                        str_of(&p["contentType"]).to_ascii_lowercase().as_str(),
+                        "text/plain" | "text/html"
+                    )
             };
             let body_ids: Vec<String> = parts.iter().filter(body_part).map(|p| str_of(&p["partId"])).collect();
             let (long_header, contents) = self.message_parts(&folder, &uid, &body_ids)?;
@@ -561,8 +657,11 @@ impl Provider for Icloud {
                 .iter()
                 .filter(|p| is_attachment(p))
                 .map(|p| {
-                    let (part, kind, name) =
-                        (str_of(&p["partId"]), str_of(&p["contentType"]).to_ascii_lowercase(), str_of(&p["fileName"]));
+                    let (part, kind, name) = (
+                        str_of(&p["partId"]),
+                        str_of(&p["contentType"]).to_ascii_lowercase(),
+                        str_of(&p["fileName"]),
+                    );
                     Attachment {
                         id: format!(
                             "{}:{}",
@@ -587,7 +686,17 @@ impl Provider for Icloud {
                 .collect();
             let message_id = str_of(&m["messageId"]);
             messages.push(Message {
-                id: format!("{}:{key}/{}", self.name, encode('m', &MessageRef { f: folder.clone(), u: uid.clone() })),
+                id: format!(
+                    "{}:{key}/{}",
+                    self.name,
+                    encode(
+                        'm',
+                        &MessageRef {
+                            f: folder.clone(),
+                            u: uid.clone()
+                        }
+                    )
+                ),
                 thread_id: thread_id.clone(),
                 outgoing: folder == SENT || own.contains(&from.email.to_ascii_lowercase()),
                 to: strings(&m["to"]).iter().flat_map(|s| addresses(s)).collect(),
@@ -626,9 +735,16 @@ impl Provider for Icloud {
         };
         self.message_ids.lock().unwrap().insert(
             thread_id,
-            messages.iter().filter_map(|m| m.message_id.as_deref()).map(normalize_message_id).collect(),
+            messages
+                .iter()
+                .filter_map(|m| m.message_id.as_deref())
+                .map(normalize_message_id)
+                .collect(),
         );
-        Ok(ThreadDetail { thread: summary, messages })
+        Ok(ThreadDetail {
+            thread: summary,
+            messages,
+        })
     }
 
     fn move_thread(&self, id: &str, folder: &str) -> Result<()> {
@@ -643,14 +759,22 @@ impl Provider for Icloud {
             }
         };
         let (_, r) = self.thread_ref(id)?;
-        self.call("thread/move", Some(&r.f), json!({ "moveMethod": "MOVE", "destFolder": dest, "threadIds": [r.t] }))
-            .map(drop)
+        self.call(
+            "thread/move",
+            Some(&r.f),
+            json!({ "moveMethod": "MOVE", "destFolder": dest, "threadIds": [r.t] }),
+        )
+        .map(drop)
     }
 
     fn delete_thread(&self, id: &str) -> Result<()> {
         let (_, r) = self.thread_ref(id)?;
-        self.call("thread/move", Some(&r.f), json!({ "moveMethod": "MOVE", "destFolder": TRASH, "threadIds": [r.t] }))
-            .map(drop)
+        self.call(
+            "thread/move",
+            Some(&r.f),
+            json!({ "moveMethod": "MOVE", "destFolder": TRASH, "threadIds": [r.t] }),
+        )
+        .map(drop)
     }
 
     fn set_unread(&self, id: &str, unread: bool) -> Result<()> {
@@ -681,9 +805,16 @@ impl Provider for Icloud {
     fn send(&self, req: &SendRequest) -> Result<SendResponse> {
         let own = self.load_identities()?;
         let from = match req.from.as_deref().map(bare_email).filter(|f| !f.is_empty()) {
-            Some(f) => own.iter().find(|a| a.email.eq_ignore_ascii_case(&f)).cloned().ok_or_else(|| {
-                self.fail(ErrorKind::BadRequest, format!("{f} isn't one of your iCloud Mail addresses"))
-            })?,
+            Some(f) => own
+                .iter()
+                .find(|a| a.email.eq_ignore_ascii_case(&f))
+                .cloned()
+                .ok_or_else(|| {
+                    self.fail(
+                        ErrorKind::BadRequest,
+                        format!("{f} isn't one of your iCloud Mail addresses"),
+                    )
+                })?,
             None => own[0].clone(),
         };
         let list = |items: &[String]| {
@@ -728,13 +859,24 @@ impl Provider for Icloud {
             body["headerReferences"] = json!(refs.join(" "));
             thread_id = Some(format!("{}:{key}", self.name));
         }
-        let uploaded: Vec<Value> =
-            req.attachments.iter().enumerate().map(|(n, a)| self.upload(a, n)).collect::<Result<_>>()?;
+        let uploaded: Vec<Value> = req
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(n, a)| self.upload(a, n))
+            .collect::<Result<_>>()?;
         body["attachments"] = json!(uploaded);
         let draft = self.call("message/savedraft", None, body)?;
-        let uid = draft["uid"].as_str().map(str::to_string).ok_or_else(|| self.unexpected("message/savedraft"))?;
+        let uid = draft["uid"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| self.unexpected("message/savedraft"))?;
         self.call("draft/send", None, json!({ "messageGuid": format!("Drafts/{uid}") }))?;
-        Ok(SendResponse { thread_id, message: None, warning: None })
+        Ok(SendResponse {
+            thread_id,
+            message: None,
+            warning: None,
+        })
     }
 
     fn attachment_limit(&self) -> u64 {
@@ -749,7 +891,10 @@ impl Provider for Icloud {
         if p.p.is_empty() {
             return Err(self.fail(
                 ErrorKind::BadRequest,
-                format!("{} is a Mail Drop link, not part of the message; open it in iCloud Mail on the web", p.n),
+                format!(
+                    "{} is a Mail Drop link, not part of the message; open it in iCloud Mail on the web",
+                    p.n
+                ),
             ));
         }
         let base = self.session.webservice("mccgateway").map_err(|e| self.wrap(e))?;
@@ -778,14 +923,30 @@ impl Provider for Icloud {
     }
 
     fn message_ids(&self, thread_id: &str) -> Vec<String> {
-        self.message_ids.lock().unwrap().get(thread_id).cloned().unwrap_or_default()
+        self.message_ids
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The senders in the Inbox and the recipients of sent mail (from each sent conversation).
     fn correspondents(&self, limit: u32) -> Result<Vec<Address>> {
-        let own: Vec<String> = self.load_identities()?.into_iter().map(|a| a.email.to_ascii_lowercase()).collect();
-        let q = ThreadQuery { limit, ..Default::default() };
-        let mut out: Vec<Address> = self.search_mailbox(INBOX, &q, None)?.into_iter().filter_map(|t| t.from).collect();
+        let own: Vec<String> = self
+            .load_identities()?
+            .into_iter()
+            .map(|a| a.email.to_ascii_lowercase())
+            .collect();
+        let q = ThreadQuery {
+            limit,
+            ..Default::default()
+        };
+        let mut out: Vec<Address> = self
+            .search_mailbox(INBOX, &q, None)?
+            .into_iter()
+            .filter_map(|t| t.from)
+            .collect();
         for t in self.search_mailbox(SENT, &q, None)? {
             let (_, r) = self.thread_ref(&t.id)?;
             for m in self.thread_messages(&r.f, &r.t)? {
@@ -806,10 +967,28 @@ mod tests {
     #[test]
     fn ids_survive_any_mailbox_or_thread_id() {
         let ic = Icloud::new("icloud", &AccountConfig::default());
-        let t = format!("icloud:{}", encode('t', &ThreadRef { f: "Sent Messages".into(), t: "a/b:c#d".into() }));
+        let t = format!(
+            "icloud:{}",
+            encode(
+                't',
+                &ThreadRef {
+                    f: "Sent Messages".into(),
+                    t: "a/b:c#d".into()
+                }
+            )
+        );
         let (_, r) = ic.thread_ref(&t).unwrap();
         assert_eq!((r.f.as_str(), r.t.as_str()), ("Sent Messages", "a/b:c#d"));
-        let m = format!("{t}/{}", encode('m', &MessageRef { f: "INBOX".into(), u: "41".into() }));
+        let m = format!(
+            "{t}/{}",
+            encode(
+                'm',
+                &MessageRef {
+                    f: "INBOX".into(),
+                    u: "41".into()
+                }
+            )
+        );
         assert_eq!(ic.message_ref(&m).unwrap().1.u, "41");
         assert!(ic.message_ref(&t).is_err(), "a thread isn't a message");
     }
@@ -827,12 +1006,20 @@ mod tests {
         let shown: Vec<String> = own.iter().map(Address::formatted).collect();
         assert_eq!(
             shown,
-            ["Ann Example <ann@icloud.com>", "Ann at Work <ann.work@icloud.com>", "Ann Example <hi@ann.dev>"]
+            [
+                "Ann Example <ann@icloud.com>",
+                "Ann at Work <ann.work@icloud.com>",
+                "Ann Example <hi@ann.dev>"
+            ]
         );
         let only_me_com =
             json!({ "emailId": "ann", "supportedDomains": [{ "domain": "icloud.com" }, { "domain": "me.com" }] });
         assert_eq!(
-            own_addresses(&only_me_com, "").unwrap().iter().map(|a| a.email.as_str()).collect::<Vec<_>>(),
+            own_addresses(&only_me_com, "")
+                .unwrap()
+                .iter()
+                .map(|a| a.email.as_str())
+                .collect::<Vec<_>>(),
             ["ann@icloud.com"],
             "none may send: the primary icloud.com one"
         );

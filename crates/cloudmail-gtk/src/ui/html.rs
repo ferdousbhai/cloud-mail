@@ -13,14 +13,24 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
         let open = i == last || (i + 1 == last && detail.messages.len() <= 3);
         body.push_str(&message(m, open, &mut blocked_remote));
     }
-    let badge = match detail.thread.account.as_deref().map(crate::api::provider::account_label) {
+    let badge = match detail
+        .thread
+        .account
+        .as_deref()
+        .map(crate::api::provider::account_label)
+    {
         Some(label) => {
-            format!(r#" <span class="acct" title="In your linked {0} account">{0}</span>"#, escape_html(&label))
+            format!(
+                r#" <span class="acct" title="In your linked {0} account">{0}</span>"#,
+                escape_html(&label)
+            )
         }
         None => String::new(),
     };
-    let heading =
-        format!(r#"<h1 class="subject">{}{badge}</h1>"#, escape_html(subject_or_placeholder(&detail.thread.subject)));
+    let heading = format!(
+        r#"<h1 class="subject">{}{badge}</h1>"#,
+        escape_html(subject_or_placeholder(&detail.thread.subject))
+    );
     let note = if blocked_remote && !remote_images {
         r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
     } else {
@@ -78,7 +88,10 @@ details[open] .preview {{ display: none; }}
 }
 
 fn addr_list(list: &[Address]) -> String {
-    list.iter().map(|a| escape_html(&a.display())).collect::<Vec<_>>().join(", ")
+    list.iter()
+        .map(|a| escape_html(&a.display()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
@@ -93,7 +106,14 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         rcpt_full.push_str(&format!("\nCc: {}", format_addresses(&m.cc)));
     }
     // HTML-only mail (most newsletters) previews its text rendering.
-    let preview: String = m.plain_text().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+    let preview: String = m
+        .plain_text()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(160)
+        .collect();
     let header = format!(
         r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
         name = escape_html(&m.from.display()),
@@ -146,7 +166,11 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
             )
         })
         .collect();
-    let atts = if atts.is_empty() { String::new() } else { format!(r#"<div class="atts">{}</div>"#, atts.join("")) };
+    let atts = if atts.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="atts">{}</div>"#, atts.join(""))
+    };
 
     format!(
         r#"<details class="msg"{open}><summary>{header}</summary>{content}{atts}</details>"#,
@@ -165,16 +189,37 @@ fn is_stub(text: &str, html: &str) -> bool {
 /// Whether an HTML part has real layout or imagery, as opposed to text in a few divs.
 fn is_designed(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
-    ["<table", "<img", "<style", "background", "bgcolor", "<h1", "<h2", "<h3", "<hr", "<font", "<button", "<svg"]
-        .iter()
-        .any(|tag| lower.contains(tag))
+    [
+        "<table",
+        "<img",
+        "<style",
+        "background",
+        "bgcolor",
+        "<h1",
+        "<h2",
+        "<h3",
+        "<hr",
+        "<font",
+        "<button",
+        "<svg",
+    ]
+    .iter()
+    .any(|tag| lower.contains(tag))
 }
 
 fn has_remote_images(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
-    ["src=\"http", "src='http", "src=http", "url(http", "url('http", "url(\"http", "background=\"http"]
-        .iter()
-        .any(|p| lower.contains(p))
+    [
+        "src=\"http",
+        "src='http",
+        "src=http",
+        "url(http",
+        "url('http",
+        "url(\"http",
+        "background=\"http",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
 }
 
 /// JavaScript is disabled, so this only needs to keep the markup from escaping
@@ -223,7 +268,10 @@ fn plain(text: &str) -> String {
         if quoted.is_empty() {
             return;
         }
-        out.push_str(&format!(r#"<details class="quoted"><summary>•••</summary>{}</details>"#, plain_block(quoted)));
+        out.push_str(&format!(
+            r#"<details class="quoted"><summary>•••</summary>{}</details>"#,
+            plain_block(quoted)
+        ));
         quoted.clear();
     };
     let mut normal: Vec<&str> = Vec::new();
@@ -250,7 +298,10 @@ fn plain(text: &str) -> String {
 }
 
 fn plain_block(lines: &[&str]) -> String {
-    format!(r#"<div class="plain">{}</div>"#, linkify(&escape_html(&lines.join("\n"))))
+    format!(
+        r#"<div class="plain">{}</div>"#,
+        linkify(&escape_html(&lines.join("\n")))
+    )
 }
 
 /// Wraps http(s) URLs in already-escaped text with anchors.
@@ -265,7 +316,9 @@ fn linkify(escaped: &str) -> String {
         };
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
-        let mut end = tail.find(|c: char| c.is_whitespace() || c == '<' || c == '"').unwrap_or(tail.len());
+        let mut end = tail
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
+            .unwrap_or(tail.len());
         if let Some(amp) = tail[..end].find("&gt;") {
             end = amp;
         }
@@ -282,10 +335,16 @@ mod tests {
 
     #[test]
     fn warns_on_dmarc_fail() {
-        let mut m = Message { text: Some("hi".into()), ..Default::default() };
+        let mut m = Message {
+            text: Some("hi".into()),
+            ..Default::default()
+        };
         let mut blocked = false;
         assert!(!message(&m, true, &mut blocked).contains("not verified"));
-        m.auth = Some(cloudmail_api::MessageAuth { dmarc: Some("fail".into()), ..Default::default() });
+        m.auth = Some(cloudmail_api::MessageAuth {
+            dmarc: Some("fail".into()),
+            ..Default::default()
+        });
         assert!(message(&m, true, &mut blocked).contains("sender not verified"));
     }
 
@@ -296,7 +355,10 @@ mod tests {
         // Text inside <style> is raw CSS that only </style> can end, so it is inert here.
         let mut lower = out.to_ascii_lowercase();
         while let Some(start) = lower.find("<style>") {
-            let end = lower[start..].find("</style>").map(|e| start + e + 8).unwrap_or(lower.len());
+            let end = lower[start..]
+                .find("</style>")
+                .map(|e| start + e + 8)
+                .unwrap_or(lower.len());
             lower.replace_range(start..end, "");
         }
         for bad in [
@@ -336,13 +398,21 @@ mod tests {
         let payload = r#"<table><tr><td>x</td></tr></table><math><mtext><table><mglyph><xmp></mglyph></math></template></div></div></details><style>.warn{display:none!important}</style></xmp></table></mtext></math>"#;
         assert_contained(payload);
         // Its <style> must come out as inert text, never as a live element.
-        assert!(!sanitize(payload).to_ascii_lowercase().contains("<style"), "{}", sanitize(payload));
+        assert!(
+            !sanitize(payload).to_ascii_lowercase().contains("<style"),
+            "{}",
+            sanitize(payload)
+        );
         for raw in ["style", "noembed", "noframes", "xmp", "noscript"] {
             let smuggled = format!(
                 r#"<math><mtext><table><mglyph><{raw}></mglyph></math></template></details><style>.warn{{display:none}}</style></{raw}>"#
             );
             assert_contained(&smuggled);
-            assert!(!sanitize(&smuggled).to_ascii_lowercase().contains("<style"), "{raw}: {}", sanitize(&smuggled));
+            assert!(
+                !sanitize(&smuggled).to_ascii_lowercase().contains("<style"),
+                "{raw}: {}",
+                sanitize(&smuggled)
+            );
             assert_contained(&format!(
                 r#"<svg><foreignObject><{raw}></svg></template></details></{raw}></foreignObject></svg>"#
             ));
@@ -354,17 +424,28 @@ mod tests {
     fn designed_mail_gets_the_card_and_notes_do_not() {
         assert!(is_designed(r#"<table><tr><td><img src="x"></td></tr></table>"#));
         assert!(is_designed("<style>.btn{}</style><p>hi</p>"));
-        assert!(!is_designed(r#"<div style="font-family: sans-serif; white-space: pre-wrap;">Shipped!</div>"#));
-        assert!(!is_designed(r#"<div dir="ltr">7 works!</div><blockquote class="gmail_quote">x</blockquote>"#));
+        assert!(!is_designed(
+            r#"<div style="font-family: sans-serif; white-space: pre-wrap;">Shipped!</div>"#
+        ));
+        assert!(!is_designed(
+            r#"<div dir="ltr">7 works!</div><blockquote class="gmail_quote">x</blockquote>"#
+        ));
     }
 
     #[test]
     fn a_stub_text_part_does_not_hide_the_html() {
         let body = "<p>".to_string() + &"Here is the whole newsletter, in plain paragraphs. ".repeat(10) + "</p>";
-        let m =
-            Message { text: Some("View this email in your browser.".into()), html: Some(body), ..Default::default() };
+        let m = Message {
+            text: Some("View this email in your browser.".into()),
+            html: Some(body),
+            ..Default::default()
+        };
         assert!(message(&m, true, &mut false).contains("paper"));
-        let m = Message { text: Some("Thanks!".into()), html: Some("<div>Thanks!</div>".into()), ..Default::default() };
+        let m = Message {
+            text: Some("Thanks!".into()),
+            html: Some("<div>Thanks!</div>".into()),
+            ..Default::default()
+        };
         assert!(!message(&m, true, &mut false).contains("paper"));
     }
 

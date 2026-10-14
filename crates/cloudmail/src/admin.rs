@@ -18,11 +18,17 @@ const TOP_COMMANDS: &[(&str, &str)] = &[
     ("cloudmail screener", "Senders waiting for a yes or no"),
     ("cloudmail thread read <id>", "Read a thread"),
     ("cloudmail reply <id> -m <text>", "Reply"),
-    ("cloudmail compose --to <email> --subject <s> -m <text>", "Write a new message"),
+    (
+        "cloudmail compose --to <email> --subject <s> -m <text>",
+        "Write a new message",
+    ),
     ("cloudmail search <words>", "Search all mail"),
     ("cloudmail watch", "Stream new mail"),
     ("cloudmail commands", "Every command, with examples"),
-    ("cloudmail agent-guide", "How to script cloudmail / use it from an AI agent"),
+    (
+        "cloudmail agent-guide",
+        "How to script cloudmail / use it from an AI agent",
+    ),
 ];
 
 pub fn orientation() -> Response {
@@ -31,7 +37,10 @@ pub fn orientation() -> Response {
     let path = config::path();
     let status_line = match &cfg {
         Ok(c) => format!("Configured: {} (config {})", c.api_url, path.display()),
-        Err(_) => format!("Not configured yet: run `cloudmail setup`, or create {}", path.display()),
+        Err(_) => format!(
+            "Not configured yet: run `cloudmail setup`, or create {}",
+            path.display()
+        ),
     };
     let mut human = format!(
         "{} {}\nYour own email on Cloudflare: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
@@ -43,7 +52,10 @@ pub fn orientation() -> Response {
         human.push_str(&format!("  {c:<52} {}\n", dim(d)));
     }
     human.push_str("\nOutput is JSON when piped (or with --json). Run `cloudmail <command> --help` for details.");
-    let crumbs = TOP_COMMANDS.iter().map(|(c, d)| crumb(c.split_whitespace().nth(1).unwrap_or(""), c, d)).collect();
+    let crumbs = TOP_COMMANDS
+        .iter()
+        .map(|(c, d)| crumb(c.split_whitespace().nth(1).unwrap_or(""), c, d))
+        .collect();
     Response::new(
         json!({
             "name": "cloudmail",
@@ -52,7 +64,11 @@ pub fn orientation() -> Response {
             "config_path": path,
             "api_url": cfg.as_ref().ok().map(|c| c.api_url.clone()),
         }),
-        if configured { "cloudmail is configured" } else { "cloudmail is not configured; run `cloudmail setup`" },
+        if configured {
+            "cloudmail is configured"
+        } else {
+            "cloudmail is not configured; run `cloudmail setup`"
+        },
     )
     .human(human.trim_end())
     .crumbs(crumbs)
@@ -63,8 +79,10 @@ pub fn status(ctx: &Ctx) -> CliResult {
     let counts = client.counts()?;
     let mailboxes = client.mailboxes()?;
     let settings = client.settings()?;
-    let summary =
-        format!("{} unread of {} in the Inbox, {} in the Screener", counts.inbox_unread, counts.inbox, counts.screener);
+    let summary = format!(
+        "{} unread of {} in the Inbox, {} in the Screener",
+        counts.inbox_unread, counts.inbox, counts.screener
+    );
     let human = format!(
         "Worker:      {} (ok)\nConfig:      {}\nInbox:       {}, {} unread\nScreener:    {} waiting\nMailboxes:   {}\nForwarding:  {}",
         client.base_url(),
@@ -103,7 +121,11 @@ pub fn status(ctx: &Ctx) -> CliResult {
             human.push_str(&format!(
                 "\n{:<13}{}",
                 format!("{}:", st.label),
-                if st.ok { format!("signed in ({})", st.addresses.join(", ")) } else { st.detail.clone() }
+                if st.ok {
+                    format!("signed in ({})", st.addresses.join(", "))
+                } else {
+                    st.detail.clone()
+                }
             ));
         }
         data["accounts"] = json!(statuses);
@@ -132,10 +154,22 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
                 ),
             ]))
         }
-        MailboxCommand::Add { email, name, direct, route } => {
+        MailboxCommand::Add {
+            email,
+            name,
+            direct,
+            route,
+        } => {
             let (addr, spec_screen) = setup::parse_mailbox_spec(&email)?;
             let direct = direct || !spec_screen;
-            let mailbox = client.put_mailbox(&addr, &MailboxUpdate { name, screen: Some(!direct), position: None })?;
+            let mailbox = client.put_mailbox(
+                &addr,
+                &MailboxUpdate {
+                    name,
+                    screen: Some(!direct),
+                    position: None,
+                },
+            )?;
             let mut data = json!({ "mailbox": mailbox });
             let mut summary = format!("Added {addr} ({})", if direct { "direct" } else { "screened" });
             if route.route {
@@ -153,7 +187,12 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             }
             Ok(Response::new(data, summary).crumbs(crumbs))
         }
-        MailboxCommand::Set { email, name, screen, position } => {
+        MailboxCommand::Set {
+            email,
+            name,
+            screen,
+            position,
+        } => {
             if name.is_none() && screen.is_none() && position.is_none() {
                 return Err(CliError::usage("nothing to change").hint("pass --name, --screen or --position"));
             }
@@ -167,7 +206,10 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             Ok(Response::new(&mailbox, format!("Updated {email}")))
         }
         MailboxCommand::Remove { email, yes } => {
-            confirm(yes, &format!("Remove mailbox {email}? Mail to it will be screened as an unknown address."))?;
+            confirm(
+                yes,
+                &format!("Remove mailbox {email}? Mail to it will be screened as an unknown address."),
+            )?;
             client.delete_mailbox(&email)?;
             Ok(Response::new(
                 json!({ "email": email }),
@@ -181,11 +223,19 @@ pub fn settings(ctx: &Ctx, cmd: SettingsCommand) -> CliResult {
     let client = ctx.client()?;
     let settings = match cmd {
         SettingsCommand::Get => client.settings()?,
-        SettingsCommand::Set { key: SettingKey::ForwardTo, value } => {
-            client.update_settings(&json!({ "forward_to": value }))?
-        }
+        SettingsCommand::Set {
+            key: SettingKey::ForwardTo,
+            value,
+        } => client.update_settings(&json!({ "forward_to": value }))?,
     };
-    let human = format!("forward_to: {}", if settings.forward_to.is_empty() { "(off)" } else { &settings.forward_to });
+    let human = format!(
+        "forward_to: {}",
+        if settings.forward_to.is_empty() {
+            "(off)"
+        } else {
+            &settings.forward_to
+        }
+    );
     Ok(Response::new(&settings, "Worker settings").human(human))
 }
 
@@ -248,20 +298,24 @@ pub fn config_cmd(cmd: ConfigCommand) -> CliResult {
                         "Cloudmail API token",
                         value.trim(),
                     )?;
-                    return Ok(Response::new(json!({ "kept_in": "keyring" }), "Updated the API token in the keyring")
-                        .crumbs(vec![crumb("status", "cloudmail status", "Check the connection")]));
+                    return Ok(
+                        Response::new(json!({ "kept_in": "keyring" }), "Updated the API token in the keyring")
+                            .crumbs(vec![crumb("status", "cloudmail status", "Check the connection")]),
+                    );
                 }
                 ConfigKey::PollSeconds => {
-                    file.poll_seconds =
-                        Some(value.parse().map_err(|_| CliError::usage("poll_seconds must be a number"))?);
+                    file.poll_seconds = Some(
+                        value
+                            .parse()
+                            .map_err(|_| CliError::usage("poll_seconds must be a number"))?,
+                    );
                 }
             }
             let written = config::save(&file)?;
-            Ok(Response::new(json!({ "path": written }), format!("Updated {}", written.display())).crumbs(vec![crumb(
-                "status",
-                "cloudmail status",
-                "Check the connection",
-            )]))
+            Ok(
+                Response::new(json!({ "path": written }), format!("Updated {}", written.display()))
+                    .crumbs(vec![crumb("status", "cloudmail status", "Check the connection")]),
+            )
         }
     }
 }
@@ -286,11 +340,14 @@ pub fn commands() -> Response {
         .flatten()
         .filter_map(|c| c["command"].as_str().map(str::to_string))
         .collect();
-    Response::new(tree, format!("{n} commands")).human(text).ids(ids).crumbs(vec![crumb(
-        "guide",
-        "cloudmail agent-guide",
-        "Scripting and agent guide",
-    )])
+    Response::new(tree, format!("{n} commands"))
+        .human(text)
+        .ids(ids)
+        .crumbs(vec![crumb(
+            "guide",
+            "cloudmail agent-guide",
+            "Scripting and agent guide",
+        )])
 }
 
 #[cfg(test)]

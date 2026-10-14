@@ -29,7 +29,13 @@ pub fn show(parent: &gtk::Window) {
         let k = gtk::Label::builder().label(*key).xalign(1.0).build();
         k.add_css_class("key");
         grid.attach(&k, 0, i as i32, 1, 1);
-        grid.attach(&gtk::Label::builder().label(*what).xalign(0.0).build(), 1, i as i32, 1, 1);
+        grid.attach(
+            &gtk::Label::builder().label(*what).xalign(0.0).build(),
+            1,
+            i as i32,
+            1,
+            1,
+        );
     }
     let window = gtk::Window::builder()
         .title("Keyboard shortcuts")

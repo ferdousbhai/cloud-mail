@@ -47,7 +47,11 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(60)))
             .build()
             .into();
-        Self { base: config.api_url.trim_end_matches('/').to_string(), token: config.api_token.clone(), agent }
+        Self {
+            base: config.api_url.trim_end_matches('/').to_string(),
+            token: config.api_token.clone(),
+            agent,
+        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -65,7 +69,12 @@ impl Client {
     fn finish(resp: HttpResult) -> Result<Raw> {
         let mut resp = resp.map_err(|e| Error::new(ErrorKind::Network, e.to_string()))?;
         let status = resp.status();
-        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
         let content_type = header("content-type");
         let disposition = header("content-disposition");
         let bytes = resp
@@ -75,7 +84,11 @@ impl Client {
             .read_to_vec()
             .map_err(|e| Error::new(ErrorKind::Network, e.to_string()))?;
         if status.is_success() {
-            return Ok(Raw { bytes, content_type, disposition });
+            return Ok(Raw {
+                bytes,
+                content_type,
+                disposition,
+            });
         }
         #[derive(serde::Deserialize)]
         struct ApiError {
@@ -102,7 +115,12 @@ impl Client {
     }
 
     fn get_raw(&self, path: &str) -> Result<Raw> {
-        Self::finish(self.agent.get(self.url(path)).header("Authorization", self.auth()).call())
+        Self::finish(
+            self.agent
+                .get(self.url(path))
+                .header("Authorization", self.auth())
+                .call(),
+        )
     }
 
     fn send_json<T: DeserializeOwned>(
@@ -126,7 +144,13 @@ impl Client {
     }
 
     fn delete(&self, path: &str) -> Result<()> {
-        Self::finish(self.agent.delete(self.url(path)).header("Authorization", self.auth()).call()).map(drop)
+        Self::finish(
+            self.agent
+                .delete(self.url(path))
+                .header("Authorization", self.auth())
+                .call(),
+        )
+        .map(drop)
     }
 
     fn enc(s: &str) -> String {
@@ -215,8 +239,11 @@ impl Client {
             #[serde(default)]
             moved: i64,
         }
-        self.post::<Decided>(&format!("/api/senders/{}", Self::enc(email)), &serde_json::json!({ "status": status }))
-            .map(|d| d.moved)
+        self.post::<Decided>(
+            &format!("/api/senders/{}", Self::enc(email)),
+            &serde_json::json!({ "status": status }),
+        )
+        .map(|d| d.moved)
     }
 
     /// The decisions recorded for these addresses (by lowercased address): "approved", "blocked"
@@ -234,7 +261,12 @@ impl Client {
         let mut out = std::collections::HashMap::new();
         for chunk in emails.chunks(1000) {
             let found: Found = self.post("/api/senders/lookup", &serde_json::json!({ "emails": chunk }))?;
-            out.extend(found.senders.into_iter().map(|r| (r.email.to_ascii_lowercase(), r.status)));
+            out.extend(
+                found
+                    .senders
+                    .into_iter()
+                    .map(|r| (r.email.to_ascii_lowercase(), r.status)),
+            );
         }
         Ok(out)
     }
@@ -247,7 +279,10 @@ impl Client {
         }
         let mut changed = 0;
         for chunk in senders.chunks(1000) {
-            let list: Vec<_> = chunk.iter().map(|a| serde_json::json!({ "email": a.email, "name": a.name })).collect();
+            let list: Vec<_> = chunk
+                .iter()
+                .map(|a| serde_json::json!({ "email": a.email, "name": a.name }))
+                .collect();
             changed += self
                 .post::<Changed>(
                     "/api/senders/batch",
@@ -263,7 +298,8 @@ impl Client {
         struct Senders {
             senders: Vec<Sender>,
         }
-        self.get::<Senders>(&format!("/api/senders?status={}", Self::enc(status))).map(|s| s.senders)
+        self.get::<Senders>(&format!("/api/senders?status={}", Self::enc(status)))
+            .map(|s| s.senders)
     }
 
     pub fn send(&self, req: &SendRequest) -> Result<SendResponse> {
@@ -281,7 +317,8 @@ impl Client {
 
     /// The original .eml of a received message.
     pub fn raw_message(&self, id: &str) -> Result<Vec<u8>> {
-        self.get_raw(&format!("/api/messages/{}/raw", Self::enc(id))).map(|r| r.bytes)
+        self.get_raw(&format!("/api/messages/{}/raw", Self::enc(id)))
+            .map(|r| r.bytes)
     }
 
     pub fn identities(&self) -> Result<Identities> {
@@ -302,7 +339,8 @@ impl Client {
         struct Put {
             mailbox: Mailbox,
         }
-        self.put::<Put>(&format!("/api/mailboxes/{}", Self::enc(email)), update).map(|p| p.mailbox)
+        self.put::<Put>(&format!("/api/mailboxes/{}", Self::enc(email)), update)
+            .map(|p| p.mailbox)
     }
 
     pub fn delete_mailbox(&self, email: &str) -> Result<()> {
@@ -314,7 +352,8 @@ impl Client {
     }
 
     pub fn update_settings(&self, patch: &serde_json::Value) -> Result<Settings> {
-        self.patch::<SettingsEnvelope>("/api/settings", patch).map(|w| w.settings)
+        self.patch::<SettingsEnvelope>("/api/settings", patch)
+            .map(|w| w.settings)
     }
 }
 
@@ -352,8 +391,14 @@ mod tests {
             filename_from_disposition("attachment; filename*=UTF-8''menu%202.pdf").as_deref(),
             Some("menu 2.pdf")
         );
-        assert_eq!(filename_from_disposition("attachment; filename=\"m_1.eml\"").as_deref(), Some("m_1.eml"));
-        assert_eq!(filename_from_disposition("attachment; filename=\"a; b.pdf\"").as_deref(), Some("a; b.pdf"));
+        assert_eq!(
+            filename_from_disposition("attachment; filename=\"m_1.eml\"").as_deref(),
+            Some("m_1.eml")
+        );
+        assert_eq!(
+            filename_from_disposition("attachment; filename=\"a; b.pdf\"").as_deref(),
+            Some("a; b.pdf")
+        );
         assert_eq!(filename_from_disposition("inline"), None);
     }
 }

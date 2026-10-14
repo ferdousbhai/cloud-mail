@@ -21,7 +21,11 @@ pub fn short_time(ms: i64) -> String {
 }
 
 pub fn long_time(ms: i64) -> String {
-    Local.timestamp_millis_opt(ms).single().map(|t| t.format("%a, %b %-d %Y at %H:%M").to_string()).unwrap_or_default()
+    Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|t| t.format("%a, %b %-d %Y at %H:%M").to_string())
+        .unwrap_or_default()
 }
 
 /// Splits "a@b.com, Last, First <c@d.com>" into addresses, keeping commas that
@@ -59,13 +63,21 @@ pub fn format_addresses(list: &[Address]) -> String {
 pub fn reply_subject(subject: &str) -> String {
     let s = subject.trim();
     let lower = s.to_ascii_lowercase();
-    if lower.starts_with("re:") || lower.starts_with("re :") { s.to_string() } else { format!("Re: {s}") }
+    if lower.starts_with("re:") || lower.starts_with("re :") {
+        s.to_string()
+    } else {
+        format!("Re: {s}")
+    }
 }
 
 pub fn quote(text: &str, who: &str, date_ms: i64) -> String {
     let mut out = format!("\n\nOn {}, {who} wrote:\n", long_time(date_ms));
     for line in text.trim_end().lines() {
-        let sep = if line.is_empty() || line.starts_with('>') { "" } else { " " };
+        let sep = if line.is_empty() || line.starts_with('>') {
+            ""
+        } else {
+            " "
+        };
         out.push_str(&format!(">{sep}{line}\n"));
     }
     out
@@ -82,12 +94,18 @@ pub fn html_to_text(html: &str) -> String {
             if ch == '>' {
                 in_tag = false;
                 let t = tag.trim().to_ascii_lowercase();
-                let name: String =
-                    t.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                let name: String = t
+                    .trim_start_matches('/')
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
                 if matches!(name.as_str(), "style" | "script" | "head") {
                     skip = !t.starts_with('/');
                 }
-                if matches!(name.as_str(), "br" | "p" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "table") {
+                if matches!(
+                    name.as_str(),
+                    "br" | "p" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "table"
+                ) {
                     out.push('\n');
                 }
                 tag.clear();
@@ -128,8 +146,14 @@ pub fn unused_path(path: PathBuf) -> PathBuf {
     if !path.exists() {
         return path;
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     (1..)
         .map(|i| path.with_file_name(format!("{stem} ({i}){ext}")))
         .find(|p| !p.exists())
@@ -173,7 +197,10 @@ mod tests {
 
     #[test]
     fn html_text() {
-        assert_eq!(html_to_text("<style>x{}</style><p>Hi &amp; bye</p><p>2</p>"), "Hi & bye\n\n2");
+        assert_eq!(
+            html_to_text("<style>x{}</style><p>Hi &amp; bye</p><p>2</p>"),
+            "Hi & bye\n\n2"
+        );
     }
 
     #[test]

@@ -25,7 +25,12 @@ struct Compose {
 }
 
 fn fields(c: &Compose) -> [String; 4] {
-    [c.to.text().to_string(), c.cc.text().to_string(), c.subject.text().to_string(), body_text(c)]
+    [
+        c.to.text().to_string(),
+        c.cc.text().to_string(),
+        c.subject.text().to_string(),
+        body_text(c),
+    ]
 }
 
 #[cfg(debug_assertions)]
@@ -39,7 +44,11 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         return;
     }
     let window = gtk::Window::builder()
-        .title(if draft.reply_to_message_id.is_some() { "Reply" } else { "New message" })
+        .title(if draft.reply_to_message_id.is_some() {
+            "Reply"
+        } else {
+            "New message"
+        })
         .transient_for(&ui.window)
         // Hyprland centres a dialog on its parent, so one wider than a half-screen tile hangs off the edge.
         .default_width((ui.window.width() - 40).clamp(480, 760))
@@ -64,7 +73,10 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     };
 
     let from = gtk::DropDown::from_strings(&[]);
-    let to = gtk::Entry::builder().text(&draft.to).placeholder_text("name@example.com, …").build();
+    let to = gtk::Entry::builder()
+        .text(&draft.to)
+        .placeholder_text("name@example.com, …")
+        .build();
     let cc = gtk::Entry::builder().text(&draft.cc).build();
     let subject = gtk::Entry::builder().text(&draft.subject).build();
     field(0, "From", from.upcast_ref());
@@ -72,7 +84,11 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     field(2, "Cc", cc.upcast_ref());
     field(3, "Subject", subject.upcast_ref());
 
-    let body = gtk::TextView::builder().wrap_mode(gtk::WrapMode::WordChar).accepts_tab(false).vexpand(true).build();
+    let body = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .vexpand(true)
+        .build();
     body.buffer().set_text(&draft.body);
     body.buffer().place_cursor(&body.buffer().start_iter());
     let chips = gtk::FlowBox::builder()
@@ -84,7 +100,11 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         .build();
     chips.add_css_class("attachments");
     grid.attach(&chips, 0, 4, 2, 1);
-    let scroller = gtk::ScrolledWindow::builder().child(&body).vexpand(true).hexpand(true).build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .child(&body)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
     grid.attach(&scroller, 0, 5, 2, 1);
 
     let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -252,20 +272,32 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
     }
     // A reply in a linked account always goes out through it, from its address, even before
     // that account's addresses have loaded.
-    let account_reply =
-        c.reply_to_message_id.as_deref().and_then(|id| id.split_once(':')).map(|(account, _)| account.to_string());
+    let account_reply = c
+        .reply_to_message_id
+        .as_deref()
+        .and_then(|id| id.split_once(':'))
+        .map(|(account, _)| account.to_string());
     if let (Some(account), Some(w)) = (account_reply, wanted.filter(|w| !w.is_empty()))
         && !options.iter().any(|o| o.email.eq_ignore_ascii_case(w))
     {
-        options.push(Address { name: None, email: w.to_string() });
+        options.push(Address {
+            name: None,
+            email: w.to_string(),
+        });
         via.push(Some(crate::api::provider::account_label(&account)));
     }
     // Before your mailboxes load, show the wanted address alone; after, only mailboxes can send.
     if let Some(w) = wanted.filter(|w| !w.is_empty())
         && options.is_empty()
     {
-        let name = ids.as_ref().and_then(|i| i.default.as_ref()).and_then(|d| d.name.clone());
-        options.push(Address { name, email: w.to_string() });
+        let name = ids
+            .as_ref()
+            .and_then(|i| i.default.as_ref())
+            .and_then(|d| d.name.clone());
+        options.push(Address {
+            name,
+            email: w.to_string(),
+        });
         via.push(None);
     }
     let labels: Vec<String> = options
@@ -278,7 +310,9 @@ fn fill_from(c: &Compose, ui: &Ui, wanted: Option<&str>) {
         .collect();
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     c.from.set_model(Some(&gtk::StringList::new(&refs)));
-    let selected = wanted.and_then(|w| options.iter().position(|o| o.email.eq_ignore_ascii_case(w))).unwrap_or(0);
+    let selected = wanted
+        .and_then(|w| options.iter().position(|o| o.email.eq_ignore_ascii_case(w)))
+        .unwrap_or(0);
     c.from.set_selected(selected as u32);
     *c.from_emails.borrow_mut() = options.into_iter().map(|a| a.email).collect();
 }
@@ -361,7 +395,11 @@ fn chip_text(a: &OutgoingAttachment) -> (String, String) {
 }
 
 fn choose_files(c: &Rc<Compose>) {
-    let dialog = gtk::FileDialog::builder().title("Attach files").accept_label("Attach").modal(true).build();
+    let dialog = gtk::FileDialog::builder()
+        .title("Attach files")
+        .accept_label("Attach")
+        .modal(true)
+        .build();
     dialog.open_multiple(
         Some(&c.window),
         gio::Cancellable::NONE,
@@ -372,7 +410,9 @@ fn choose_files(c: &Rc<Compose>) {
                 if let Ok(model) = result {
                     add_files(
                         &c,
-                        (0..model.n_items()).filter_map(|i| model.item(i).and_downcast::<gio::File>()).collect(),
+                        (0..model.n_items())
+                            .filter_map(|i| model.item(i).and_downcast::<gio::File>())
+                            .collect(),
                     );
                 }
             }
@@ -420,7 +460,8 @@ fn add_files(c: &Rc<Compose>, files: Vec<gio::File>) {
                         Err(e) => problem = problem.or(Some(e)),
                     }
                 }
-                c.error.set_label(&problem.map(|e| format!("Couldn't attach: {e}")).unwrap_or_default());
+                c.error
+                    .set_label(&problem.map(|e| format!("Couldn't attach: {e}")).unwrap_or_default());
                 render_chips(&c);
             }
         ),
@@ -467,8 +508,13 @@ fn render_chips(c: &Rc<Compose>) {
 /// Debug builds: drops `path` on the open compose window, as dragging it there would.
 #[cfg(debug_assertions)]
 pub fn drop_on_open(path: &str) -> bool {
-    let open =
-        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let open = OPEN.with(|o| {
+        o.borrow()
+            .iter()
+            .rev()
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|c| c.window.is_visible())
+    });
     let Some(c) = open else { return false };
     on_drop(&c, &gdk::FileList::from_array(&[gio::File::for_path(path)]).to_value())
 }
@@ -476,8 +522,13 @@ pub fn drop_on_open(path: &str) -> bool {
 /// Debug builds: clicks the remove button on the open compose window's `i`th chip.
 #[cfg(debug_assertions)]
 pub fn unattach_on_open(i: usize) -> bool {
-    let open =
-        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()));
+    let open = OPEN.with(|o| {
+        o.borrow()
+            .iter()
+            .rev()
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|c| c.window.is_visible())
+    });
     let button = open
         .and_then(|c| c.chips.child_at_index(i as i32))
         .and_then(|chip| chip.child())
@@ -489,8 +540,13 @@ pub fn unattach_on_open(i: usize) -> bool {
 /// Debug builds: the open compose window's attachments, and whether it has unsaved changes.
 #[cfg(debug_assertions)]
 pub fn open_state() -> Option<(Vec<String>, bool)> {
-    let open =
-        OPEN.with(|o| o.borrow().iter().rev().filter_map(std::rc::Weak::upgrade).find(|c| c.window.is_visible()))?;
+    let open = OPEN.with(|o| {
+        o.borrow()
+            .iter()
+            .rev()
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|c| c.window.is_visible())
+    })?;
     let names = open.attachments.borrow().iter().map(|a| a.filename.clone()).collect();
     Some((names, is_dirty(&open)))
 }

@@ -79,7 +79,13 @@ impl Open {
     fn new() -> zbus::Result<Open> {
         let bus = Connection::session()?;
         let (_, session): (OwnedValue, OwnedObjectPath) = bus
-            .call_method(Some(BUS_NAME), SERVICE_PATH, Some(SERVICE), "OpenSession", &("plain", Value::from("")))?
+            .call_method(
+                Some(BUS_NAME),
+                SERVICE_PATH,
+                Some(SERVICE),
+                "OpenSession",
+                &("plain", Value::from("")),
+            )?
             .body()
             .deserialize()?;
         Ok(Open { bus, session })
@@ -95,7 +101,10 @@ impl Open {
     where
         R: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type,
     {
-        self.bus.call_method(Some(BUS_NAME), path, Some(interface), method, body)?.body().deserialize()
+        self.bus
+            .call_method(Some(BUS_NAME), path, Some(interface), method, body)?
+            .body()
+            .deserialize()
     }
 
     fn locked(&self, path: &str, interface: &str) -> zbus::Result<bool> {
@@ -117,7 +126,9 @@ impl Open {
         // Listening before asking: the answer can come at once.
         let mut completed = prompt.receive_signal("Completed")?;
         prompt.call_method("Prompt", &("",))?;
-        let message = completed.next().ok_or_else(|| failure("the keyring prompt went away"))?;
+        let message = completed
+            .next()
+            .ok_or_else(|| failure("the keyring prompt went away"))?;
         let (dismissed, result): (bool, OwnedValue) = message.body().deserialize()?;
         if dismissed {
             return Err(failure("the keyring prompt was dismissed"));
@@ -156,7 +167,11 @@ impl Open {
 pub fn get(name: &str) -> Result<Option<String>> {
     let k = Open::new().map_err(unavailable)?;
     let stored = (|| -> zbus::Result<_> {
-        let Some(item) = k.search(&k.default_collection()?, &attributes(name))?.into_iter().next() else {
+        let Some(item) = k
+            .search(&k.default_collection()?, &attributes(name))?
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
         };
         if k.locked(&item, ITEM)? {
@@ -226,14 +241,20 @@ mod tests {
     fn secrets_round_trip_through_base64() {
         let secret = "{\"token\":\"a\\\"b\\\\c\"}\nline two";
         let stored = encode(secret);
-        assert!(stored.iter().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b)), "{stored:?}");
+        assert!(
+            stored.iter().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b)),
+            "{stored:?}"
+        );
         assert_eq!(decode(&stored).as_deref(), Some(secret));
         assert_eq!(decode(b"not base64"), None);
     }
 
     #[test]
     fn a_pre_release_raw_secret_is_recovered_only_when_unmangled() {
-        assert_eq!(legacy_raw(b"cm_live_abc-123.XYZ").as_deref(), Some("cm_live_abc-123.XYZ"));
+        assert_eq!(
+            legacy_raw(b"cm_live_abc-123.XYZ").as_deref(),
+            Some("cm_live_abc-123.XYZ")
+        );
         assert_eq!(legacy_raw(b"a\\b"), None);
         assert_eq!(legacy_raw(b"line\nbreak"), None);
         assert_eq!(legacy_raw(b""), None);

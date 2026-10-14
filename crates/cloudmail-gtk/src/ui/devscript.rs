@@ -12,8 +12,14 @@ use std::time::Duration;
 use super::Ui;
 
 pub fn start(ui: &Rc<Ui>) {
-    let Ok(script) = std::env::var("CLOUDMAIL_SCRIPT") else { return };
-    let steps: Vec<String> = script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let Ok(script) = std::env::var("CLOUDMAIL_SCRIPT") else {
+        return;
+    };
+    let steps: Vec<String> = script
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     run(Rc::downgrade(ui), steps, 0);
 }
 
@@ -36,7 +42,10 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                 ui_rc.on_key(gdk::Key::Escape, gdk::ModifierType::empty());
             }
             "send" => {
-                if let Some(b) = compose_window().and_then(|w| w.default_widget()).and_downcast::<gtk::Button>() {
+                if let Some(b) = compose_window()
+                    .and_then(|w| w.default_widget())
+                    .and_downcast::<gtk::Button>()
+                {
                     b.emit_clicked();
                 }
             }
@@ -89,7 +98,9 @@ fn shot(widget: &gtk::Widget, path: &str) {
         eprintln!("script: nothing to capture (mapped: {})", widget.is_mapped());
         return;
     };
-    let Some(renderer) = widget.native().and_then(|n| n.renderer()) else { return };
+    let Some(renderer) = widget.native().and_then(|n| n.renderer()) else {
+        return;
+    };
     let texture = renderer.render_texture(&node, None);
     if let Err(e) = texture.save_to_png(path) {
         eprintln!("script: could not save {path}: {e}");

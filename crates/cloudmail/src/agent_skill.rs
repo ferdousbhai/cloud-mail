@@ -106,11 +106,17 @@ pub fn install(home: &Path, skill: &Skill) -> io::Result<Outcome> {
         }
         Ok(_) => {}
     }
-    let marker = format!("This skill is managed by {}. Manual edits will be overwritten on upgrade.\n", skill.cli);
+    let marker = format!(
+        "This skill is managed by {}. Manual edits will be overwritten on upgrade.\n",
+        skill.cli
+    );
     write_file(&dir.join(skill.marker()), &marker, skill.cli)?;
     write_file(&dir.join(SKILL_FILE), skill.body, skill.cli)?;
     write_file(&dir.join(VERSION_FILE), skill.version, skill.cli)?;
-    let mut out = Outcome { paths: vec![dir.join(SKILL_FILE)], notices: vec![] };
+    let mut out = Outcome {
+        paths: vec![dir.join(SKILL_FILE)],
+        notices: vec![],
+    };
 
     if fs::symlink_metadata(home.join(".claude")).is_ok_and(|m| m.is_dir()) {
         let link = skill.claude_link(home);
@@ -123,7 +129,11 @@ pub fn install(home: &Path, skill: &Skill) -> io::Result<Outcome> {
                 symlink(&target, &link)?;
                 out.paths.push(link);
             }
-            Ok(_) => out.notices.push(format!("Left {} alone: it is not a link {} made.", link.display(), skill.cli)),
+            Ok(_) => out.notices.push(format!(
+                "Left {} alone: it is not a link {} made.",
+                link.display(),
+                skill.cli
+            )),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 fs::create_dir_all(home.join(".claude/skills"))?;
                 symlink(&target, &link)?;
@@ -154,11 +164,19 @@ pub fn remove(home: &Path, skill: &Skill) -> io::Result<Outcome> {
             }
         }
         if fs::remove_dir(&dir).is_err() {
-            out.notices.push(format!("Left {}: it holds files {} did not write.", dir.display(), skill.cli));
+            out.notices.push(format!(
+                "Left {}: it holds files {} did not write.",
+                dir.display(),
+                skill.cli
+            ));
         }
         out.paths.push(dir);
     } else if fs::symlink_metadata(&dir).is_ok() {
-        out.notices.push(format!("Left {} alone: it is not a skill {} installed.", dir.display(), skill.cli));
+        out.notices.push(format!(
+            "Left {} alone: it is not a skill {} installed.",
+            dir.display(),
+            skill.cli
+        ));
     }
     Ok(out)
 }
@@ -183,14 +201,23 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 }
 #[cfg(not(unix))]
 fn symlink(_target: &Path, _link: &Path) -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "linking the skill for Claude Code needs a Unix system"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "linking the skill for Claude Code needs a Unix system",
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const S: Skill = Skill { name: "demo", body: "# demo v2\n", cli: "demo", version: "2", adopts_legacy: false };
+    const S: Skill = Skill {
+        name: "demo",
+        body: "# demo v2\n",
+        cli: "demo",
+        version: "2",
+        adopts_legacy: false,
+    };
 
     fn home(tag: &str) -> PathBuf {
         let h = std::env::temp_dir().join(format!("agent-skill-{tag}-{}", std::process::id()));
@@ -203,17 +230,33 @@ mod tests {
     fn installs_links_refreshes_and_removes() {
         let h = home("cycle");
         let out = install(&h, &S).unwrap();
-        assert_eq!(fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(), S.body);
-        assert_eq!(fs::read_link(h.join(".claude/skills/demo")).unwrap(), Path::new("../../.agents/skills/demo"));
-        assert_eq!(fs::read_to_string(h.join(".claude/skills/demo/SKILL.md")).unwrap(), S.body);
+        assert_eq!(
+            fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(),
+            S.body
+        );
+        assert_eq!(
+            fs::read_link(h.join(".claude/skills/demo")).unwrap(),
+            Path::new("../../.agents/skills/demo")
+        );
+        assert_eq!(
+            fs::read_to_string(h.join(".claude/skills/demo/SKILL.md")).unwrap(),
+            S.body
+        );
         assert_eq!(out.paths.len(), 2);
         install(&h, &S).unwrap(); // idempotent
 
-        let old = Skill { body: "# demo v1\n", version: "1", ..S };
+        let old = Skill {
+            body: "# demo v1\n",
+            version: "1",
+            ..S
+        };
         install(&h, &old).unwrap();
         assert!(refresh(&h, &S));
         assert!(!refresh(&h, &S));
-        assert_eq!(fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(), S.body);
+        assert_eq!(
+            fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(),
+            S.body
+        );
 
         remove(&h, &S).unwrap();
         assert!(fs::symlink_metadata(h.join(".agents/skills/demo")).is_err());
@@ -240,7 +283,10 @@ mod tests {
         fs::create_dir_all(h.join(".agents/skills/demo")).unwrap();
         fs::write(h.join(".agents/skills/demo/SKILL.md"), "mine").unwrap();
         assert!(install(&h, &S).is_err());
-        assert_eq!(fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(), "mine");
+        assert_eq!(
+            fs::read_to_string(h.join(".agents/skills/demo/SKILL.md")).unwrap(),
+            "mine"
+        );
         fs::remove_dir_all(h.join(".agents/skills/demo")).unwrap();
         fs::create_dir_all(h.join(".claude/skills/demo")).unwrap();
         let out = install(&h, &S).unwrap();
@@ -257,7 +303,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("SKILL.md"), "# demo v1\n").unwrap();
         assert!(install(&h, &S).is_err()); // a CLI without legacy releases refuses
-        let legacy = Skill { adopts_legacy: true, ..S };
+        let legacy = Skill {
+            adopts_legacy: true,
+            ..S
+        };
         assert!(refresh(&h, &legacy)); // the upgrade adopts and refreshes it
         assert_eq!(fs::read_to_string(dir.join("SKILL.md")).unwrap(), S.body);
         assert!(legacy.owns(&dir));

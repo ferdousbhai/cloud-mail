@@ -32,10 +32,22 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 const BOX_LIMIT: u32 = 100;
 
 pub const EXTRA_FOLDERS: &[ExtraFolder] = &[
-    ExtraFolder { folder: "feed", title: "The Feed" },
-    ExtraFolder { folder: "paper_trail", title: "Paper Trail" },
-    ExtraFolder { folder: "set_aside", title: "Set Aside" },
-    ExtraFolder { folder: "reply_later", title: "Reply Later" },
+    ExtraFolder {
+        folder: "feed",
+        title: "The Feed",
+    },
+    ExtraFolder {
+        folder: "paper_trail",
+        title: "Paper Trail",
+    },
+    ExtraFolder {
+        folder: "set_aside",
+        title: "Set Aside",
+    },
+    ExtraFolder {
+        folder: "reply_later",
+        title: "Reply Later",
+    },
 ];
 
 /// The HEY box (by kind) a cloudmail folder reads from or moves to.
@@ -94,11 +106,19 @@ fn nonempty(s: String) -> Option<String> {
 }
 
 fn contact(v: &Value) -> Address {
-    Address { name: nonempty(text(&v["name"])), email: text(&v["email_address"]) }
+    Address {
+        name: nonempty(text(&v["name"])),
+        email: text(&v["email_address"]),
+    }
 }
 
 fn contacts(v: &Value) -> Vec<Address> {
-    v.as_array().into_iter().flatten().map(contact).filter(|a| !a.email.is_empty()).collect()
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .map(contact)
+        .filter(|a| !a.email.is_empty())
+        .collect()
 }
 
 /// `(topic, box item)` from `hey:<topic>[:<box item>][/<entry>]`.
@@ -154,10 +174,16 @@ impl Hey {
     /// Runs `hey auth login`, its output on the terminal: HEY's own browser sign-in (OAuth with
     /// PKCE). Gives up after `LOGIN_TIMEOUT`, so a sign-in abandoned in the browser can't hang the app.
     pub fn login(&self) -> Result<()> {
-        let mut child =
-            Command::new(&self.command).args(["auth", "login"]).stdin(std::process::Stdio::null()).spawn().map_err(
-                |e| self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)),
-            )?;
+        let mut child = Command::new(&self.command)
+            .args(["auth", "login"])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("could not run {}: {e}", self.command),
+                )
+            })?;
         let deadline = std::time::Instant::now() + LOGIN_TIMEOUT;
         let status = loop {
             match child.try_wait() {
@@ -166,7 +192,10 @@ impl Hey {
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(self.fail(ErrorKind::AccountAuth, "the HEY sign-in wasn't finished within 10 minutes"));
+                    return Err(self.fail(
+                        ErrorKind::AccountAuth,
+                        "the HEY sign-in wasn't finished within 10 minutes",
+                    ));
                 }
                 Err(e) => return Err(self.fail(ErrorKind::AccountUnavailable, e.to_string())),
             }
@@ -174,7 +203,10 @@ impl Hey {
         if status.success() {
             Ok(())
         } else {
-            Err(self.fail(ErrorKind::AccountAuth, format!("`hey auth login` didn't finish ({status})")))
+            Err(self.fail(
+                ErrorKind::AccountAuth,
+                format!("`hey auth login` didn't finish ({status})"),
+            ))
         }
     }
 
@@ -225,7 +257,10 @@ impl Hey {
                 ));
             }
             Run::Failed(e) => {
-                return Err(self.fail(ErrorKind::AccountUnavailable, format!("could not run {}: {e}", self.command)));
+                return Err(self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("could not run {}: {e}", self.command),
+                ));
             }
         };
         if status.success() {
@@ -239,7 +274,10 @@ impl Hey {
             message = stderr.lines().last().unwrap_or("").to_string();
         }
         if message.is_empty() {
-            message = format!("`hey {}` failed ({status})", args.first().map(String::as_str).unwrap_or(""));
+            message = format!(
+                "`hey {}` failed ({status})",
+                args.first().map(String::as_str).unwrap_or("")
+            );
         }
         let hint = text(&envelope["hint"]);
         let kind = match status.code() {
@@ -253,7 +291,14 @@ impl Hey {
             Some(1 | 4 | 8) => ErrorKind::BadRequest,
             _ => ErrorKind::AccountUnavailable,
         };
-        Err(self.fail(kind, if hint.is_empty() { message } else { format!("{message} ({hint})") }))
+        Err(self.fail(
+            kind,
+            if hint.is_empty() {
+                message
+            } else {
+                format!("{message} ({hint})")
+            },
+        ))
     }
 
     /// `hey <args> --json`, returning the envelope's `data`.
@@ -279,7 +324,10 @@ impl Hey {
     }
 
     fn shape_error(&self, what: &str) -> Error {
-        self.fail(ErrorKind::AccountUnavailable, format!("unexpected `hey {what}` output (a newer hey CLI?)"))
+        self.fail(
+            ErrorKind::AccountUnavailable,
+            format!("unexpected `hey {what}` output (a newer hey CLI?)"),
+        )
     }
 
     fn summary_from_posting(&self, p: &Value, fallback_kind: &str) -> Option<ThreadSummary> {
@@ -325,7 +373,9 @@ impl Hey {
             unread: p["seen"] == json!(false),
             has_attachments: p["includes_attachments"] == json!(true),
             // active_at is the latest message; updated_at also moves when it is merely read.
-            last_at: Some(millis(&p["active_at"])).filter(|t| *t > 0).unwrap_or_else(|| millis(&p["created_at"])),
+            last_at: Some(millis(&p["active_at"]))
+                .filter(|t| *t > 0)
+                .unwrap_or_else(|| millis(&p["created_at"])),
             account: Some(self.name.clone()),
         })
     }
@@ -342,26 +392,38 @@ impl Hey {
     fn box_threads(&self, kind: &str, limit: u32) -> Result<Vec<ThreadSummary>> {
         let limit = limit.max(1).to_string();
         let data = self.run(&["box", "view", kind, "--limit", &limit], None)?;
-        let postings = data["postings"].as_array().ok_or_else(|| self.shape_error("box view"))?;
+        let postings = data["postings"]
+            .as_array()
+            .ok_or_else(|| self.shape_error("box view"))?;
         let box_kind = data["kind"].as_str().unwrap_or(kind).to_string();
-        Ok(postings.iter().filter_map(|p| self.summary_from_posting(p, &box_kind)).collect())
+        Ok(postings
+            .iter()
+            .filter_map(|p| self.summary_from_posting(p, &box_kind))
+            .collect())
     }
 
     fn clearances(&self) -> Result<Vec<Value>> {
         let data = self.run(&["screener", "list", "--all"], None)?;
-        data.as_array().cloned().ok_or_else(|| self.shape_error("screener list"))
+        data.as_array()
+            .cloned()
+            .ok_or_else(|| self.shape_error("screener list"))
     }
 
     fn own_addresses(&self) -> Vec<Address> {
         if let Some(own) = self.own.lock().unwrap().clone() {
             return own;
         }
-        let Ok(data) = self.run(&["account", "senders"], None) else { return Vec::new() };
+        let Ok(data) = self.run(&["account", "senders"], None) else {
+            return Vec::new();
+        };
         let own: Vec<Address> = data
             .as_array()
             .into_iter()
             .flatten()
-            .map(|s| Address { name: nonempty(text(&s["name"])), email: text(&s["email"]) })
+            .map(|s| Address {
+                name: nonempty(text(&s["name"])),
+                email: text(&s["email"]),
+            })
             .filter(|a| !a.email.is_empty())
             .collect();
         *self.own.lock().unwrap() = Some(own.clone());
@@ -376,13 +438,22 @@ impl Hey {
 
     /// HEY's original HTML per entry, from `thread read --html` (one `<article>` per entry).
     fn entry_html(&self, topic: i64) -> HashMap<i64, String> {
-        let args = vec!["thread".to_string(), "read".to_string(), topic.to_string(), "--html".to_string()];
-        let Ok(bytes) = self.exec(&args, None, false) else { return HashMap::new() };
+        let args = vec![
+            "thread".to_string(),
+            "read".to_string(),
+            topic.to_string(),
+            "--html".to_string(),
+        ];
+        let Ok(bytes) = self.exec(&args, None, false) else {
+            return HashMap::new();
+        };
         split_articles(&String::from_utf8_lossy(&bytes))
     }
 
     fn attachments(&self, topic: i64) -> Vec<(i64, Attachment)> {
-        let Ok(data) = self.run(&["attachment", "list", &topic.to_string()], None) else { return Vec::new() };
+        let Ok(data) = self.run(&["attachment", "list", &topic.to_string()], None) else {
+            return Vec::new();
+        };
         data.as_array()
             .into_iter()
             .flatten()
@@ -411,9 +482,13 @@ impl Hey {
 fn split_articles(doc: &str) -> HashMap<i64, String> {
     let mut out = HashMap::new();
     for part in doc.split("<article id=\"entry-").skip(1) {
-        let Some((id, rest)) = part.split_once('"') else { continue };
+        let Some((id, rest)) = part.split_once('"') else {
+            continue;
+        };
         let Ok(id) = id.parse::<i64>() else { continue };
-        let Some((_, body)) = rest.split_once("</header>\n") else { continue };
+        let Some((_, body)) = rest.split_once("</header>\n") else {
+            continue;
+        };
         let body = body.rfind("</article>").map(|i| &body[..i]).unwrap_or(body);
         out.insert(id, unwrap_trix(body.trim()));
     }
@@ -431,7 +506,9 @@ fn unwrap_trix(body: &str) -> String {
     while let Some(i) = rest.find(OPEN) {
         let after = &rest[i + OPEN.len()..];
         let Some(q) = after.find('"') else { break };
-        let Some(end) = after[q..].find(CLOSE).map(|e| q + e) else { break };
+        let Some(end) = after[q..].find(CLOSE).map(|e| q + e) else {
+            break;
+        };
         let attr = after[..q]
             .replace("&quot;", "\"")
             .replace("&lt;", "<")
@@ -502,9 +579,17 @@ impl Provider for Hey {
     }
 
     fn threads(&self, q: &ThreadQuery) -> Result<Vec<ThreadSummary>> {
-        let folder = if q.folder.is_empty() { "inbox" } else { q.folder.as_str() };
+        let folder = if q.folder.is_empty() {
+            "inbox"
+        } else {
+            q.folder.as_str()
+        };
         // No time cursor in HEY: ask for enough to cover this page (or the most a box gives) and filter here.
-        let want = if q.before.is_some() { BOX_LIMIT } else { q.limit.clamp(1, BOX_LIMIT) };
+        let want = if q.before.is_some() {
+            BOX_LIMIT
+        } else {
+            q.limit.clamp(1, BOX_LIMIT)
+        };
         let mut list = match folder {
             "screener" => self.screener_threads()?,
             "all" => {
@@ -547,7 +632,11 @@ impl Provider for Hey {
                 if let Some(t) = known.get(&topic) {
                     return Some(t.clone());
                 }
-                let latest = h["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or(Value::Null);
+                let latest = h["messages"]
+                    .as_array()
+                    .and_then(|m| m.last())
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let mut from = contact(&latest["creator"]);
                 if let Some(alt) = nonempty(text(&latest["alternative_sender_name"])) {
                     from.name = Some(alt);
@@ -611,7 +700,9 @@ impl Provider for Hey {
                 let creator = contact(&e["creator"]);
                 let sender = e.get("sender").map(contact).filter(|a| !a.email.is_empty());
                 let outgoing = own.contains(&creator.email.to_ascii_lowercase())
-                    || sender.as_ref().is_some_and(|s| own.contains(&s.email.to_ascii_lowercase()));
+                    || sender
+                        .as_ref()
+                        .is_some_and(|s| own.contains(&s.email.to_ascii_lowercase()));
                 let mut from = sender.unwrap_or(creator);
                 if !outgoing && let Some(alt) = nonempty(text(&e["alternative_sender_name"])) {
                     from.name = Some(alt);
@@ -664,7 +755,10 @@ impl Provider for Hey {
         }
         summary.message_count = messages.len() as i64;
         summary.has_attachments = messages.iter().any(|m| m.attachments.iter().any(|a| !a.inline));
-        Ok(ThreadDetail { thread: summary, messages })
+        Ok(ThreadDetail {
+            thread: summary,
+            messages,
+        })
     }
 
     fn move_thread(&self, id: &str, folder: &str) -> Result<()> {
@@ -699,7 +793,8 @@ impl Provider for Hey {
                 format!("{id} isn't in a HEY box, so it can't be marked (list a box to get its full ID)"),
             )
         })?;
-        self.run(&[if unread { "unseen" } else { "seen" }, &item.to_string()], None).map(drop)
+        self.run(&[if unread { "unseen" } else { "seen" }, &item.to_string()], None)
+            .map(drop)
     }
 
     fn screener(&self) -> Result<Vec<PendingSender>> {
@@ -751,9 +846,17 @@ impl Provider for Hey {
         let html = text_html(text);
         // The body goes as HTML (HEY reads -m as Markdown, which would join lines); a huge one
         // goes on stdin as Markdown instead, since an argument can't be that long.
-        let (body_args, stdin): (Vec<String>, Option<&str>) =
-            if html.len() < 96 * 1024 { (vec!["--message-html".into(), html], None) } else { (Vec::new(), Some(text)) };
-        let bare = |list: &[String]| list.iter().map(|a| bare_email(a)).filter(|a| !a.is_empty()).collect::<Vec<_>>();
+        let (body_args, stdin): (Vec<String>, Option<&str>) = if html.len() < 96 * 1024 {
+            (vec!["--message-html".into(), html], None)
+        } else {
+            (Vec::new(), Some(text))
+        };
+        let bare = |list: &[String]| {
+            list.iter()
+                .map(|a| bare_email(a))
+                .filter(|a| !a.is_empty())
+                .collect::<Vec<_>>()
+        };
         let mut args: Vec<String>;
         let thread_id;
         match req.reply_to_message_id.as_deref() {
@@ -795,12 +898,19 @@ impl Provider for Hey {
             None
         } else {
             let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey-send").map_err(|e| {
-                self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}"))
+                self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("could not create a temporary directory: {e}"),
+                )
             })?;
             for (i, a) in req.attachments.iter().enumerate() {
-                let path =
-                    dir.write(&i.to_string(), &crate::attach::safe_filename(&a.filename), &a.content).map_err(|e| {
-                        self.fail(ErrorKind::AccountUnavailable, format!("could not write {} for hey: {e}", a.filename))
+                let path = dir
+                    .write(&i.to_string(), &crate::attach::safe_filename(&a.filename), &a.content)
+                    .map_err(|e| {
+                        self.fail(
+                            ErrorKind::AccountUnavailable,
+                            format!("could not write {} for hey: {e}", a.filename),
+                        )
                     })?;
                 args.push("--attach".into());
                 args.push(path.to_string_lossy().into_owned());
@@ -811,7 +921,11 @@ impl Provider for Hey {
         let sent = self.run(&refs, stdin);
         drop(files);
         sent?;
-        Ok(SendResponse { thread_id: nonempty(thread_id), message: None, warning: None })
+        Ok(SendResponse {
+            thread_id: nonempty(thread_id),
+            message: None,
+            warning: None,
+        })
     }
 
     fn attachment_limit(&self) -> u64 {
@@ -821,7 +935,10 @@ impl Provider for Hey {
     fn download_attachment(&self, id: &str) -> Result<Download> {
         let local = self.local(id)?.to_string();
         let dir = PrivateDir::new(&std::env::temp_dir(), "cloudmail-hey").map_err(|e| {
-            self.fail(ErrorKind::AccountUnavailable, format!("could not create a temporary directory: {e}"))
+            self.fail(
+                ErrorKind::AccountUnavailable,
+                format!("could not create a temporary directory: {e}"),
+            )
         })?;
         let result = (|| {
             let target = format!("{}/", dir.path().display());
@@ -831,11 +948,18 @@ impl Provider for Hey {
                 .map(std::path::PathBuf::from)
                 .ok_or_else(|| self.shape_error("attachment save"))?;
             let bytes = std::fs::read(&path).map_err(|e| {
-                self.fail(ErrorKind::AccountUnavailable, format!("could not read the saved attachment: {e}"))
+                self.fail(
+                    ErrorKind::AccountUnavailable,
+                    format!("could not read the saved attachment: {e}"),
+                )
             })?;
             let filename = nonempty(text(&data["filename"]))
                 .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()));
-            Ok(Download { bytes, content_type: None, filename })
+            Ok(Download {
+                bytes,
+                content_type: None,
+                filename,
+            })
         })();
         drop(dir);
         result
@@ -912,9 +1036,16 @@ mod tests {
             "<shadow-content><template><div style=\"color: red\">Hi &amp; bye</div></template></shadow-content>";
         let attr =
             serde_json::to_string(&json!({ "contentType": "text/html", "content": email, "data": "{}" })).unwrap();
-        let attr = attr.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+        let attr = attr
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
         let body = format!("<div><figure data-trix-attachment=\"{attr}\"></figure></div>");
-        assert_eq!(unwrap_trix(&body), "<div><div style=\"color: red\">Hi &amp; bye</div></div>");
+        assert_eq!(
+            unwrap_trix(&body),
+            "<div><div style=\"color: red\">Hi &amp; bye</div></div>"
+        );
         let image =
             "<figure data-trix-attachment=\"{&quot;contentType&quot;:&quot;image/png&quot;}\"><img src=\"x\"></figure>";
         assert_eq!(unwrap_trix(image), image, "other attachments stay");
@@ -923,7 +1054,10 @@ mod tests {
 
     #[test]
     fn plain_text_keeps_its_lines_as_html() {
-        assert_eq!(text_html("a <b>\n> c & d\n"), "<div>a &lt;b&gt;<br>&gt; c &amp; d</div>");
+        assert_eq!(
+            text_html("a <b>\n> c & d\n"),
+            "<div>a &lt;b&gt;<br>&gt; c &amp; d</div>"
+        );
     }
 
     #[test]
@@ -943,6 +1077,9 @@ mod tests {
         assert_eq!(t.from.as_ref().unwrap().display(), "Ann Example");
         assert_eq!(t.to_address.as_deref(), Some("me@hey.com"));
         assert_eq!(t.last_at, 1790761831000);
-        assert!(h.summary_from_posting(&json!({ "id": 1, "kind": "bundle" }), "imbox").is_none());
+        assert!(
+            h.summary_from_posting(&json!({ "id": 1, "kind": "bundle" }), "imbox")
+                .is_none()
+        );
     }
 }

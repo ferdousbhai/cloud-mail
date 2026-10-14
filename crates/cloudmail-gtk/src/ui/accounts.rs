@@ -59,7 +59,13 @@ pub fn show(ui: &Rc<Ui>) {
         .child(&root)
         .build();
     window.add_css_class("cloudmail");
-    let a = Rc::new(Accounts { ui: ui.clone(), window, list, status, restart });
+    let a = Rc::new(Accounts {
+        ui: ui.clone(),
+        window,
+        list,
+        status,
+        restart,
+    });
     // Every handler holds `a` weakly, so the window keeps it until it closes.
     let keep = std::cell::RefCell::new(Some(a.clone()));
     a.window.connect_destroy(move |_| drop(keep.take()));
@@ -101,7 +107,10 @@ fn refresh(a: &Rc<Accounts>) {
     while let Some(child) = a.list.first_child() {
         a.list.remove(&child);
     }
-    let loading = gtk::Label::builder().label("Checking your accounts…").xalign(0.0).build();
+    let loading = gtk::Label::builder()
+        .label("Checking your accounts…")
+        .xalign(0.0)
+        .build();
     a.list.append(&loading);
     util::run(
         || -> Result<Vec<AccountStatus>, String> {
@@ -130,9 +139,12 @@ fn refresh(a: &Rc<Accounts>) {
                     a.list.remove(&child);
                 }
                 match result {
-                    Ok(list) if list.is_empty() => {
-                        a.list.append(&gtk::Label::builder().label("None yet: link one below.").xalign(0.0).build())
-                    }
+                    Ok(list) if list.is_empty() => a.list.append(
+                        &gtk::Label::builder()
+                            .label("None yet: link one below.")
+                            .xalign(0.0)
+                            .build(),
+                    ),
                     Ok(list) => {
                         for s in list {
                             a.list.append(&row(&a, s));
@@ -152,8 +164,11 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     let state = if s.ok { "signed in" } else { "needs attention" };
     let title = format!("{} ({}, {state})", s.label, s.name);
     text.append(&gtk::Label::builder().label(&title).xalign(0.0).build());
-    let detail =
-        if s.addresses.is_empty() { s.detail.clone() } else { format!("{}\n{}", s.addresses.join(", "), s.detail) };
+    let detail = if s.addresses.is_empty() {
+        s.detail.clone()
+    } else {
+        format!("{}\n{}", s.addresses.join(", "), s.detail)
+    };
     let detail = gtk::Label::builder().label(&detail).xalign(0.0).wrap(true).build();
     detail.add_css_class("column-sub");
     text.append(&detail);
@@ -240,7 +255,11 @@ fn link(a: &Rc<Accounts>, provider: &'static str, button: &gtk::Button) {
     let button = button.clone();
     util::run(
         move || {
-            let req = Link { provider: provider.into(), can_sign_in: true, ..Default::default() };
+            let req = Link {
+                provider: provider.into(),
+                can_sign_in: true,
+                ..Default::default()
+            };
             accounts::link(&req, mail.as_ref(), &|_| {}).map_err(|e| e.to_string())
         },
         clone!(

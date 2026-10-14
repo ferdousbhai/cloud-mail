@@ -46,7 +46,10 @@ impl std::fmt::Display for LinkError {
 }
 
 fn usage(message: impl Into<String>, hint: Option<&str>) -> LinkError {
-    LinkError::Usage { message: message.into(), hint: hint.map(str::to_string) }
+    LinkError::Usage {
+        message: message.into(),
+        hint: hint.map(str::to_string),
+    }
 }
 
 /// What to link.
@@ -84,7 +87,9 @@ pub struct Linked {
 /// A linked account's config, with its keyring secret filled in.
 pub fn account_config(name: &str) -> std::result::Result<Option<AccountConfig>, Error> {
     let file = config::read_file(&config::path())?.unwrap_or_default();
-    let Some(mut cfg) = file.accounts.get(name).cloned() else { return Ok(None) };
+    let Some(mut cfg) = file.accounts.get(name).cloned() else {
+        return Ok(None);
+    };
     if cfg.client_id.is_some() {
         cfg.client_secret = crate::keyring::get(&config::client_secret_name(name))?;
     }
@@ -103,8 +108,15 @@ pub fn open(name: &str) -> std::result::Result<Arc<dyn Provider>, Error> {
 pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::result::Result<Linked, LinkError> {
     let provider_name = req.provider.to_ascii_lowercase();
     if !KNOWN_PROVIDERS.iter().any(|(p, _)| *p == provider_name) {
-        let known = KNOWN_PROVIDERS.iter().map(|(p, d)| format!("{p} ({d})")).collect::<Vec<_>>().join(", ");
-        return Err(usage(format!("unknown provider \"{provider_name}\""), Some(&format!("known: {known}"))));
+        let known = KNOWN_PROVIDERS
+            .iter()
+            .map(|(p, d)| format!("{p} ({d})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(usage(
+            format!("unknown provider \"{provider_name}\""),
+            Some(&format!("known: {known}")),
+        ));
     }
     let name = req.name.clone().unwrap_or_else(|| provider_name.clone());
     if !provider::valid_name(&name) {
@@ -113,7 +125,11 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
             Some("use lowercase letters, digits and dashes (it prefixes the account's IDs)"),
         ));
     }
-    let (hey, gmail, icloud) = (provider_name == "hey", provider_name == "gmail", provider_name == "icloud");
+    let (hey, gmail, icloud) = (
+        provider_name == "hey",
+        provider_name == "gmail",
+        provider_name == "icloud",
+    );
     if !hey && req.account.is_some() {
         return Err(usage(
             format!(
@@ -127,7 +143,10 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
         return Err(usage("--client-id and --client-secret are for Gmail", None));
     }
     if icloud && req.command.is_some() {
-        return Err(usage("--command is for HEY and Gmail; iCloud Mail goes through icloud-session", None));
+        return Err(usage(
+            "--command is for HEY and Gmail; iCloud Mail goes through icloud-session",
+            None,
+        ));
     }
     let mut cfg = AccountConfig {
         provider: (name != provider_name).then(|| provider_name.clone()),
@@ -140,7 +159,12 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
         let (version, addresses, dir) = link_gmail(&name, &cfg, req.can_sign_in, notice)?;
         ("Gmail", Some(version), addresses, Some(dir))
     } else if icloud {
-        ("iCloud Mail", None, link_icloud(&name, &cfg, req.can_sign_in, notice)?, None)
+        (
+            "iCloud Mail",
+            None,
+            link_icloud(&name, &cfg, req.can_sign_in, notice)?,
+            None,
+        )
     } else {
         let (version, addresses) = link_hey(&name, &cfg, &provider_name, req.can_sign_in, notice)?;
         ("HEY", Some(version), addresses, None)
@@ -161,11 +185,22 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     let screened_in = match mail {
         Some(mail) => {
             let p = provider::open(&name, &account_config(&name)?.unwrap_or(cfg))?;
-            p.screened_by_worker().then(|| mail.screen_in_correspondents(p.as_ref()).map_err(|e| e.message))
+            p.screened_by_worker()
+                .then(|| mail.screen_in_correspondents(p.as_ref()).map_err(|e| e.message))
         }
         None => None,
     };
-    Ok(Linked { name, provider: provider_name, label, addresses, version, gws_dir, replaced, config_path, screened_in })
+    Ok(Linked {
+        name,
+        provider: provider_name,
+        label,
+        addresses,
+        version,
+        gws_dir,
+        replaced,
+        config_path,
+        screened_in,
+    })
 }
 
 fn link_hey(
@@ -176,8 +211,10 @@ fn link_hey(
     notice: &dyn Fn(&str),
 ) -> std::result::Result<(String, Vec<String>), LinkError> {
     let hey = Hey::new(name, cfg);
-    let version =
-        hey.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: HEY_INSTALL.into() })?;
+    let version = hey.version().map_err(|e| LinkError::NotInstalled {
+        message: e.message,
+        hint: HEY_INSTALL.into(),
+    })?;
     if !hey.signed_in()? {
         if !can_sign_in {
             return Err(LinkError::NotSignedIn {
@@ -188,7 +225,10 @@ fn link_hey(
                 ),
             });
         }
-        notice(&format!("Signing in to HEY in your browser (`{} auth login`)…", hey.command()));
+        notice(&format!(
+            "Signing in to HEY in your browser (`{} auth login`)…",
+            hey.command()
+        ));
         hey.login()?;
         if !hey.signed_in()? {
             return Err(LinkError::NotSignedIn {
@@ -197,7 +237,14 @@ fn link_hey(
             });
         }
     }
-    Ok((version, hey.identities().unwrap_or_default().into_iter().map(|a| a.email).collect()))
+    Ok((
+        version,
+        hey.identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.email)
+            .collect(),
+    ))
 }
 
 /// Checks gws, signs in when needed (or when the saved sign-in no longer works) and reads the
@@ -217,8 +264,10 @@ fn link_gmail(
         install_gws(notice)?;
         g = Gmail::new(name, cfg);
     }
-    let version =
-        g.version().map_err(|e| LinkError::NotInstalled { message: e.message, hint: gmail::INSTALL_HINT.into() })?;
+    let version = g.version().map_err(|e| LinkError::NotInstalled {
+        message: e.message,
+        hint: gmail::INSTALL_HINT.into(),
+    })?;
     let sign_in = |why: &str| -> std::result::Result<(), LinkError> {
         if !g.client_configured() {
             return Err(LinkError::NotConfigured(Gmail::no_client_error().message));
@@ -247,21 +296,44 @@ fn link_gmail(
         }
         Err(e) => return Err(e.into()),
     };
-    Ok((version, addresses.into_iter().map(|a| a.email).collect(), g.dir().to_path_buf()))
+    Ok((
+        version,
+        addresses.into_iter().map(|a| a.email).collect(),
+        g.dir().to_path_buf(),
+    ))
 }
 
 /// `npm install` of Google's Workspace CLI into [`gmail::bundled_prefix`], which `Gmail` then runs.
 fn install_gws(notice: &dyn Fn(&str)) -> std::result::Result<(), LinkError> {
     let prefix = gmail::bundled_prefix();
-    notice(&format!("Installing Google's Workspace CLI (gws), which Gmail needs, into {}", prefix.display()));
+    notice(&format!(
+        "Installing Google's Workspace CLI (gws), which Gmail needs, into {}",
+        prefix.display()
+    ));
     let mut npm = std::process::Command::new("npm");
-    npm.args(["install", "--global", "--no-audit", "--no-fund", "--prefix"]).arg(&prefix).arg(gmail::PACKAGE);
-    let failed = |message: String| LinkError::NotInstalled { message, hint: gmail::INSTALL_HINT.into() };
+    npm.args(["install", "--global", "--no-audit", "--no-fund", "--prefix"])
+        .arg(&prefix)
+        .arg(gmail::PACKAGE);
+    let failed = |message: String| LinkError::NotInstalled {
+        message,
+        hint: gmail::INSTALL_HINT.into(),
+    };
     match provider::run_command(&mut npm, None, Duration::from_secs(600)) {
         provider::Run::Done { status, .. } if status.success() && gmail::bundled_command().is_file() => Ok(()),
         provider::Run::Done { status, stderr, .. } => {
-            let tail = stderr.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();
-            Err(failed(format!("`npm install {}` failed ({status}): {}", gmail::PACKAGE, tail.join(" "))))
+            let tail = stderr
+                .lines()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>();
+            Err(failed(format!(
+                "`npm install {}` failed ({status}): {}",
+                gmail::PACKAGE,
+                tail.join(" ")
+            )))
         }
         provider::Run::Missing => Err(LinkError::NotInstalled {
             message: "Gmail needs Google's Workspace CLI, and installing it needs npm, which isn't installed".into(),
@@ -281,10 +353,10 @@ fn link_icloud(
     notice: &dyn Fn(&str),
 ) -> std::result::Result<Vec<String>, LinkError> {
     let ic = Icloud::new(name, cfg);
-    let status = ic
-        .session()
-        .status()
-        .map_err(|e| LinkError::NotInstalled { message: e.message, hint: ICLOUD_SESSION_INSTALL.into() })?;
+    let status = ic.session().status().map_err(|e| LinkError::NotInstalled {
+        message: e.message,
+        hint: ICLOUD_SESSION_INSTALL.into(),
+    })?;
     if !status.signed_in {
         if !can_sign_in {
             return Err(LinkError::NotSignedIn {
@@ -347,9 +419,20 @@ pub fn unlink(name: &str) -> std::result::Result<Unlinked, Error> {
     if provider == "gmail" {
         let g = Gmail::new(name, &cfg);
         let removed = g.forget().map_err(|e| {
-            Error::new(ErrorKind::Config, format!("unlinked {name}, but could not remove {}: {e}", g.dir().display()))
+            Error::new(
+                ErrorKind::Config,
+                format!("unlinked {name}, but could not remove {}: {e}", g.dir().display()),
+            )
         })?;
-        return Ok(Unlinked { provider, signed_out: Some(removed), gws_dir: Some(g.dir().to_path_buf()) });
+        return Ok(Unlinked {
+            provider,
+            signed_out: Some(removed),
+            gws_dir: Some(g.dir().to_path_buf()),
+        });
     }
-    Ok(Unlinked { provider, signed_out: None, gws_dir: None })
+    Ok(Unlinked {
+        provider,
+        signed_out: None,
+        gws_dir: None,
+    })
 }

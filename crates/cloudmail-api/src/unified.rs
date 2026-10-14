@@ -88,7 +88,12 @@ pub fn subject_key(subject: &str) -> String {
     let mut s = subject.trim();
     loop {
         let lower = s.to_ascii_lowercase();
-        let Some(p) = ["re:", "fwd:", "fw:", "aw:", "sv:"].iter().find(|p| lower.starts_with(**p)) else { break };
+        let Some(p) = ["re:", "fwd:", "fw:", "aw:", "sv:"]
+            .iter()
+            .find(|p| lower.starts_with(**p))
+        else {
+            break;
+        };
         s = s[p.len()..].trim_start();
     }
     s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
@@ -96,7 +101,12 @@ pub fn subject_key(subject: &str) -> String {
 
 /// Whether `copy` (from a linked account) is the same conversation as the worker's `original`.
 pub fn is_copy(copy: &ThreadSummary, original: &ThreadSummary) -> bool {
-    let sender = |t: &ThreadSummary| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()).filter(|e| !e.is_empty());
+    let sender = |t: &ThreadSummary| {
+        t.from
+            .as_ref()
+            .map(|a| a.email.to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+    };
     sender(copy).is_some()
         && sender(copy) == sender(original)
         && subject_key(&copy.subject) == subject_key(&original.subject)
@@ -117,7 +127,9 @@ pub fn merge_senders(mut worker: Vec<PendingSender>, accounts: Vec<PendingSender
 pub fn waiting_senders(threads: &[ThreadSummary]) -> Vec<PendingSender> {
     let mut out: Vec<PendingSender> = Vec::new();
     for t in threads {
-        let Some(from) = t.from.as_ref().filter(|a| a.email.contains('@')) else { continue };
+        let Some(from) = t.from.as_ref().filter(|a| a.email.contains('@')) else {
+            continue;
+        };
         let email = from.email.to_ascii_lowercase();
         match out.iter_mut().find(|s| s.email == email) {
             Some(s) => {
@@ -160,7 +172,12 @@ impl Mail {
                 Err(e) => broken.push(AccountWarning::new(name, &e)),
             }
         }
-        Self { client, accounts, broken, worker_ids: Default::default() }
+        Self {
+            client,
+            accounts,
+            broken,
+            worker_ids: Default::default(),
+        }
     }
 
     pub fn from_config(config: &Config) -> Self {
@@ -202,36 +219,70 @@ impl Mail {
 
     /// Threads in a folder across the worker and every account, newest first.
     pub fn list(&self, q: &ThreadQuery) -> Result<Listing> {
-        let folder = if q.folder.is_empty() { "inbox" } else { q.folder.as_str() };
+        let folder = if q.folder.is_empty() {
+            "inbox"
+        } else {
+            q.folder.as_str()
+        };
         let worker_folder = provider::CORE_FOLDERS.contains(&folder);
         if !self.has_accounts() {
-            let threads = if worker_folder { self.client.list_threads(q)? } else { Vec::new() };
+            let threads = if worker_folder {
+                self.client.list_threads(q)?
+            } else {
+                Vec::new()
+            };
             let more = threads.len() as u32 >= q.limit.max(1);
-            return Ok(Listing { threads, more, warnings: self.broken.clone(), ..Default::default() });
+            return Ok(Listing {
+                threads,
+                more,
+                warnings: self.broken.clone(),
+                ..Default::default()
+            });
         }
         let (worker, (extra, mut warnings, hidden)) = std::thread::scope(|s| {
             let extra = s.spawn(|| self.accounts_list(q));
-            let worker = if worker_folder { self.client.list_threads(q) } else { Ok(Vec::new()) };
+            let worker = if worker_folder {
+                self.client.list_threads(q)
+            } else {
+                Ok(Vec::new())
+            };
             (worker, extra.join().unwrap_or_default())
         });
         let worker = worker?;
         let more = worker.len() as u32 >= q.limit.max(1);
         warnings.extend(self.broken.iter().cloned());
-        Ok(Listing { threads: merge(worker, extra, q.limit), warnings, duplicates_hidden: hidden, more })
+        Ok(Listing {
+            threads: merge(worker, extra, q.limit),
+            warnings,
+            duplicates_hidden: hidden,
+            more,
+        })
     }
 
     /// Linked accounts' threads in a folder, with copies of worker mail left out and, for the
     /// accounts your worker screens, only what that folder shows of them.
     pub fn accounts_list(&self, q: &ThreadQuery) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
-        let folder = if q.folder.is_empty() { "inbox" } else { q.folder.as_str() };
+        let folder = if q.folder.is_empty() {
+            "inbox"
+        } else {
+            q.folder.as_str()
+        };
         let results = self.each_account(|p| {
             if p.screened_by_worker() {
                 // An account without a Screener has its waiting mail in its Inbox.
-                let (inner, limit) = if folder == "screener" { ("inbox", SCREEN_SCAN) } else { (folder, q.limit) };
+                let (inner, limit) = if folder == "screener" {
+                    ("inbox", SCREEN_SCAN)
+                } else {
+                    (folder, q.limit)
+                };
                 if !p.has_folder(inner) {
                     return Ok(Vec::new());
                 }
-                p.threads(&ThreadQuery { folder: inner.into(), limit, ..q.clone() })
+                p.threads(&ThreadQuery {
+                    folder: inner.into(),
+                    limit,
+                    ..q.clone()
+                })
             } else if p.has_folder(folder) {
                 p.threads(q)
             } else {
@@ -251,24 +302,48 @@ impl Mail {
         results: Vec<(String, Result<Vec<ThreadSummary>>)>,
         folder: &str,
     ) -> Vec<(String, Result<Vec<ThreadSummary>>)> {
-        let screened = |name: &str| self.accounts.iter().find(|p| p.name() == name).filter(|p| p.screened_by_worker());
+        let screened = |name: &str| {
+            self.accounts
+                .iter()
+                .find(|p| p.name() == name)
+                .filter(|p| p.screened_by_worker())
+        };
         let own: HashMap<String, Vec<String>> = results
             .iter()
             .filter_map(|(name, r)| Some((name.clone(), (r.is_ok().then_some(())?, screened(name)?).1)))
             .map(|(name, p)| {
-                (name, p.identities().unwrap_or_default().into_iter().map(|a| a.email.to_ascii_lowercase()).collect())
+                (
+                    name,
+                    p.identities()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|a| a.email.to_ascii_lowercase())
+                        .collect(),
+                )
             })
             .collect();
-        let sender =
-            |t: &ThreadSummary| t.from.as_ref().map(|a| a.email.to_ascii_lowercase()).filter(|e| e.contains('@'));
+        let sender = |t: &ThreadSummary| {
+            t.from
+                .as_ref()
+                .map(|a| a.email.to_ascii_lowercase())
+                .filter(|e| e.contains('@'))
+        };
         let emails: Vec<String> = results
             .iter()
             .filter(|(name, _)| own.contains_key(name))
-            .flat_map(|(_, r)| r.as_ref().map(|l| l.iter().filter_map(sender).collect::<Vec<_>>()).unwrap_or_default())
+            .flat_map(|(_, r)| {
+                r.as_ref()
+                    .map(|l| l.iter().filter_map(sender).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let decisions = if emails.is_empty() { Ok(HashMap::new()) } else { self.client.sender_statuses(&emails) };
+        let decisions = if emails.is_empty() {
+            Ok(HashMap::new())
+        } else {
+            self.client.sender_statuses(&emails)
+        };
         results
             .into_iter()
             .map(|(name, r)| {
@@ -306,7 +381,12 @@ impl Mail {
 
     /// Full-text search across the worker and every account.
     pub fn search(&self, query: &str, limit: u32) -> Result<Listing> {
-        let q = ThreadQuery { folder: "all".into(), q: Some(query.to_string()), limit, ..Default::default() };
+        let q = ThreadQuery {
+            folder: "all".into(),
+            q: Some(query.to_string()),
+            limit,
+            ..Default::default()
+        };
         if !self.has_accounts() {
             return Ok(Listing {
                 threads: self.client.list_threads(&q)?,
@@ -319,7 +399,12 @@ impl Mail {
             (self.client.list_threads(&q), extra.join().unwrap_or_default())
         });
         warnings.extend(self.broken.iter().cloned());
-        Ok(Listing { threads: merge(worker?, extra, limit), warnings, duplicates_hidden: hidden, more: false })
+        Ok(Listing {
+            threads: merge(worker?, extra, limit),
+            warnings,
+            duplicates_hidden: hidden,
+            more: false,
+        })
     }
 
     pub fn accounts_search(&self, query: &str, limit: u32) -> (Vec<ThreadSummary>, Vec<AccountWarning>, usize) {
@@ -330,13 +415,19 @@ impl Mail {
 
     fn each_account<T: Send>(&self, f: impl Fn(&dyn Provider) -> Result<T> + Sync) -> Vec<(String, Result<T>)> {
         std::thread::scope(|s| {
-            let handles: Vec<_> =
-                self.accounts.iter().map(|p| (p.name().to_string(), s.spawn(|| f(p.as_ref())))).collect();
+            let handles: Vec<_> = self
+                .accounts
+                .iter()
+                .map(|p| (p.name().to_string(), s.spawn(|| f(p.as_ref()))))
+                .collect();
             handles
                 .into_iter()
                 .map(|(name, h)| {
                     let r = h.join().unwrap_or_else(|_| {
-                        Err(Error::new(ErrorKind::AccountUnavailable, format!("{name}: failed unexpectedly")))
+                        Err(Error::new(
+                            ErrorKind::AccountUnavailable,
+                            format!("{name}: failed unexpectedly"),
+                        ))
                     });
                     (name, r)
                 })
@@ -362,10 +453,17 @@ impl Mail {
             let index = self.worker_index(&threads);
             let exact: Vec<Vec<String>> = threads
                 .iter()
-                .map(|t| self.account_for(&t.id).map(|p| p.message_ids(&t.id)).unwrap_or_default())
+                .map(|t| {
+                    self.account_for(&t.id)
+                        .map(|p| p.message_ids(&t.id))
+                        .unwrap_or_default()
+                })
                 .collect();
             let same_subject = |t: &ThreadSummary| {
-                index.iter().filter(|w| subject_key(&w.subject) == subject_key(&t.subject)).collect::<Vec<_>>()
+                index
+                    .iter()
+                    .filter(|w| subject_key(&w.subject) == subject_key(&t.subject))
+                    .collect::<Vec<_>>()
             };
             let candidates: Vec<&ThreadSummary> = threads
                 .iter()
@@ -397,12 +495,19 @@ impl Mail {
 
     /// The worker's threads with activity around the given threads' times: what their copies would match.
     fn worker_index(&self, threads: &[ThreadSummary]) -> Vec<ThreadSummary> {
-        let Some(oldest) = threads.iter().map(|t| t.last_at).filter(|t| *t > 0).min() else { return Vec::new() };
+        let Some(oldest) = threads.iter().map(|t| t.last_at).filter(|t| *t > 0).min() else {
+            return Vec::new();
+        };
         let since = Some(oldest - DUPLICATE_WINDOW_MS - 1);
         // 200 is the most the worker returns per request.
         let fetch = |folder: &str| {
             self.client
-                .list_threads(&ThreadQuery { folder: folder.into(), since, limit: 200, ..Default::default() })
+                .list_threads(&ThreadQuery {
+                    folder: folder.into(),
+                    since,
+                    limit: 200,
+                    ..Default::default()
+                })
                 .unwrap_or_default()
         };
         let (mut all, blocked) = std::thread::scope(|s| {
@@ -432,9 +537,14 @@ impl Mail {
         }
         for chunk in todo.chunks(8) {
             let read: Vec<_> = std::thread::scope(|s| {
-                let handles: Vec<_> =
-                    chunk.iter().map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id)))).collect();
-                handles.into_iter().map(|(id, at, h)| (id, at, h.join().ok().and_then(|r| r.ok()))).collect()
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id))))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|(id, at, h)| (id, at, h.join().ok().and_then(|r| r.ok())))
+                    .collect()
             });
             for (id, at, detail) in read {
                 let Some(detail) = detail else { continue };
@@ -511,8 +621,11 @@ impl Mail {
                 if status != "blocked" {
                     return Ok(0);
                 }
-                let inbox =
-                    p.threads(&ThreadQuery { folder: "inbox".into(), limit: SCREEN_SCAN, ..Default::default() })?;
+                let inbox = p.threads(&ThreadQuery {
+                    folder: "inbox".into(),
+                    limit: SCREEN_SCAN,
+                    ..Default::default()
+                })?;
                 let mut moved = 0;
                 for t in inbox.iter().filter(|t| t.is_from(key)) {
                     p.move_thread(&t.id, p.archive_folder())?;
@@ -555,9 +668,16 @@ impl Mail {
         if let Some(p) = req.reply_to_message_id.as_deref().and_then(|id| self.account_for(id)) {
             return p.as_ref();
         }
-        if let Some(from) = req.from.as_deref().map(crate::text::bare_email).filter(|f| !f.is_empty()) {
+        if let Some(from) = req
+            .from
+            .as_deref()
+            .map(crate::text::bare_email)
+            .filter(|f| !f.is_empty())
+        {
             for p in &self.accounts {
-                if p.identities().is_ok_and(|ids| ids.iter().any(|a| a.email.eq_ignore_ascii_case(&from))) {
+                if p.identities()
+                    .is_ok_and(|ids| ids.iter().any(|a| a.email.eq_ignore_ascii_case(&from)))
+                {
                     return p.as_ref();
                 }
             }
@@ -581,7 +701,10 @@ impl Mail {
                 .filter(|a| a.email.contains('@'))
                 .collect();
             if let Err(e) = self.client.decide_senders(&to, "approved", false) {
-                sent.warning = Some(format!("sent, but its recipients couldn't be screened in: {}", e.message));
+                sent.warning = Some(format!(
+                    "sent, but its recipients couldn't be screened in: {}",
+                    e.message
+                ));
             }
         }
         Ok(sent)
@@ -606,7 +729,10 @@ mod tests {
         ThreadSummary {
             id: id.into(),
             subject: subject.into(),
-            from: Some(Address { name: None, email: email.into() }),
+            from: Some(Address {
+                name: None,
+                email: email.into(),
+            }),
             last_at: at,
             ..Default::default()
         }
@@ -615,14 +741,34 @@ mod tests {
     #[test]
     fn copies_match_on_sender_subject_and_time() {
         let original = t("t_1", "Ann@Example.com", "Lunch?", 1_000_000);
-        assert!(is_copy(&t("hey:1:2", "ann@example.com", "Re: lunch?", 1_000_000 + 60_000), &original));
+        assert!(is_copy(
+            &t("hey:1:2", "ann@example.com", "Re: lunch?", 1_000_000 + 60_000),
+            &original
+        ));
         assert!(
-            !is_copy(&t("hey:1:2", "ann@example.com", "Lunch?", 1_000_000 + DUPLICATE_WINDOW_MS + 1), &original),
+            !is_copy(
+                &t(
+                    "hey:1:2",
+                    "ann@example.com",
+                    "Lunch?",
+                    1_000_000 + DUPLICATE_WINDOW_MS + 1
+                ),
+                &original
+            ),
             "too far apart"
         );
-        assert!(!is_copy(&t("hey:1:2", "bob@example.com", "Lunch?", 1_000_000), &original), "another sender");
-        assert!(!is_copy(&t("hey:1:2", "ann@example.com", "Dinner?", 1_000_000), &original), "another subject");
-        assert!(!is_copy(&t("hey:1:2", "", "", 0), &t("t_2", "", "", 0)), "unknown senders never match");
+        assert!(
+            !is_copy(&t("hey:1:2", "bob@example.com", "Lunch?", 1_000_000), &original),
+            "another sender"
+        );
+        assert!(
+            !is_copy(&t("hey:1:2", "ann@example.com", "Dinner?", 1_000_000), &original),
+            "another subject"
+        );
+        assert!(
+            !is_copy(&t("hey:1:2", "", "", 0), &t("t_2", "", "", 0)),
+            "unknown senders never match"
+        );
     }
 
     #[test]
@@ -633,7 +779,11 @@ mod tests {
 
     #[test]
     fn merge_is_newest_first_and_limited() {
-        let m = merge(vec![t("a", "x@y", "", 3), t("b", "x@y", "", 1)], vec![t("hey:c", "x@y", "", 2)], 2);
+        let m = merge(
+            vec![t("a", "x@y", "", 3), t("b", "x@y", "", 1)],
+            vec![t("hey:c", "x@y", "", 2)],
+            2,
+        );
         assert_eq!(m.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a", "hey:c"]);
     }
 }

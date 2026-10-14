@@ -93,9 +93,11 @@ fn dbus_error(e: zbus::Error) -> Error {
         {
             unavailable("icloud-session isn't installed or running (it comes with icloud-for-omarchy)")
         }
-        zbus::Error::MethodError(name, msg, _) => {
-            unavailable(format!("icloud-session: {}: {}", name.as_str(), msg.as_deref().unwrap_or("")))
-        }
+        zbus::Error::MethodError(name, msg, _) => unavailable(format!(
+            "icloud-session: {}: {}",
+            name.as_str(),
+            msg.as_deref().unwrap_or("")
+        )),
         _ => unavailable(format!("can't reach icloud-session on the session bus: {e}")),
     }
 }
@@ -108,9 +110,16 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        let agent: ureq::Agent =
-            ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(TIMEOUT)).build().into();
-        Self { bus: Mutex::new(None), jar: Mutex::new(None), agent }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(TIMEOUT))
+            .build()
+            .into();
+        Self {
+            bus: Mutex::new(None),
+            jar: Mutex::new(None),
+            agent,
+        }
     }
 
     fn bus(&self) -> Result<Connection> {
@@ -128,17 +137,25 @@ impl Session {
         R: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type,
     {
         let bus = self.bus()?;
-        let reply = bus.call_method(Some(BUS_NAME), OBJECT_PATH, Some(INTERFACE), method, body).map_err(dbus_error)?;
-        reply
-            .body()
-            .deserialize()
-            .map_err(|e| unavailable(format!("icloud-session answered {method} with something unexpected ({e})")))
+        let reply = bus
+            .call_method(Some(BUS_NAME), OBJECT_PATH, Some(INTERFACE), method, body)
+            .map_err(dbus_error)?;
+        reply.body().deserialize().map_err(|e| {
+            unavailable(format!(
+                "icloud-session answered {method} with something unexpected ({e})"
+            ))
+        })
     }
 
     /// The session's properties.
     pub fn status(&self) -> Result<Status> {
         let all: HashMap<String, OwnedValue> = self.call_properties()?;
-        let text = |k: &str| all.get(k).and_then(|v| <&str>::try_from(v).ok()).unwrap_or("").to_string();
+        let text = |k: &str| {
+            all.get(k)
+                .and_then(|v| <&str>::try_from(v).ok())
+                .unwrap_or("")
+                .to_string()
+        };
         let flag = |k: &str| all.get(k).and_then(|v| bool::try_from(v).ok()).unwrap_or(false);
         Ok(Status {
             signed_in: flag("SignedIn"),
@@ -152,9 +169,18 @@ impl Session {
     fn call_properties(&self) -> Result<HashMap<String, OwnedValue>> {
         let bus = self.bus()?;
         let reply = bus
-            .call_method(Some(BUS_NAME), OBJECT_PATH, Some("org.freedesktop.DBus.Properties"), "GetAll", &(INTERFACE,))
+            .call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.DBus.Properties"),
+                "GetAll",
+                &(INTERFACE,),
+            )
             .map_err(dbus_error)?;
-        reply.body().deserialize().map_err(|e| unavailable(format!("icloud-session's properties are unreadable ({e})")))
+        reply
+            .body()
+            .deserialize()
+            .map_err(|e| unavailable(format!("icloud-session's properties are unreadable ({e})")))
     }
 
     /// Asks icloud-session to open its sign-in window; returns at once.
@@ -176,7 +202,11 @@ impl Session {
                 params.insert("dsid".into(), dsid);
             }
         }
-        let jar = Jar { cookie, params, webservices };
+        let jar = Jar {
+            cookie,
+            params,
+            webservices,
+        };
         *self.jar.lock().unwrap() = Some(jar.clone());
         Ok(jar)
     }
@@ -184,9 +214,14 @@ impl Session {
     /// The base URL of one of Apple's webservices (as `/validate` named it), without a trailing slash.
     pub fn webservice(&self, key: &str) -> Result<String> {
         let jar = self.jar()?;
-        jar.webservices.get(key).map(|u| u.trim_end_matches('/').to_string()).ok_or_else(|| {
-            unavailable(format!("this iCloud account has no `{key}` webservice (is iCloud Mail turned on for it?)"))
-        })
+        jar.webservices
+            .get(key)
+            .map(|u| u.trim_end_matches('/').to_string())
+            .ok_or_else(|| {
+                unavailable(format!(
+                    "this iCloud account has no `{key}` webservice (is iCloud Mail turned on for it?)"
+                ))
+            })
     }
 
     pub fn dsid(&self) -> Result<String> {
@@ -277,14 +312,22 @@ impl Session {
             *self.jar.lock().unwrap() = None;
         }
         let status = response.status().as_u16();
-        let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let body = response
             .body_mut()
             .with_config()
             .limit(96 * 1024 * 1024)
             .read_to_vec()
             .map_err(|e| unavailable(format!("{host}: {e}")))?;
-        Ok(Reply { status, content_type, body })
+        Ok(Reply {
+            status,
+            content_type,
+            body,
+        })
     }
 }
 

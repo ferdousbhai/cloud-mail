@@ -73,11 +73,20 @@ const TYPES: &[(&str, &str)] = &[
     ("mkv", "video/x-matroska"),
     ("avi", "video/x-msvideo"),
     ("doc", "application/msword"),
-    ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
     ("xls", "application/vnd.ms-excel"),
-    ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
     ("ppt", "application/vnd.ms-powerpoint"),
-    ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
     ("odt", "application/vnd.oasis.opendocument.text"),
     ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     ("odp", "application/vnd.oasis.opendocument.presentation"),
@@ -89,19 +98,33 @@ const TYPES: &[(&str, &str)] = &[
 
 /// The MIME type for a file name, by its extension; `application/octet-stream` when unknown.
 pub fn mime_type(filename: &str) -> &'static str {
-    let ext = Path::new(filename).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    TYPES.iter().find(|(e, _)| *e == ext).map_or("application/octet-stream", |(_, t)| t)
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    TYPES
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map_or("application/octet-stream", |(_, t)| t)
 }
 
 /// A file name fit for a header or a file on disk: one line, no path, not empty.
 pub fn safe_filename(name: &str) -> String {
-    let clean: String =
-        name.chars().filter(|c| !c.is_control()).map(|c| if matches!(c, '/' | '\\') { '_' } else { c }).collect();
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if matches!(c, '/' | '\\') { '_' } else { c })
+        .collect();
     let mut clean = clean.trim().to_string();
     while clean.len() > 200 {
         clean.pop();
     }
-    if clean.is_empty() || clean == "." || clean == ".." { "attachment".into() } else { clean }
+    if clean.is_empty() || clean == "." || clean == ".." {
+        "attachment".into()
+    } else {
+        clean
+    }
 }
 
 impl OutgoingAttachment {
@@ -116,8 +139,17 @@ impl OutgoingAttachment {
             return Err(fail("it's a directory".into()));
         }
         let content = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
-        let filename = safe_filename(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        Ok(Self { mime_type: mime_type(&filename).into(), filename, content })
+        let filename = safe_filename(
+            &path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        Ok(Self {
+            mime_type: mime_type(&filename).into(),
+            filename,
+            content,
+        })
     }
 
     pub fn size(&self) -> u64 {
@@ -179,16 +211,28 @@ mod tests {
             ("notes.md", "text/markdown", &b"# hi"[..])
         );
         let missing = OutgoingAttachment::from_path(&dir.join("nope.pdf")).unwrap_err();
-        assert!(missing.message.ends_with("nope.pdf: no such file"), "{}", missing.message);
+        assert!(
+            missing.message.ends_with("nope.pdf: no such file"),
+            "{}",
+            missing.message
+        );
         assert_eq!(missing.kind, ErrorKind::BadRequest);
-        assert!(OutgoingAttachment::from_path(&dir).unwrap_err().message.ends_with("it's a directory"));
+        assert!(
+            OutgoingAttachment::from_path(&dir)
+                .unwrap_err()
+                .message
+                .ends_with("it's a directory")
+        );
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
     fn limits_count_every_file() {
-        let a = OutgoingAttachment { content: vec![0; 600], ..Default::default() };
+        let a = OutgoingAttachment {
+            content: vec![0; 600],
+            ..Default::default()
+        };
         assert!(check_limit(std::slice::from_ref(&a), 1000, "x").is_ok());
         let e = check_limit(&[a.clone(), a], 1000, "Cloudmail").unwrap_err();
         assert_eq!(

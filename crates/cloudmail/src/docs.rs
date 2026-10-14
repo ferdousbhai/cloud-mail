@@ -11,13 +11,35 @@ pub const SKILL: &str = include_str!("../../../skills/cloudmail/SKILL.md");
 /// Examples per command path. A test checks that every command has one and every key is real.
 pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("status", &["cloudmail status", "cloudmail status --json"]),
-    ("inbox", &["cloudmail inbox", "cloudmail inbox --unread --limit 10", "cloudmail inbox --ids-only"]),
+    (
+        "inbox",
+        &[
+            "cloudmail inbox",
+            "cloudmail inbox --unread --limit 10",
+            "cloudmail inbox --ids-only",
+        ],
+    ),
     ("archive", &["cloudmail archive --limit 50"]),
     ("sent", &["cloudmail sent"]),
     ("blocked", &["cloudmail blocked"]),
-    ("threads", &["cloudmail threads list --folder all --since 1790000000000"]),
-    ("threads list", &["cloudmail threads list --folder screener", "cloudmail threads list --folder all --limit 100"]),
-    ("search", &["cloudmail search invoice", "cloudmail search \"coffee next week\" --json"]),
+    (
+        "threads",
+        &["cloudmail threads list --folder all --since 1790000000000"],
+    ),
+    (
+        "threads list",
+        &[
+            "cloudmail threads list --folder screener",
+            "cloudmail threads list --folder all --limit 100",
+        ],
+    ),
+    (
+        "search",
+        &[
+            "cloudmail search invoice",
+            "cloudmail search \"coffee next week\" --json",
+        ],
+    ),
     ("thread", &["cloudmail thread read t_ad7e6e0b172e481aaa3c"]),
     (
         "thread read",
@@ -28,17 +50,29 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     (
         "thread archive",
-        &["cloudmail thread archive t_1 t_2", "cloudmail inbox --ids-only | xargs cloudmail thread archive"],
+        &[
+            "cloudmail thread archive t_1 t_2",
+            "cloudmail inbox --ids-only | xargs cloudmail thread archive",
+        ],
     ),
-    ("thread unarchive", &["cloudmail thread unarchive t_ad7e6e0b172e481aaa3c"]),
+    (
+        "thread unarchive",
+        &["cloudmail thread unarchive t_ad7e6e0b172e481aaa3c"],
+    ),
     ("thread unread", &["cloudmail thread unread t_ad7e6e0b172e481aaa3c"]),
     ("thread markread", &["cloudmail thread markread t_1 t_2"]),
-    ("thread delete", &["cloudmail thread delete t_ad7e6e0b172e481aaa3c --yes"]),
+    (
+        "thread delete",
+        &["cloudmail thread delete t_ad7e6e0b172e481aaa3c --yes"],
+    ),
     ("screener", &["cloudmail screener", "cloudmail screener --json"]),
     ("screener list", &["cloudmail screener list --ids-only"]),
     (
         "screener approve",
-        &["cloudmail screener approve alice@example.com", "cloudmail screener approve a@x.com b@y.com"],
+        &[
+            "cloudmail screener approve alice@example.com",
+            "cloudmail screener approve a@x.com b@y.com",
+        ],
     ),
     ("screener block", &["cloudmail screener block spam@bad.biz"]),
     ("senders", &["cloudmail senders", "cloudmail senders --status blocked"]),
@@ -78,7 +112,10 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     (
         "raw",
-        &["cloudmail raw m_21ea6d84119b4163b19e > message.eml", "cloudmail raw m_21ea6d84119b4163b19e -o message.eml"],
+        &[
+            "cloudmail raw m_21ea6d84119b4163b19e > message.eml",
+            "cloudmail raw m_21ea6d84119b4163b19e -o message.eml",
+        ],
     ),
     (
         "watch",
@@ -89,7 +126,10 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("mailbox", &["cloudmail mailbox list"]),
-    ("mailbox list", &["cloudmail mailbox list", "cloudmail mailbox list --json"]),
+    (
+        "mailbox list",
+        &["cloudmail mailbox list", "cloudmail mailbox list --json"],
+    ),
     (
         "mailbox add",
         &[
@@ -107,16 +147,31 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("mailbox remove", &["cloudmail mailbox remove old@example.com --yes"]),
     ("settings", &["cloudmail settings get"]),
     ("settings get", &["cloudmail settings get --json"]),
-    ("settings set", &["cloudmail settings set forward-to me@elsewhere.com", "cloudmail settings set forward-to \"\""]),
+    (
+        "settings set",
+        &[
+            "cloudmail settings set forward-to me@elsewhere.com",
+            "cloudmail settings set forward-to \"\"",
+        ],
+    ),
     ("config", &["cloudmail config show"]),
-    ("config show", &["cloudmail config show", "cloudmail config show --show-token --json"]),
+    (
+        "config show",
+        &["cloudmail config show", "cloudmail config show --show-token --json"],
+    ),
     (
         "config set",
-        &["cloudmail config set api-url https://cloudmail.you.workers.dev", "cloudmail config set poll-seconds 30"],
+        &[
+            "cloudmail config set api-url https://cloudmail.you.workers.dev",
+            "cloudmail config set poll-seconds 30",
+        ],
     ),
     ("config path", &["cloudmail config path"]),
     ("account", &["cloudmail account list"]),
-    ("account list", &["cloudmail account list", "cloudmail account list --json"]),
+    (
+        "account list",
+        &["cloudmail account list", "cloudmail account list --json"],
+    ),
     (
         "account add",
         &[
@@ -132,11 +187,19 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     (
         "account login",
-        &["cloudmail account login gmail", "cloudmail account login hey", "cloudmail account login icloud"],
+        &[
+            "cloudmail account login gmail",
+            "cloudmail account login hey",
+            "cloudmail account login icloud",
+        ],
     ),
     (
         "account remove",
-        &["cloudmail account remove gmail", "cloudmail account remove hey", "cloudmail account remove icloud"],
+        &[
+            "cloudmail account remove gmail",
+            "cloudmail account remove hey",
+            "cloudmail account remove icloud",
+        ],
     ),
     (
         "setup",
@@ -160,7 +223,11 @@ pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
 
 /// "thread read" from "thread" and "read"; a top-level command from "" and its name.
 fn sub_path(prefix: &str, name: &str) -> String {
-    if prefix.is_empty() { name.to_string() } else { format!("{prefix} {name}") }
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix} {name}")
+    }
 }
 
 /// Adds an "Examples:" section to every command's long help.
@@ -190,8 +257,16 @@ pub fn with_examples(cmd: Command) -> Command {
 
 fn arg_json(arg: &clap::Arg) -> Value {
     let takes_value = matches!(arg.get_action(), ArgAction::Set | ArgAction::Append);
-    let possible: Vec<String> = arg.get_possible_values().iter().map(|v| v.get_name().to_string()).collect();
-    let default: Vec<String> = arg.get_default_values().iter().map(|v| v.to_string_lossy().into_owned()).collect();
+    let possible: Vec<String> = arg
+        .get_possible_values()
+        .iter()
+        .map(|v| v.get_name().to_string())
+        .collect();
+    let default: Vec<String> = arg
+        .get_default_values()
+        .iter()
+        .map(|v| v.to_string_lossy().into_owned())
+        .collect();
     json!({
         "name": arg.get_id().as_str(),
         "long": arg.get_long().map(|l| format!("--{l}")),
@@ -225,7 +300,11 @@ pub fn commands_json(root: &Command) -> Value {
                         } else {
                             format!("--{}", a.get_long().unwrap_or(a.get_id().as_str()))
                         };
-                        if a.is_required_set() { format!(" {name}") } else { format!(" [{name}]") }
+                        if a.is_required_set() {
+                            format!(" {name}")
+                        } else {
+                            format!(" [{name}]")
+                        }
                     })
                     .collect::<String>()
             );
@@ -261,8 +340,12 @@ pub fn commands_text(tree: &Value) -> String {
             out.push_str(&format!("    $ {}\n", e.as_str().unwrap_or_default()));
         }
     }
-    let globals =
-        tree["global_flags"].as_array().into_iter().flatten().filter_map(|f| f["long"].as_str()).collect::<Vec<_>>();
+    let globals = tree["global_flags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["long"].as_str())
+        .collect::<Vec<_>>();
     out.push_str(&format!("\nGlobal flags: {}\n\nExit codes:\n", globals.join("  ")));
     for (code, meaning) in exit::TABLE {
         out.push_str(&format!("  {code}  {meaning}\n"));
@@ -420,7 +503,11 @@ a short agent skill for Claude Code, Codex and others.
 "#;
 
 pub fn agent_guide() -> String {
-    let rows = exit::TABLE.iter().map(|(c, d)| format!("| {c} | {d} |")).collect::<Vec<_>>().join("\n");
+    let rows = exit::TABLE
+        .iter()
+        .map(|(c, d)| format!("| {c} | {d} |"))
+        .collect::<Vec<_>>()
+        .join("\n");
     AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
 }
 
@@ -446,11 +533,13 @@ pub fn install_skill() -> CliResult {
     let home =
         crate::agent_skill::home().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
     let out = crate::agent_skill::install(&home, &AGENT_SKILL)?;
-    Ok(skill_response(out, "Installed", "Installed the cloudmail skill").crumbs(vec![crumb(
-        "show",
-        "cloudmail skill",
-        "Print the skill",
-    )]))
+    Ok(
+        skill_response(out, "Installed", "Installed the cloudmail skill").crumbs(vec![crumb(
+            "show",
+            "cloudmail skill",
+            "Print the skill",
+        )]),
+    )
 }
 
 pub fn remove_skill() -> CliResult {
@@ -540,10 +629,22 @@ mod tests {
         let tree = commands_json(&crate::cli::Cli::command());
         let cmds = tree["commands"].as_array().unwrap();
         let compose = cmds.iter().find(|c| c["command"] == "cloudmail compose").unwrap();
-        assert!(compose["args"].as_array().unwrap().iter().any(|a| a["long"] == "--to" && a["required"] == true));
+        assert!(
+            compose["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["long"] == "--to" && a["required"] == true)
+        );
         assert!(!compose["examples"].as_array().unwrap().is_empty());
         assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
-        assert!(tree["global_flags"].as_array().unwrap().iter().any(|a| a["long"] == "--json"));
+        assert!(
+            tree["global_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["long"] == "--json")
+        );
         assert!(
             commands_text(&tree)
                 .contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n")
@@ -565,7 +666,9 @@ mod tests {
                 .skip(1)
                 .take_while(|w| w.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
                 .collect();
-            let found = (1..=words.len().min(2)).rev().any(|n| all.contains(&words[..n].join(" ")));
+            let found = (1..=words.len().min(2))
+                .rev()
+                .any(|n| all.contains(&words[..n].join(" ")));
             assert!(found, "skill names an unknown command: {line}");
         }
     }

@@ -6,7 +6,11 @@ use cloudmail_api::{Mailbox, PendingSender, Sender, ThreadDetail, ThreadSummary}
 use crate::output::{bold, dim};
 
 pub fn width() -> usize {
-    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).unwrap_or(100).clamp(60, 200)
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(100)
+        .clamp(60, 200)
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -21,14 +25,26 @@ pub fn truncate(s: &str, max: usize) -> String {
 
 fn pad(s: &str, w: usize) -> String {
     let n = s.chars().count();
-    if n >= w { s.to_string() } else { format!("{s}{}", " ".repeat(w - n)) }
+    if n >= w {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(w - n))
+    }
 }
 
 /// Server data made safe for a terminal: control characters (escape sequences that could move
 /// the cursor, rewrite earlier lines such as the sender warning, set the clipboard or title)
 /// become `?`. Newlines and tabs stay.
 pub fn clean(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() && c != '\n' && c != '\t' { '?' } else { c }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// `clean` for one-line fields, where a newline would also break the layout.
@@ -69,8 +85,16 @@ pub fn threads(list: &[ThreadSummary], show_folder: bool) -> String {
             if t.message_count > 1 {
                 subject.push_str(&format!(" ({})", t.message_count));
             }
-            let folder = if show_folder { pad(&clean_line(&t.folder), folder_w) } else { String::new() };
-            let acct = if acct_w > 0 { dim(&pad(&account_tag(t.account.as_deref()), acct_w)) } else { String::new() };
+            let folder = if show_folder {
+                pad(&clean_line(&t.folder), folder_w)
+            } else {
+                String::new()
+            };
+            let acct = if acct_w > 0 {
+                dim(&pad(&account_tag(t.account.as_deref()), acct_w))
+            } else {
+                String::new()
+            };
             let line = format!(
                 "{mark} {} {acct}{folder}{} {} {}",
                 dim(&pad(&t.id, id_w)),
@@ -91,12 +115,17 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
         bold(&clean_line(&t.subject)),
         dim(&clean_line(&match &t.account {
             // A linked account's thread read by ID has no folder (its CLI doesn't say which box).
-            Some(a) => [t.id.as_str(), t.folder.as_str(), t.to_address.as_deref().unwrap_or(""), &account_tag(Some(a))]
-                .iter()
-                .filter(|s| !s.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" · "),
+            Some(a) => [
+                t.id.as_str(),
+                t.folder.as_str(),
+                t.to_address.as_deref().unwrap_or(""),
+                &account_tag(Some(a))
+            ]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" · "),
             None => format!("{} · {} · {}", t.id, t.folder, t.to_address.as_deref().unwrap_or("")),
         }))
     );
@@ -120,7 +149,11 @@ pub fn thread(detail: &ThreadDetail, html: bool) -> String {
         out.push('\n');
         out.push_str(&dim(&clean_line(&format!("{} · {}", long_time(m.date), m.id))));
         out.push_str("\n\n");
-        let body = if html { m.html.clone().or_else(|| m.text.clone()).unwrap_or_default() } else { m.plain_text() };
+        let body = if html {
+            m.html.clone().or_else(|| m.text.clone()).unwrap_or_default()
+        } else {
+            m.plain_text()
+        };
         out.push_str(&clean(body.trim_end()));
         let atts: Vec<_> = m.attachments.iter().filter(|a| !a.inline).collect();
         if !atts.is_empty() {
@@ -145,7 +178,11 @@ pub fn screener(list: &[PendingSender]) -> String {
         .map(|s| {
             let who = clean_line(&s.address().formatted());
             let subject = clean_line(s.last_subject.as_deref().unwrap_or_default());
-            let count = if s.thread_count > 1 { format!(" (+{} more)", s.thread_count - 1) } else { String::new() };
+            let count = if s.thread_count > 1 {
+                format!(" (+{} more)", s.thread_count - 1)
+            } else {
+                String::new()
+            };
             // A linked account's sender says where they wait and how to decide on them alone.
             let tail = match (&s.account, &s.id) {
                 (Some(a), Some(id)) => format!("{}  {}", account_tag(Some(a)), clean_line(id)),
@@ -185,7 +222,12 @@ pub fn mailboxes(list: &[Mailbox]) -> String {
         .map(|(i, m)| {
             let kind = if m.screen { "screened" } else { "direct" };
             let default = if i == 0 { dim("  (default From)") } else { String::new() };
-            format!("{}  {}  {}{default}", pad(&clean_line(&m.email), w), pad(kind, 8), clean_line(&m.name))
+            format!(
+                "{}  {}  {}{default}",
+                pad(&clean_line(&m.email), w),
+                pad(kind, 8),
+                clean_line(&m.name)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -199,7 +241,10 @@ mod tests {
     fn terminal_escapes_from_mail_are_neutralised() {
         let evil = "hi\x1b[2A\x1b[2K\x1b]52;c;cGF5bG9hZA==\x07\u{9b}31m\nnext\tline";
         let out = clean(evil);
-        assert!(!out.chars().any(|c| c.is_control() && c != '\n' && c != '\t'), "{out:?}");
+        assert!(
+            !out.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{out:?}"
+        );
         assert!(out.contains("\nnext\tline"));
         assert!(!clean_line(evil).contains('\n'));
     }

@@ -23,7 +23,8 @@ impl Address {
 
     /// "Name <email>" suitable for an address field.
     pub fn formatted(&self) -> String {
-        self.trimmed_name().map_or_else(|| self.email.clone(), |n| format!("{n} <{}>", self.email))
+        self.trimmed_name()
+            .map_or_else(|| self.email.clone(), |n| format!("{n} <{}>", self.email))
     }
 }
 
@@ -152,7 +153,10 @@ pub struct PendingSender {
 
 impl PendingSender {
     pub fn address(&self) -> Address {
-        Address { name: self.name.clone(), email: self.email.clone() }
+        Address {
+            name: self.name.clone(),
+            email: self.email.clone(),
+        }
     }
 
     pub fn display(&self) -> String {
@@ -245,7 +249,9 @@ mod base64_content {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        STANDARD.decode(String::deserialize(d)?.trim()).map_err(serde::de::Error::custom)
+        STANDARD
+            .decode(String::deserialize(d)?.trim())
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -270,7 +276,11 @@ pub struct ThreadDetail {
 impl ThreadDetail {
     /// The message a reply answers: the latest one you received, else the latest one.
     pub fn reply_target(&self) -> Option<&Message> {
-        self.messages.iter().rev().find(|m| !m.outgoing).or(self.messages.last())
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.outgoing)
+            .or(self.messages.last())
     }
 }
 
@@ -298,8 +308,15 @@ mod tests {
 
     #[test]
     fn attachments_go_as_base64_and_only_when_there_are_some() {
-        let mut req = SendRequest { to: vec!["a@b.c".into()], text: "hi".into(), ..Default::default() };
-        assert!(serde_json::to_value(&req).unwrap().get("attachments").is_none(), "existing payloads don't change");
+        let mut req = SendRequest {
+            to: vec!["a@b.c".into()],
+            text: "hi".into(),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_value(&req).unwrap().get("attachments").is_none(),
+            "existing payloads don't change"
+        );
         req.attachments.push(OutgoingAttachment {
             filename: "a.bin".into(),
             mime_type: "application/octet-stream".into(),
