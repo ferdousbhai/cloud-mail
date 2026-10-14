@@ -203,8 +203,7 @@ The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agen
 up all your domains with the Cloudflare CLI, linking HEY, Gmail and iCloud Mail, and using the CLI,
 in about 1,500 tokens. The installed copy is refreshed automatically when a new
 cloudmail runs, and only a copy cloudmail wrote (marked `.managed-by-cloudmail`) is ever changed or
-removed. Before cloudmail is installed, agents can get the same skill with
-`npx skills add ferdousbhai/cloud-mail -g`.
+removed.
 
 ## Your HEY, Gmail and iCloud Mail too (optional)
 

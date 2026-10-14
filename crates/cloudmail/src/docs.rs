@@ -426,7 +426,7 @@ pub fn agent_guide() -> String {
 
 /// This CLI's embedded skill, installed with the shared `agent_skill` convention.
 pub const AGENT_SKILL: crate::agent_skill::Skill =
-    crate::agent_skill::Skill { name: "cloudmail", body: SKILL, cli: "cloudmail", version: env!("CARGO_PKG_VERSION") };
+    crate::agent_skill::Skill { name: "cloudmail", body: SKILL, cli: "cloudmail", version: env!("CARGO_PKG_VERSION"), adopts_legacy: true };
 
 fn skill_response(out: crate::agent_skill::Outcome, done: &str, summary: &str) -> Response {
     let mut lines: Vec<String> = out.paths.iter().map(|p| format!("{done} {}", p.display())).collect();
