@@ -10,11 +10,8 @@ WebKitGTK 6.0.
 
 ```sh
 cd worker && bun install
-bun run db:local                     # schema for the local database (wrangler, see wrangler.local.jsonc)
-printf 'API_TOKEN=dev-token\n' > .dev.vars
-bun run dev --port 8799              # cf dev --mode development: local resources only
-curl -X POST 'localhost:8799/cdn-cgi/handler/email?from=a@example.com&to=hi@example.com' --data-binary @some.eml
-bun test && bunx tsc --noEmit
+bun run types                        # cf workers types, from cloudflare.config.ts
+bun test && bun run typecheck
 
 bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
 ```
