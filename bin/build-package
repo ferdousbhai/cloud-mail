@@ -12,10 +12,16 @@ esac
 version=$(git show HEAD:Cargo.toml | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 output=$(realpath -m "${2:-target/packages/$architecture}")
-mkdir -p "$output"
+# The container is discarded. A cache left only on the host never reaches pacman or Cargo.
+cache=$(realpath -m "${PACKAGE_CACHE:-$PWD/target/package-cache/$architecture}")
+mkdir -p "$output" "$cache/pacman" "$cache/cargo"
 docker run --rm --platform "$platform" -e BUILD_ARCH="$architecture" -e BUILD_VERSION="$version" \
   -e OUTPUT_UID="$(id -u)" -e OUTPUT_GID="$(id -g)" \
-  -v "$PWD:/source:ro" -v "$output:/output" "$image" bash -euo pipefail -c '
+  -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/cargo/target \
+  -v "$PWD:/source:ro" -v "$output:/output" \
+  -v "$cache/pacman:/var/cache/pacman/pkg" \
+  -v "$cache/cargo:/cargo" \
+  "$image" bash -euo pipefail -c '
     [[ $(uname -m) == "$BUILD_ARCH" ]]
     sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
     pacman-key --init
@@ -29,15 +35,20 @@ docker run --rm --platform "$platform" -e BUILD_ARCH="$architecture" -e BUILD_VE
     git -C /source show HEAD:packaging/aur/cloudmail/PKGBUILD > /build/PKGBUILD
     sum=$(sha256sum /build/source.tar.gz | cut -d" " -f1)
     sed -i -e "s|^source=.*|source=(source.tar.gz)|" -e "s/^sha256sums=.*/sha256sums=(\x27$sum\x27)/" /build/PKGBUILD
-    useradd -m builder
-    chown -R builder:builder /build /output
-    su builder -c "cd /build && PKGDEST=/output PKGEXT=.pkg.tar.zst makepkg --force"
+    if ! id "$OUTPUT_UID" >/dev/null 2>&1; then
+      getent group "$OUTPUT_GID" >/dev/null || groupadd -g "$OUTPUT_GID" builder
+      useradd -u "$OUTPUT_UID" -g "$OUTPUT_GID" -m builder
+    fi
+    builder=$(id -nu "$OUTPUT_UID")
+    mkdir -p /cargo/target
+    chown -R "$builder:$OUTPUT_GID" /build /output /cargo
+    su "$builder" -c "export CARGO_HOME=/cargo CARGO_TARGET_DIR=/cargo/target; cd /build && PKGDEST=/output PKGEXT=.pkg.tar.zst makepkg --force"
     package=/output/cloudmail-$BUILD_VERSION-1-$BUILD_ARCH.pkg.tar.zst
     info=$(bsdtar -xOf "$package" .PKGINFO)
     grep -qxF "pkgname = cloudmail" <<< "$info"
     grep -qxF "pkgver = $BUILD_VERSION-1" <<< "$info"
     grep -qxF "arch = $BUILD_ARCH" <<< "$info"
-    [[ $(/build/src/cloud-mail-$BUILD_VERSION/target/release/cloudmail --version) == "cloudmail $BUILD_VERSION" ]]
+    [[ $(/cargo/target/release/cloudmail --version) == "cloudmail $BUILD_VERSION" ]]
     printf "%s\n" "$commit" > /output/source-commit.txt
-    chown -R "$OUTPUT_UID:$OUTPUT_GID" /output
+    chown -R "$OUTPUT_UID:$OUTPUT_GID" /output /cargo /var/cache/pacman/pkg
   '

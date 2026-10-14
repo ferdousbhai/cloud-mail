@@ -29,21 +29,21 @@ prepare() {
 
 build() {
   cd "$(_srcdir)"
-  export CARGO_TARGET_DIR=target
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
   cargo build --frozen --release -p cloudmail -p cloudmail-gtk
 }
 
 check() {
   cd "$(_srcdir)"
-  export CARGO_TARGET_DIR=target
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
   cargo test --frozen -p cloudmail -p cloudmail-api
 }
 
 package() {
   cd "$(_srcdir)"
-  install -Dm755 target/release/cloudmail "$pkgdir/usr/bin/cloudmail"
+  install -Dm755 "${CARGO_TARGET_DIR:-target}/release/cloudmail" "$pkgdir/usr/bin/cloudmail"
   ln -s cloudmail "$pkgdir/usr/bin/cmail"
-  install -Dm755 target/release/cloudmail-gtk "$pkgdir/usr/bin/cloudmail-gtk"
+  install -Dm755 "${CARGO_TARGET_DIR:-target}/release/cloudmail-gtk" "$pkgdir/usr/bin/cloudmail-gtk"
   install -Dm644 crates/cloudmail-gtk/data/com.ferdousbhai.Cloudmail.desktop \
     "$pkgdir/usr/share/applications/com.ferdousbhai.Cloudmail.desktop"
   install -Dm644 crates/cloudmail-gtk/data/com.ferdousbhai.Cloudmail.svg \

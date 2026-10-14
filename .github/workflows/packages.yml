@@ -29,6 +29,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: target/package-cache/${{ matrix.arch }}
+          key: native-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'packaging/aur/cloudmail/PKGBUILD') }}
+          restore-keys: |
+            native-${{ matrix.arch }}-
       - name: Prepare native Arch Linux ARM image
         if: matrix.arch == 'aarch64'
         run: |
