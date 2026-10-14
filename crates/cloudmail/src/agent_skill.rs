@@ -4,7 +4,8 @@
 //! gets a `~/.claude/skills/<name>` link to it. Only directories this CLI
 //! created (marked by `.managed-by-<cli>`) are ever written, refreshed or
 //! removed; a symlink or a hand-authored skill at that path is left alone.
-//! The same module is copied into each of our products' CLIs; keep them in sync.
+//! The same module is copied into each of our products' CLIs; keep the code in sync (each
+//! repository's rustfmt formats its own copy).
 
 use std::fs;
 use std::io;
@@ -61,7 +62,9 @@ impl Skill {
         }
         let Ok(entries) = fs::read_dir(dir) else { return false };
         let names: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
-        names.len() == 1 && names[0] == SKILL_FILE && fs::symlink_metadata(dir.join(SKILL_FILE)).is_ok_and(|m| m.is_file())
+        names.len() == 1
+            && names[0] == SKILL_FILE
+            && fs::symlink_metadata(dir.join(SKILL_FILE)).is_ok_and(|m| m.is_file())
     }
 }
 
@@ -73,7 +76,10 @@ pub fn home() -> Option<PathBuf> {
 fn unmanaged(path: &Path, cli: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!("{} exists but was not written by {cli}; move it aside to let {cli} install its skill there", path.display()),
+        format!(
+            "{} exists but was not written by {cli}; move it aside to let {cli} install its skill there",
+            path.display()
+        ),
     )
 }
 
@@ -133,7 +139,9 @@ pub fn install(home: &Path, skill: &Skill) -> io::Result<Outcome> {
 pub fn remove(home: &Path, skill: &Skill) -> io::Result<Outcome> {
     let mut out = Outcome::default();
     let link = skill.claude_link(home);
-    if fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) && fs::read_link(&link)? == skill.claude_target() {
+    if fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink())
+        && fs::read_link(&link)? == skill.claude_target()
+    {
         fs::remove_file(&link)?;
         out.paths.push(link);
     }
