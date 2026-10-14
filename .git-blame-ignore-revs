@@ -1,3 +1,3 @@
-# Formatting-only commits; git blame skips them (git config blame.ignoreRevsFile .git-blame-ignore-revs).
-# Format the Rust code with rustfmt
-d1ce1e53981aa3c686fc2a59a3cbc241627a5cfa
+# Formatting-only commits, skipped by git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# style: rustfmt max_width = 120, shared by every product repository
+2d75a332c79fb96b1a8c16536de18a82d02c42a0
