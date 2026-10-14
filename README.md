@@ -194,6 +194,7 @@ nothing ever prompts.
 ```sh
 cloudmail skill install       # install the agent skill (setup, linking accounts, daily use) for
                               # Claude Code, Codex and other agents reading ~/.agents/skills
+                              # (before cloudmail is installed: npx skills add ferdousbhai/cloud-mail -g)
 cloudmail agent-guide         # concepts, output format, exit codes, workflows
 cloudmail commands --json     # every command, flag and example
 ```

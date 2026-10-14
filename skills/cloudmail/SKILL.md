@@ -19,13 +19,16 @@ Details on demand only: `cloudmail <cmd> --help`, `cloudmail agent-guide`, `clou
 
 ## Set up (once)
 
-Not installed? Arch/Omarchy: `curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash`;
+Not installed (`command -v cloudmail`)? Explain that the installer adds a signed package repository and
+installs the CLI/app; if sudo needs a password, the user runs it in their terminal (never collect it).
+Installing does not authorize deploying mail infrastructure or changing DNS.
+Arch/Omarchy: `curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash`;
 elsewhere clone github.com/ferdousbhai/cloud-mail and run `./install.sh` (needs Rust and Node.js).
 Setup drives the Cloudflare CLI as `npx cf`; for other Cloudflare work, find commands with
 `npx cf cli search "<task>"` (no names/domains/IDs in the query).
 
-1. **Cloudflare login.** `npx cf auth whoami`. If logged out, have the user run `! npx cf auth login`
-   (browser), or use `CLOUDFLARE_API_TOKEN` (permissions: README "For agents and scripts"). Several
+1. **Cloudflare login.** `npx cf auth whoami`. If logged out, have the user run `npx cf auth login`
+   in their terminal (browser), or use `CLOUDFLARE_API_TOKEN` (permissions: README "For agents and scripts"). Several
    accounts: `npx cf accounts list`, pass `--account <id>`. Sending needs the Workers Paid plan:
    `npx cf accounts subscriptions get | jq -r '.[].rate_plan.id'` lists `workers_paid` when it's there.
 2. **Find their domains.** `npx cf zones list --status active --per-page 100 | jq -r '.[].name'` (results
@@ -52,7 +55,7 @@ Later: add an address with `cloudmail mailbox add sales@a.com --route`; forwardi
 ## Link other mail (optional, each needs one sign-in by the user)
 
 Sign-ins open a browser or window, so from an agent either pass `--login` (opens it on the user's
-desktop) or have the user run the command with `!`. Without either, `add` fails with `not_logged_in`.
+desktop) or have the user run it in their terminal. Without either, `add` fails with `not_logged_in`.
 
 | Provider | Needs | Command |
 |---|---|---|
