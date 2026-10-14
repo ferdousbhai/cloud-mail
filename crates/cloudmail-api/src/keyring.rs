@@ -59,6 +59,13 @@ fn decode(stored: &[u8]) -> Option<String> {
     String::from_utf8(STANDARD.decode(stored).ok()?).ok()
 }
 
+/// A secret stored raw by a pre-release build, before base64: usable only when it has nothing the
+/// keyring file could have mangled (no `\`, no control characters), so it comes back as it was saved.
+fn legacy_raw(stored: &[u8]) -> Option<String> {
+    let text = String::from_utf8(stored.to_vec()).ok()?;
+    (!text.is_empty() && !text.contains('\\') && !text.chars().any(char::is_control)).then_some(text)
+}
+
 fn attributes(name: &str) -> HashMap<&'static str, String> {
     HashMap::from([("application", APPLICATION.to_string()), ("secret", name.to_string())])
 }
@@ -156,19 +163,23 @@ pub fn get(name: &str) -> Result<Option<String>> {
             k.unlock(&item)?;
         }
         let (_, _, value, _): Secret = k.call(&item, ITEM, "GetSecret", &(&k.session,))?;
-        Ok(Some(value))
+        Ok(Some((item, value)))
     })()
     .map_err(unavailable)?;
-    stored
-        .map(|value| {
-            decode(&value).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Config,
-                    format!("the keyring's cloudmail {name} isn't base64, as cloudmail stores it; set it again"),
-                )
-            })
-        })
-        .transpose()
+    let Some((item, value)) = stored else { return Ok(None) };
+    if let Some(secret) = decode(&value) {
+        return Ok(Some(secret));
+    }
+    let Some(secret) = legacy_raw(&value) else {
+        return Err(Error::new(
+            ErrorKind::Config,
+            format!("the keyring's cloudmail {name} isn't base64, as cloudmail stores it; set it again"),
+        ));
+    };
+    // Store it as base64 in place (label and attributes stay); if that fails it is still usable now.
+    let encoded = (&k.session, Vec::<u8>::new(), encode(&secret), CONTENT_TYPE);
+    let _: zbus::Result<()> = k.call(&item, ITEM, "SetSecret", &(encoded,));
+    Ok(Some(secret))
 }
 
 /// Stores (or replaces) the secret `name`.
@@ -218,5 +229,14 @@ mod tests {
         assert!(stored.iter().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b)), "{stored:?}");
         assert_eq!(decode(&stored).as_deref(), Some(secret));
         assert_eq!(decode(b"not base64"), None);
+    }
+
+    #[test]
+    fn a_pre_release_raw_secret_is_recovered_only_when_unmangled() {
+        assert_eq!(legacy_raw(b"cm_live_abc-123.XYZ").as_deref(), Some("cm_live_abc-123.XYZ"));
+        assert_eq!(legacy_raw(b"a\\b"), None);
+        assert_eq!(legacy_raw(b"line\nbreak"), None);
+        assert_eq!(legacy_raw(b""), None);
+        assert_eq!(legacy_raw(&[0xff, 0xfe]), None);
     }
 }
