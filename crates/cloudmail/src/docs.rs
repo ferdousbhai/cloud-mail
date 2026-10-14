@@ -2,7 +2,6 @@
 
 use clap::{ArgAction, Command};
 use serde_json::{Value, json};
-use std::path::Path;
 
 use crate::output::{CliError, CliResult, Response, crumb, exit};
 
@@ -152,6 +151,7 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("agent-guide", &["cloudmail agent-guide"]),
     ("skill", &["cloudmail skill", "cloudmail skill > SKILL.md"]),
     ("skill install", &["cloudmail skill install"]),
+    ("skill remove", &["cloudmail skill remove"]),
 ];
 
 pub fn examples_for(path: &str) -> Option<&'static [&'static str]> {
@@ -424,47 +424,33 @@ pub fn agent_guide() -> String {
     AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
 }
 
-/// Writes SKILL.md to `~/.agents/skills/cloudmail/` (where Codex and others look) and, when Claude
-/// Code is installed, links `~/.claude/skills/cloudmail` to it. Returns the paths it wrote.
-pub fn write_skill(home: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
-    let dir = home.join(".agents/skills/cloudmail");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("SKILL.md"), SKILL)?;
-    let mut written = vec![dir.join("SKILL.md")];
-    if home.join(".claude").is_dir() {
-        let link = home.join(".claude/skills/cloudmail");
-        std::fs::create_dir_all(home.join(".claude/skills"))?;
-        match std::fs::symlink_metadata(&link) {
-            // A directory of its own (an older copy): update the copy rather than replace it.
-            Ok(m) if m.is_dir() => {
-                std::fs::write(link.join("SKILL.md"), SKILL)?;
-                written.push(link.join("SKILL.md"));
-                return Ok(written);
-            }
-            Ok(_) => std::fs::remove_file(&link)?,
-            Err(_) => {}
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("../../.agents/skills/cloudmail", &link)?;
-        #[cfg(not(unix))]
-        {
-            std::fs::create_dir_all(&link)?;
-            std::fs::write(link.join("SKILL.md"), SKILL)?;
-        }
-        written.push(link);
+/// This CLI's embedded skill, installed with the shared `agent_skill` convention.
+pub const AGENT_SKILL: crate::agent_skill::Skill =
+    crate::agent_skill::Skill { name: "cloudmail", body: SKILL, cli: "cloudmail", version: env!("CARGO_PKG_VERSION") };
+
+fn skill_response(out: crate::agent_skill::Outcome, done: &str, summary: &str) -> Response {
+    let mut lines: Vec<String> = out.paths.iter().map(|p| format!("{done} {}", p.display())).collect();
+    lines.extend(out.notices.iter().cloned());
+    if lines.is_empty() {
+        lines.push("Nothing to do.".into());
     }
-    Ok(written)
+    Response::new(json!({ "paths": out.paths, "notices": out.notices }), summary).human(lines.join("\n"))
 }
 
 pub fn install_skill() -> CliResult {
-    let home = dirs::home_dir().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
-    let paths = write_skill(&home)?;
-    let human = paths.iter().map(|p| format!("Installed {}", p.display())).collect::<Vec<_>>().join("\n");
-    Ok(Response::new(json!({ "paths": paths }), "Installed the cloudmail skill").human(human).crumbs(vec![crumb(
+    let home = crate::agent_skill::home().ok_or_else(|| CliError::generic("no home directory to install the skill into"))?;
+    let out = crate::agent_skill::install(&home, &AGENT_SKILL)?;
+    Ok(skill_response(out, "Installed", "Installed the cloudmail skill").crumbs(vec![crumb(
         "show",
         "cloudmail skill",
         "Print the skill",
     )]))
+}
+
+pub fn remove_skill() -> CliResult {
+    let home = crate::agent_skill::home().ok_or_else(|| CliError::generic("no home directory"))?;
+    let out = crate::agent_skill::remove(&home, &AGENT_SKILL)?;
+    Ok(skill_response(out, "Removed", "Removed the cloudmail skill"))
 }
 
 #[cfg(test)]
@@ -556,20 +542,6 @@ mod tests {
             commands_text(&tree)
                 .contains("\nGlobal flags: --json  --quiet  --ids-only  --count  --styled\n\nExit codes:\n")
         );
-    }
-
-    #[test]
-    fn skill_installs_for_agents_and_claude() {
-        let home = std::env::temp_dir().join(format!("cloudmail-skill-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(home.join(".claude")).unwrap();
-        let written = write_skill(&home).unwrap();
-        assert_eq!(written.len(), 2);
-        // Twice is fine: the link is replaced.
-        write_skill(&home).unwrap();
-        assert_eq!(std::fs::read_to_string(home.join(".claude/skills/cloudmail/SKILL.md")).unwrap(), SKILL);
-        assert!(std::fs::symlink_metadata(home.join(".claude/skills/cloudmail")).unwrap().file_type().is_symlink());
-        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

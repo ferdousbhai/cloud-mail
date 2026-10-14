@@ -13,7 +13,7 @@ docs/linked-accounts.md; development and releases: CONTRIBUTING.md.
 | `crates/cloudmail` | the CLI: clap definitions (`cli.rs`), mail commands (`mail.rs`), `setup` on Cloudflare (`setup.rs`), mailboxes and settings (`admin.rs`), JSON envelope and exit codes (`output.rs`), `agent-guide`, `commands` and the built-in skill (`docs.rs`). Tests in `tests/cli.rs` with fakes (`tests/fake-hey`, `tests/fake-gws`, `tests/support`) |
 | `crates/cloudmail-gtk` | GTK 4 + WebKitGTK 6.0 app (`src/ui/`); needs Rust 1.95 |
 | `worker/` | the Worker (TypeScript, `cf` CLI): `src/api.ts` (bearer-token JSON API under `/api/*`, plus `/health`), `src/ingest.ts` (incoming email), `src/store.ts`, `src/mailboxes.ts`. D1 schema in `migrations/`; tests in `test/` (bun) |
-| `skills/cloudmail/SKILL.md` | the agent skill; compiled into the CLI (`include_str!` in `docs.rs`) and printed by `cloudmail skill` |
+| `skills/cloudmail/SKILL.md` | the agent skill; compiled into the CLI (`include_str!` in `docs.rs`) and printed by `cloudmail skill`; `skill install|remove` and the startup refresh live in `src/agent_skill.rs`, shared verbatim with our other product CLIs |
 | `bin/` | `check` (every check), release and package scripts |
 | `packaging/` | Arch repo and AUR packaging, with their tests |
 

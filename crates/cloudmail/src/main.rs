@@ -1,5 +1,6 @@
 mod accounts;
 mod admin;
+mod agent_skill;
 mod cli;
 mod docs;
 mod mail;
@@ -71,6 +72,9 @@ fn mode_from_raw_args() -> Mode {
 
 fn main() {
     config::migrate_legacy();
+    if let Some(home) = agent_skill::home() {
+        agent_skill::refresh(&home, &docs::AGENT_SKILL);
+    }
     let cmd = docs::with_examples(Cli::command());
     let matches = match cmd.try_get_matches() {
         Ok(m) => m,
@@ -154,5 +158,6 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
             Ok(Response::silent())
         }
         Command::Skill { command: Some(SkillCommand::Install) } => docs::install_skill(),
+        Command::Skill { command: Some(SkillCommand::Remove) } => docs::remove_skill(),
     }
 }

@@ -110,6 +110,8 @@ pub enum Command {
 pub enum SkillCommand {
     /// Copy SKILL.md to ~/.agents/skills/cloudmail/ and link it into ~/.claude/skills/ when Claude Code is installed
     Install,
+    /// Remove the skill and link that `skill install` created; anything else is left alone
+    Remove,
 }
 
 #[derive(Args, Debug, Clone)]
