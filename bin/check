@@ -1,6 +1,6 @@
 #!/bin/bash
 # Every check a change must pass, run on this machine. .githooks/pre-push runs it before a push;
-# set CLOUDMAIL_NO_CHECK=1 to push without it. GitHub only builds the release packages
+# set NO_CHECK=1 to push without it. GitHub only builds the release packages
 # (.github/workflows/packages.yml, on a version tag).
 #
 #   bin/check          # Rust (format, clippy, tests), the worker (tests, types), packaging

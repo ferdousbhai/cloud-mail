@@ -3,7 +3,7 @@
 #   git config core.hooksPath .githooks
 #
 # Pushing a branch runs bin/check first and stops the push if it fails; set
-# CLOUDMAIL_NO_CHECK=1 to push without it. Pushing a version tag (refs/tags/vX.Y.Z) releases it:
+# NO_CHECK=1 to push without it. Pushing a version tag (refs/tags/vX.Y.Z) releases it:
 # this starts bin/release-on-tag in the background, which waits for the push to land and then
 # publishes. Set CLOUDMAIL_NO_AUTO_RELEASE=1 to push a tag without releasing it.
 top="$(git rev-parse --show-toplevel)"
@@ -15,7 +15,7 @@ while read -r _ local_sha remote_ref _; do
   [[ $remote_ref =~ ^refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$ ]] && versions+=("${BASH_REMATCH[1]}")
 done
 
-if ((branches)) && [[ ${CLOUDMAIL_NO_CHECK:-} != 1 ]]; then
+if ((branches)) && [[ ${NO_CHECK:-} != 1 ]]; then
   # The checks run on the working tree, which is what's being pushed unless it has changes.
   [[ -z $(git -C "$top" status --porcelain --untracked-files=no) ]] \
     || echo "note: the working tree has uncommitted changes; bin/check sees them, the push doesn't" >&2
@@ -23,7 +23,7 @@ if ((branches)) && [[ ${CLOUDMAIL_NO_CHECK:-} != 1 ]]; then
   # repositories must not inherit them, or their commits land in this one.
   # shellcheck disable=SC2046
   (unset $(git rev-parse --local-env-vars); "$top/bin/check" >&2) \
-    || { echo "bin/check failed; not pushing (CLOUDMAIL_NO_CHECK=1 skips it)" >&2; exit 1; }
+    || { echo "bin/check failed; not pushing (NO_CHECK=1 skips it)" >&2; exit 1; }
 fi
 
 [[ ${CLOUDMAIL_NO_AUTO_RELEASE:-} == 1 ]] && exit 0

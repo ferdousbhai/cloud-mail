@@ -20,7 +20,7 @@ bin/check                            # everything: rustfmt, clippy, Rust tests, 
 ```
 
 Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
-runs `bin/check` first and stops if it fails (`CLOUDMAIL_NO_CHECK=1` skips it). GitHub only builds
+runs `bin/check` first and stops if it fails (`NO_CHECK=1` skips it). GitHub only builds
 releases: the packages on a version tag, and the CLI archives once a release is published.
 
 ## The worker
