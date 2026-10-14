@@ -725,8 +725,13 @@ fn choose_account(w: &Cf, flag: Option<&str>, previous: Option<String>, whoami: 
 }
 
 pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
-    let mut specs: Vec<String> = args.mailboxes.iter().chain(&args.mailbox_flags).cloned().collect();
     let existing_cfg = config::read_file(&config::path()).ok().flatten();
+    run_with_config(args, interactive, existing_cfg)
+}
+
+/// `run` with the existing config passed in, so tests never read the user's own.
+fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<config::FileConfig>) -> CliResult {
+    let mut specs: Vec<String> = args.mailboxes.iter().chain(&args.mailbox_flags).cloned().collect();
     let first_time = existing_cfg.as_ref().and_then(|c| c.api_url.as_ref()).is_none();
     if specs.is_empty() && first_time {
         if !interactive || args.dry_run {
@@ -1237,7 +1242,7 @@ mod tests {
     #[test]
     fn dry_run_setup_plans_without_running() {
         let dir = worker_dir("setup-test");
-        let resp = run(&dry_run_args(&dir, true), false).unwrap();
+        let resp = run_with_config(&dry_run_args(&dir, true), false, None).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
         let planned: Vec<&str> =
             steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
@@ -1265,11 +1270,17 @@ mod tests {
             "{ \"name\": \"cloud-mail\", \"database_name\": \"cm-db\", \"bucket_name\": \"cm-r2\" }",
         )
         .unwrap();
-        let resp = run(&dry_run_args(&dir, false), false).unwrap();
+        let existing_cfg = config::FileConfig {
+            api_url: Some("https://cloud-mail.test.workers.dev".into()),
+            api_token: Some("test-token".into()),
+            ..Default::default()
+        };
+        let resp = run_with_config(&dry_run_args(&dir, false), false, Some(existing_cfg)).unwrap();
         let steps = resp.data["steps"].as_array().unwrap();
         let planned: Vec<&str> =
             steps.iter().filter(|s| s["status"] == "planned").filter_map(|s| s["command"].as_str()).collect();
         assert_eq!(resp.data["worker"], "cloud-mail");
+        assert!(steps.iter().any(|s| s["step"] == "API token" && s["status"] == "exists"));
         assert!(planned.contains(&"false d1 create --name cm-db"));
         assert!(planned.contains(&"false r2 buckets create --name cm-r2"));
         let write = steps.iter().find(|s| s["step"] == "write install.json").unwrap();
