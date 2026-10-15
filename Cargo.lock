@@ -402,6 +402,7 @@ dependencies = [
  "cloudmail-api",
  "dirs",
  "gtk4",
+ "serde_json",
  "toml",
  "urlencoding",
  "webkit6",

@@ -293,3 +293,9 @@ Development setup, tests, how linked accounts are built and how releases are cut
 ## License
 
 MIT
+
+## Optional Recall search
+
+Enter `~ QUERY` in the mail search field. Recall ranks the currently loaded thread subjects, senders, and snippets; it does not search the whole archive or fetch message bodies.
+
+Recall is an optional extra. Normal operation never contacts it. Missing, incompatible, busy, or warming-up Recall leaves the existing server text search available. Requests run in the background with a bounded wait. This project does not install Recall, download embedding weights, or start its own model runtime. When enabled, the owner-local Recall service owns one shared model cache and inference worker; records stay on this machine.

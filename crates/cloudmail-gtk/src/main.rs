@@ -1,3 +1,4 @@
+mod recall_client;
 mod theme;
 mod ui;
 mod util;

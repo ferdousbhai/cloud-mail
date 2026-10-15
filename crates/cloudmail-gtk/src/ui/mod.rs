@@ -152,6 +152,7 @@ pub struct Ui {
     view: Cell<View>,
     before_search: Cell<View>,
     query: RefCell<String>,
+    semantic_base: RefCell<Vec<ThreadSummary>>,
     threads: RefCell<Vec<ThreadSummary>>,
     senders: RefCell<Vec<PendingSender>>,
     screener_threads: RefCell<Vec<ThreadSummary>>,
@@ -305,7 +306,7 @@ impl Ui {
         let middle = gtk::Box::new(gtk::Orientation::Vertical, 0);
         middle.set_width_request(260);
         let search = gtk::SearchEntry::builder()
-            .placeholder_text("Search all mail   /")
+            .placeholder_text("Search mail · ~ meaning")
             .build();
         search.add_css_class("search");
         middle.append(&search);
@@ -448,6 +449,7 @@ impl Ui {
             view: Cell::new(View::Inbox),
             before_search: Cell::new(View::Inbox),
             query: RefCell::new(String::new()),
+            semantic_base: RefCell::new(Vec::new()),
             threads: RefCell::new(Vec::new()),
             senders: RefCell::new(Vec::new()),
             screener_threads: RefCell::new(Vec::new()),
@@ -740,12 +742,62 @@ impl Ui {
     }
 
     fn start_search(self: &Rc<Self>, q: String) {
+        if let Some(query) = q.strip_prefix('~').map(str::trim).filter(|q| !q.is_empty()) {
+            self.semantic_search(query.to_owned());
+            return;
+        }
         if self.view.get() != View::Search {
             self.before_search.set(self.view.get());
         }
         *self.query.borrow_mut() = q;
         self.set_view(View::Search);
         self.list_focus();
+    }
+
+    fn semantic_search(self: &Rc<Self>, query: String) {
+        if self.view.get() != View::Search {
+            self.before_search.set(self.view.get());
+            *self.semantic_base.borrow_mut() = self.threads.borrow().clone();
+        } else if self.semantic_base.borrow().is_empty() {
+            *self.semantic_base.borrow_mut() = self.threads.borrow().clone();
+        }
+        let candidates = self.semantic_base.borrow().clone();
+        let records: Vec<_> = candidates.iter().map(|thread| serde_json::json!({"id":thread.id,"title":thread.subject,"text":format!("{} {}",thread.sender().unwrap_or_default(),thread.snippet).chars().take(4000).collect::<String>()})).collect();
+        let generation = self.list_gen.get() + 1;
+        self.list_gen.set(generation);
+        self.view.set(View::Search);
+        self.select_nav(View::Search);
+        self.clear_reader();
+        self.exhausted.set(true);
+        self.list_loading.set(false);
+        self.title.set_label("Semantic search");
+        self.subtitle.set_label("Searching locally loaded conversations…");
+        let ui = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let worded = query.clone();
+            let ranked = gio::spawn_blocking(move || crate::recall_client::rank("cloudmail", &worded, &records, 20))
+                .await
+                .ok()
+                .flatten();
+            let Some(ui) = ui.upgrade() else { return };
+            if ui.list_gen.get() != generation {
+                return;
+            }
+            match ranked {
+                Some(ids) => {
+                    *ui.threads.borrow_mut() = ids
+                        .iter()
+                        .filter_map(|id| candidates.iter().find(|thread| &thread.id == id).cloned())
+                        .collect();
+                    ui.rebuild_rows();
+                    ui.subtitle.set_label("Semantic matches in loaded mail · local Recall");
+                }
+                None => {
+                    ui.start_search(query);
+                    ui.toast("Recall unavailable or warming up; using mail’s text search");
+                }
+            }
+        });
     }
 
     fn exit_search(self: &Rc<Self>) {
@@ -764,6 +816,7 @@ impl Ui {
     }
 
     fn load_list(self: &Rc<Self>, soft: bool) {
+        self.semantic_base.borrow_mut().clear();
         let Some(client) = self.client.clone() else { return };
         let generation = self.list_gen.get() + 1;
         self.list_gen.set(generation);
