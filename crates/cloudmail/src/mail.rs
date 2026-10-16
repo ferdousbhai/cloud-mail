@@ -340,9 +340,20 @@ fn decide(ctx: &Ctx, mail: &Mail, emails: &[String], status: &str) -> CliResult 
     {
         return Err(CliError::usage(format!("not an email address: {bad}")));
     }
+    // Into the accounts' Screener lists in one update each, rather than one per sender.
+    let addresses: Vec<String> = emails
+        .iter()
+        .map(|e| key(e))
+        .filter(|k| mail.account_for(k).is_none())
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    let mut warnings = if addresses.len() > 1 {
+        mail.record_screening(&addresses, status, false)
+    } else {
+        Vec::new()
+    };
     let mut results = Vec::new();
     let mut done = Vec::new();
-    let mut warnings = Vec::new();
     let mut moved_total = 0;
     for e in emails {
         let email = key(e);

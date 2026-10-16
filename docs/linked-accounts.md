@@ -158,4 +158,5 @@ What a decision does:
   with a worker, the decisions your worker already had (from before they lived in the accounts).
 - Gmail and iCloud Mail mail is screened by its From address alone (Cloudflare's DMARC check is
   only for mail your worker receives). One-off bounce addresses with more than 64 characters
-  before the @ aren't put in iCloud rules (iCloud refuses them); no later mail comes from them.
+  before the @ (the email standard's limit) aren't kept on the lists, as iCloud refuses them and
+  no later mail comes from them; `cloudmail senders` leaves them out too.

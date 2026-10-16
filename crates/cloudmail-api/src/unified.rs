@@ -492,24 +492,19 @@ impl Mail {
         p.update_screen_lists(&mut |lists| Ok(self.seed(p, lists)? + lists.decide(emails(), status, only_undecided)))
     }
 
-    /// `decide_in` every account Cloudmail screens: the most that changed in one, and the failures.
-    fn decide_everywhere(&self, senders: &[String], status: &str, only_undecided: bool) -> (i64, Vec<AccountWarning>) {
-        let mut changed = 0;
-        let mut warnings = Vec::new();
-        let results = self.each_account(|p| {
+    /// Records a decision for these senders in every account Cloudmail screens, one update each
+    /// (deciding several senders one by one afterwards then finds it done); the accounts that failed.
+    pub fn record_screening(&self, senders: &[String], status: &str, only_undecided: bool) -> Vec<AccountWarning> {
+        self.each_account(|p| {
             if p.screened_by_cloudmail() {
                 self.decide_in(p, senders, status, only_undecided)
             } else {
                 Ok(0)
             }
-        });
-        for (name, r) in results {
-            match r {
-                Ok(n) => changed = changed.max(n as i64),
-                Err(e) => warnings.push(AccountWarning::new(&name, &e)),
-            }
-        }
-        (changed, warnings)
+        })
+        .into_iter()
+        .filter_map(|(name, r)| r.err().map(|e| AccountWarning::new(&name, &e)))
+        .collect()
     }
 
     /// Every sender decided on anywhere: the worker's decisions and every screened account's
@@ -924,7 +919,7 @@ impl Mail {
                 .filter(|a| a.email.contains('@'))
                 .collect();
             let to: Vec<String> = people.iter().map(|a| a.email.to_ascii_lowercase()).collect();
-            let (_, mut warnings) = self.decide_everywhere(&to, APPROVED, false);
+            let mut warnings = self.record_screening(&to, APPROVED, false);
             // The worker screens in whom it sends to itself; mail sent through an account is told to it.
             let by_account = self.accounts.iter().any(|p| std::ptr::addr_eq(p.as_ref(), sender));
             if let Some(c) = self.client.as_ref().filter(|_| by_account)

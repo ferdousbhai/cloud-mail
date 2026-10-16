@@ -1476,6 +1476,19 @@ fn gmail_screener_decisions_live_in_its_filters() {
         filters().iter().any(|f| f["id"] == "yours"),
         "your own filter is untouched"
     );
+
+    // Several at once: one change to the filters, not one per sender.
+    let creates = || {
+        h.calls()
+            .iter()
+            .filter(|c| c.contains("settings filters create"))
+            .count()
+    };
+    let before = creates();
+    let v = json_out(&h.run(&m, &["screener", "block", "a@spam.example", "b@spam.example"], &[]));
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(creates() - before, 1, "{:?}", h.calls());
+    assert!(list("Cloudmail/Blocked").contains(&"b@spam.example".to_string()));
 }
 
 #[test]
