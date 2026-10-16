@@ -755,6 +755,10 @@ impl Gmail {
         self.cache.lock().unwrap().clear();
         let _ = std::fs::remove_file(self.dir.join(CACHE_FILE));
         *self.own.lock().unwrap() = None;
+        *self.screen.lock().unwrap() = None;
+        // gws keeps using an access token it cached before the sign-in, with the old sign-in's
+        // permissions (seen with gws 0.22 when the filters scope was added): a new one is fetched.
+        let _ = std::fs::remove_file(self.dir.join("token_cache.json"));
         Ok(nonempty(text(&json["account"])).filter(|a| a.contains('@')))
     }
 
