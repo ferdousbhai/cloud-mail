@@ -211,7 +211,7 @@ test("revoking signs someone out; purging also deletes their mail", async () => 
   expect((await api(OWNER_TOKEN, "DELETE", "/api/users/sara?purge=1")).status).toBe(200);
   expect(db.query("SELECT COUNT(*) AS n FROM threads WHERE user_id != 'owner'").get()).toEqual({ n: 0 });
   expect(db.query("SELECT COUNT(*) AS n FROM mailboxes WHERE email = ?").get(SARA)).toEqual({ n: 0 });
-  expect((await api(OWNER_TOKEN, "GET", "/api/users/sara/invite")).status).toBe(404);
+  expect((await api(OWNER_TOKEN, "DELETE", "/api/users/sara")).status).toBe(404);
 });
 
 test("an invite link opened in a browser says what to do", async () => {

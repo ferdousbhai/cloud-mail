@@ -48,8 +48,8 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
   Use `Mail::worker()` (errors with what's needed) for worker-only work.
 - Gmail's and iCloud Mail's Screener decisions live in the accounts (`screening.rs`: Gmail filters
   marked by hidden labels, iCloud rules named `Cloudmail Screener: …`), read with
-  `Provider::screen_lists` and written with `save_screen_lists`; never touch filters or rules that
-  aren't Cloudmail's. `unified.rs` records a decision in every screened account and the worker.
+  `Provider::screen_lists` and changed with `update_screen_lists` (one read, at most one write);
+  never touch filters or rules that aren't Cloudmail's. `unified.rs` records a decision in every screened account and the worker.
 - The worker's committed lockfile is `bun.lock` (`package-lock.json` is ignored).
 - Every worker query that touches mail, senders, mailboxes or settings is scoped by `user_id`; a new
   endpoint or query must be too (`worker/test/users.test.ts` checks isolation). Only the admin runs
