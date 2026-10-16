@@ -1,13 +1,12 @@
 import { mailboxes } from "./mailboxes";
-import { deleteThread } from "./store";
-import { timingSafeEqual } from "./util";
+import { newId, timingSafeEqual, toHex } from "./util";
 
 /** The admin: the API_TOKEN secret signs in as this user, who owns everything from before users existed. */
 export const OWNER = "owner";
 
 // Long enough to pass on by hand, short enough that she can't forget it in a week.
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+export const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export interface Caller {
   id: string;
@@ -27,12 +26,11 @@ interface UserRow {
 }
 
 function randomHex(bytes: number): string {
-  return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return toHex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
 async function sha256(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))));
 }
 
 /** Who a bearer token belongs to: the API_TOKEN secret is the owner; anyone else's is looked up by its hash. */
@@ -43,10 +41,6 @@ export async function authenticate(env: Env, token: string): Promise<Caller | nu
     .bind(await sha256(token))
     .first<{ id: string; name: string; role: string }>();
   return row ? { id: row.id, name: row.name, admin: row.role === "admin" } : null;
-}
-
-export function validName(name: string): boolean {
-  return NAME_RE.test(name);
 }
 
 export async function findUser(env: Env, name: string): Promise<UserRow | null> {
@@ -70,7 +64,7 @@ export async function issueInvite(env: Env, userId: string, origin: string): Pro
 }
 
 export async function createUser(env: Env, name: string): Promise<string> {
-  const id = `u_${randomHex(10)}`;
+  const id = newId("u");
   await env.DB.prepare("INSERT INTO users (id, name, role, created_at) VALUES (?, ?, 'user', ?)").bind(id, name, Date.now()).run();
   return id;
 }
@@ -110,17 +104,29 @@ export async function listUsers(env: Env) {
 
 /** Signs a user out everywhere. With `purge`, also deletes their mail, decisions, settings and mailboxes. */
 export async function revokeUser(env: Env, user: UserRow, purge: boolean): Promise<void> {
-  if (!purge) {
-    await env.DB.prepare("UPDATE users SET token_hash = NULL, invite_hash = NULL, invite_expires_at = NULL, revoked_at = ? WHERE id = ?")
-      .bind(Date.now(), user.id)
-      .run();
-    return;
-  }
-  // Sign-in first, so nothing new is written while the mail goes.
-  await env.DB.prepare("UPDATE users SET token_hash = NULL, invite_hash = NULL, revoked_at = ? WHERE id = ?").bind(Date.now(), user.id).run();
-  const threads = await env.DB.prepare("SELECT id FROM threads WHERE user_id = ?").bind(user.id).all<{ id: string }>();
-  for (const t of threads.results) await deleteThread(env, user.id, t.id);
+  // Signed out first, so nothing new is written while the mail goes.
+  await env.DB.prepare("UPDATE users SET token_hash = NULL, invite_hash = NULL, invite_expires_at = NULL, revoked_at = ? WHERE id = ?")
+    .bind(Date.now(), user.id)
+    .run();
+  if (!purge) return;
+  // All their objects in R2 in one query, then all their rows in one batch: per-thread deletes
+  // would run into a Worker's limit on subrequests for anyone with much mail.
+  const keys = await env.DB.prepare(
+    `SELECT raw_key AS k FROM messages WHERE user_id = ?1 AND raw_key IS NOT NULL
+     UNION ALL SELECT html_key FROM messages WHERE user_id = ?1 AND html_key IS NOT NULL
+     UNION ALL SELECT text_key FROM messages WHERE user_id = ?1 AND text_key IS NOT NULL
+     UNION ALL SELECT a.r2_key FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.user_id = ?1`,
+  )
+    .bind(user.id)
+    .all<{ k: string }>();
+  const all = keys.results.map((r) => r.k);
+  for (let i = 0; i < all.length; i += 1000) await env.BUCKET.delete(all.slice(i, i + 1000));
+  const theirs = "SELECT id FROM messages WHERE user_id = ?";
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE user_id = ?)").bind(user.id),
+    env.DB.prepare(`DELETE FROM attachments WHERE message_id IN (${theirs})`).bind(user.id),
+    env.DB.prepare("DELETE FROM messages WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM threads WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM senders WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM settings WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM mailboxes WHERE user_id = ?").bind(user.id),

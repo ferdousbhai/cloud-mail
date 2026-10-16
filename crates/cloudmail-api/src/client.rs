@@ -257,31 +257,6 @@ impl Client {
         .map(|d| d.moved)
     }
 
-    /// The decisions recorded for these addresses (by lowercased address): "approved", "blocked"
-    /// or "pending"; an address with none is missing.
-    pub fn sender_statuses(&self, emails: &[String]) -> Result<std::collections::HashMap<String, String>> {
-        #[derive(serde::Deserialize)]
-        struct Found {
-            senders: Vec<Row>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Row {
-            email: String,
-            status: String,
-        }
-        let mut out = std::collections::HashMap::new();
-        for chunk in emails.chunks(1000) {
-            let found: Found = self.post("/api/senders/lookup", &serde_json::json!({ "emails": chunk }))?;
-            out.extend(
-                found
-                    .senders
-                    .into_iter()
-                    .map(|r| (r.email.to_ascii_lowercase(), r.status)),
-            );
-        }
-        Ok(out)
-    }
-
     /// Records one decision for many senders; with `only_undecided`, a decision already made stays.
     pub fn decide_senders(&self, senders: &[Address], status: &str, only_undecided: bool) -> Result<i64> {
         #[derive(serde::Deserialize)]
@@ -336,12 +311,8 @@ impl Client {
         self.get("/api/identities")
     }
 
-    pub fn mailboxes(&self) -> Result<Vec<Mailbox>> {
-        self.list_mailboxes(false)
-    }
-
     /// Your mailboxes, or with `all` (admin only) everyone's, each with its user.
-    pub fn list_mailboxes(&self, all: bool) -> Result<Vec<Mailbox>> {
+    pub fn mailboxes(&self, all: bool) -> Result<Vec<Mailbox>> {
         #[derive(serde::Deserialize)]
         struct Mailboxes {
             mailboxes: Vec<Mailbox>,
@@ -364,14 +335,6 @@ impl Client {
         self.delete(&format!("/api/mailboxes/{}", Self::enc(email)))
     }
 
-    pub fn settings(&self) -> Result<Settings> {
-        self.settings_of(None)
-    }
-
-    pub fn update_settings(&self, patch: &serde_json::Value) -> Result<Settings> {
-        self.update_settings_of(None, patch)
-    }
-
     fn settings_path(user: Option<&str>) -> String {
         match user {
             Some(u) => format!("/api/settings?user={}", Self::enc(u)),
@@ -380,12 +343,12 @@ impl Client {
     }
 
     /// Your settings, or (admin only) another user's.
-    pub fn settings_of(&self, user: Option<&str>) -> Result<Settings> {
+    pub fn settings(&self, user: Option<&str>) -> Result<Settings> {
         self.get::<SettingsEnvelope>(&Self::settings_path(user))
             .map(|w| w.settings)
     }
 
-    pub fn update_settings_of(&self, user: Option<&str>, patch: &serde_json::Value) -> Result<Settings> {
+    pub fn update_settings(&self, user: Option<&str>, patch: &serde_json::Value) -> Result<Settings> {
         self.patch::<SettingsEnvelope>(&Self::settings_path(user), patch)
             .map(|w| w.settings)
     }
@@ -407,8 +370,9 @@ impl Client {
         self.get::<Users>("/api/users").map(|u| u.users)
     }
 
-    /// Adds a user with these mailboxes and returns their first invite.
-    pub fn create_user(&self, name: &str, mailboxes: &[String]) -> Result<(User, Invite)> {
+    /// Invites someone: a new user, or an existing one given these mailboxes too and a new link
+    /// (which replaces their token once used, and lets a revoked user back in).
+    pub fn invite_user(&self, name: &str, mailboxes: &[String]) -> Result<(User, Invite)> {
         #[derive(serde::Deserialize)]
         struct Created {
             user: User,
@@ -419,19 +383,6 @@ impl Client {
             &serde_json::json!({ "name": name, "mailboxes": mailboxes }),
         )
         .map(|c| (c.user, c.invite))
-    }
-
-    /// A new invite for an existing user; the old invite stops working, and so does their token once it's used.
-    pub fn invite_user(&self, name: &str) -> Result<Invite> {
-        #[derive(serde::Deserialize)]
-        struct Invited {
-            invite: Invite,
-        }
-        self.post::<Invited>(
-            &format!("/api/users/{}/invite", Self::enc(name)),
-            &serde_json::json!({}),
-        )
-        .map(|i| i.invite)
     }
 
     /// Signs a user out everywhere; `purge` also deletes their mail, decisions, settings and mailboxes.

@@ -39,9 +39,10 @@ export function findMailbox(list: Mailbox[], email: string): Mailbox | undefined
 export async function upsertMailbox(
   env: Env,
   input: { email: string; userId: string; name?: string; screen?: boolean; position?: number },
+  existing: Mailbox | undefined = undefined,
 ): Promise<Mailbox> {
   const email = normalizeEmail(input.email);
-  const existing = findMailbox(await mailboxes(env, null), email);
+  existing ??= findMailbox(await mailboxes(env, null), email);
   const next = {
     email,
     user_id: input.userId,

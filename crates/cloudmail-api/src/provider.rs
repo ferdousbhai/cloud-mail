@@ -137,10 +137,6 @@ pub trait Provider: Send + Sync {
     fn screen_lists(&self, _fresh: bool) -> Result<crate::screening::Lists> {
         Ok(Default::default())
     }
-    /// Whether this account can keep a decision for this address (iCloud refuses some).
-    fn keeps_screening_for(&self, _email: &str) -> bool {
-        true
-    }
     /// Saves the decisions back, changing only Cloudmail's own filters or rules.
     fn save_screen_lists(&self, _lists: &crate::screening::Lists) -> Result<()> {
         Ok(())

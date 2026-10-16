@@ -186,7 +186,7 @@ fn add(ctx: &Ctx, link: Link) -> CliResult {
 
     // Worth saying: forwarding to the address just linked would show everything twice, if not for dedupe.
     let forwarding = mail
-        .and_then(|m| m.client.as_ref()?.settings().ok())
+        .and_then(|m| m.client.as_ref()?.settings(None).ok())
         .map(|s| s.forward_to)
         .filter(|f| !f.is_empty() && linked.addresses.iter().any(|a| a.eq_ignore_ascii_case(f)));
     let mut summary = format!(

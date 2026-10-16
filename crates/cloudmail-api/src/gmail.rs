@@ -64,8 +64,6 @@ pub const SETTINGS_SCOPE: &str = "https://www.googleapis.com/auth/gmail.settings
 const SCREEN_LABELS: [(&str, &str); 2] = [(APPROVED, "Cloudmail/Screened in"), (BLOCKED, "Cloudmail/Blocked")];
 /// Each filter's `from:` list stays this short (Gmail limits a filter's criteria).
 const FILTER_CHARS: usize = 1000;
-/// How long a read of the filters is reused within one process.
-const SCREEN_TTL: Duration = Duration::from_secs(60);
 /// Google's Workspace CLI on npm; `cloudmail account add gmail` installs it when it's missing.
 pub const PACKAGE: &str = "@googleworkspace/cli";
 pub const INSTALL_HINT: &str = "install Google's Workspace CLI: `npm install -g @googleworkspace/cli` (or a release binary from https://github.com/googleworkspace/cli/releases), or pass --command <path>";
@@ -111,7 +109,9 @@ pub struct Gmail {
     cache: Mutex<HashMap<String, Cached>>,
     own: Mutex<Option<Vec<Address>>>,
     /// The Screener's lists as last read from the filters.
-    screen: Mutex<Option<(Instant, Lists)>>,
+    screen: screening::Cache,
+    /// The Screener's two label IDs, once both exist (they never change).
+    screen_label_ids: Mutex<Option<HashMap<&'static str, String>>>,
 }
 
 /// The addresses in a filter's `from` criteria (`a OR b`, perhaps in braces or parentheses).
@@ -467,11 +467,15 @@ impl Gmail {
             cache: Mutex::new(load_cache(&gws_dir(name))),
             own: Default::default(),
             screen: Default::default(),
+            screen_label_ids: Default::default(),
         }
     }
 
     /// The Screener's hidden labels by list, creating those in `create` that are missing.
     fn screen_labels(&self, create: &[&str]) -> Result<HashMap<&'static str, String>> {
+        if let Some(ids) = self.screen_label_ids.lock().unwrap().clone() {
+            return Ok(ids);
+        }
         let data = self.call(&["labels", "list"], json!({ "userId": "me" }), None)?;
         let mut out = HashMap::new();
         for (kind, name) in SCREEN_LABELS {
@@ -495,6 +499,9 @@ impl Gmail {
             if !id.is_empty() {
                 out.insert(kind, id);
             }
+        }
+        if out.len() == SCREEN_LABELS.len() {
+            *self.screen_label_ids.lock().unwrap() = Some(out.clone());
         }
         Ok(out)
     }
@@ -755,7 +762,8 @@ impl Gmail {
         self.cache.lock().unwrap().clear();
         let _ = std::fs::remove_file(self.dir.join(CACHE_FILE));
         *self.own.lock().unwrap() = None;
-        *self.screen.lock().unwrap() = None;
+        self.screen.clear();
+        *self.screen_label_ids.lock().unwrap() = None;
         // gws keeps using an access token it cached before the sign-in, with the old sign-in's
         // permissions (seen with gws 0.22 when the filters scope was added): a new one is fetched.
         let _ = std::fs::remove_file(self.dir.join("token_cache.json"));
@@ -1506,30 +1514,9 @@ impl Provider for Gmail {
     }
 
     fn screen_lists(&self, fresh: bool) -> Result<Lists> {
-        if !fresh
-            && let Some((at, lists)) = self.screen.lock().unwrap().as_ref()
-            && at.elapsed() < SCREEN_TTL
-        {
-            return Ok(lists.clone());
-        }
-        let filters = self.screen_filters(&self.screen_labels(&[])?)?;
-        let lists = Lists {
-            kept: !filters.is_empty(),
-            approved: filters
-                .get(APPROVED)
-                .into_iter()
-                .flatten()
-                .flat_map(|(_, a)| a.clone())
-                .collect(),
-            blocked: filters
-                .get(BLOCKED)
-                .into_iter()
-                .flatten()
-                .flat_map(|(_, a)| a.clone())
-                .collect(),
-        };
-        *self.screen.lock().unwrap() = Some((Instant::now(), lists.clone()));
-        Ok(lists)
+        self.screen.get(fresh, || {
+            Ok(Lists::from_pieces(&self.screen_filters(&self.screen_labels(&[])?)?))
+        })
     }
 
     fn save_screen_lists(&self, lists: &Lists) -> Result<()> {
@@ -1543,18 +1530,13 @@ impl Provider for Gmail {
             let existing = filters.remove(kind).unwrap_or_default();
             let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
             let want = screening::rechunk(&pieces, lists.list(kind), |p| p.join(" OR ").len() <= FILTER_CHARS);
-            let sorted = |a: &[String]| {
-                let mut a = a.to_vec();
-                a.sort();
-                a
-            };
             let mut kept = vec![false; existing.len()];
             // New filters first, then the old ones go: never a moment without the decision.
             for piece in &want {
                 if let Some(i) = existing
                     .iter()
                     .enumerate()
-                    .position(|(i, (_, a))| !kept[i] && sorted(a) == sorted(piece))
+                    .position(|(i, (_, a))| !kept[i] && a == piece)
                 {
                     kept[i] = true;
                     continue;
@@ -1579,13 +1561,10 @@ impl Provider for Gmail {
                 }
             }
         }
-        *self.screen.lock().unwrap() = Some((
-            Instant::now(),
-            Lists {
-                kept: true,
-                ..lists.clone()
-            },
-        ));
+        self.screen.put(&Lists {
+            kept: true,
+            ..lists.clone()
+        });
         Ok(())
     }
 

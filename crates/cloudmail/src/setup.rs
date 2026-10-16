@@ -1160,7 +1160,7 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
             }
         }
         w.perform("forward a copy", None, Some(fwd.clone()), |_| {
-            client.update_settings(&json!({ "forward_to": fwd }))?;
+            client.update_settings(None, &json!({ "forward_to": fwd }))?;
             Ok(())
         })?;
     }

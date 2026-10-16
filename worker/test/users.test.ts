@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { beforeEach, expect, test } from "bun:test";
 import { handleApi } from "../src/api";
 import { handleEmail } from "../src/ingest";
-import { d1, migrate, r2 } from "./support";
+import { d1, migrate, r2, request } from "./support";
 
 let db: Database;
 let env: Env;
@@ -26,14 +26,7 @@ beforeEach(() => {
 });
 
 async function api<T = Record<string, unknown>>(token: string, method: string, path: string, body?: unknown) {
-  const res = await handleApi(
-    new Request(`https://cloudmail.test.workers.dev${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-    env,
-  );
+  const res = await request(env, token, method, path, body);
   return { status: res.status, body: (await res.json()) as T };
 }
 
@@ -98,9 +91,10 @@ test("an expired invite doesn't work, and a new one replaces the old token", asy
   db.run("UPDATE users SET invite_expires_at = 1 WHERE name = 'sara'");
   expect((await api("", "POST", "/api/connect", { code: created.body.invite.code })).status).toBe(403);
 
-  const again = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users/sara/invite");
+  // Inviting someone again gives them a new link.
+  const again = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara" });
   const old = (await api<{ token: string }>("", "POST", "/api/connect", { code: again.body.invite.code })).body.token;
-  const next = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users/sara/invite");
+  const next = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara" });
   const token = (await api<{ token: string }>("", "POST", "/api/connect", { code: next.body.invite.code })).body.token;
   expect((await api(old, "GET", "/api/me")).status).toBe(401);
   expect((await api(token, "GET", "/api/me")).status).toBe(200);
@@ -184,14 +178,17 @@ test("only the admin manages users and adds or gives away mailboxes", async () =
   expect((await api(sara, "PUT", `/api/mailboxes/${encodeURIComponent(ME)}`, { name: "mine now" })).status).toBe(403);
   expect((await api(sara, "PUT", `/api/mailboxes/${encodeURIComponent(SARA)}`, { name: "Sara", screen: false })).status).toBe(200);
   expect((await api(sara, "DELETE", `/api/mailboxes/${encodeURIComponent(SARA)}`)).status).toBe(403);
-  expect((await api(OWNER_TOKEN, "POST", "/api/users/owner/invite")).status).toBe(400);
-  expect((await api(OWNER_TOKEN, "POST", "/api/users", { name: "sara" })).status).toBe(409);
+  expect((await api(OWNER_TOKEN, "POST", "/api/users", { name: "owner" })).status).toBe(400);
+  // Inviting an existing user again adds mailboxes; their token works until the new link is used.
+  const again = await api<{ user: { mailboxes: string[] } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara", mailboxes: ["hi@saraadolfsen.com"] });
+  expect(again.body.user.mailboxes.sort()).toEqual(["hi@saraadolfsen.com", SARA]);
+  expect((await api(sara, "GET", "/api/me")).status).toBe(200);
   expect((await api(OWNER_TOKEN, "POST", "/api/users", { name: "Not Valid!" })).status).toBe(400);
 
   const listed = (await api<{ users: { name: string; mailboxes: string[]; connected: boolean }[] }>(OWNER_TOKEN, "GET", "/api/users")).body.users;
   expect(listed.map(({ name, mailboxes, connected }) => ({ name, mailboxes, connected }))).toEqual([
     { name: "owner", mailboxes: [ME], connected: true },
-    { name: "sara", mailboxes: [SARA], connected: true },
+    { name: "sara", mailboxes: [SARA, "hi@saraadolfsen.com"], connected: true },
   ]);
 });
 

@@ -108,8 +108,8 @@ pub fn status(ctx: &Ctx) -> CliResult {
             ]));
     };
     let counts = client.counts()?;
-    let mailboxes = client.mailboxes()?;
-    let settings = client.settings()?;
+    let mailboxes = client.mailboxes(false)?;
+    let settings = client.settings(None)?;
     // A worker from before users has no /api/me.
     let me = client.me().ok();
     let summary = format!(
@@ -183,7 +183,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
     let client = ctx.client()?;
     match cmd {
         MailboxCommand::List { all } => {
-            let list = client.list_mailboxes(all)?;
+            let list = client.mailboxes(all)?;
             let summary = format!("{} mailbox{}", list.len(), if list.len() == 1 { "" } else { "es" });
             let human = if list.is_empty() {
                 "No mailboxes yet; add one with `cloudmail mailbox add <address>`".into()
@@ -248,7 +248,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
                 return Err(CliError::usage("nothing to change").hint("pass --name, --screen or --position"));
             }
             let email = email.to_ascii_lowercase();
-            if !client.mailboxes()?.iter().any(|m| m.email == email) {
+            if !client.mailboxes(false)?.iter().any(|m| m.email == email) {
                 return Err(
                     CliError::not_found(format!("no mailbox {email}")).hint("add it with `cloudmail mailbox add`")
                 );
@@ -281,12 +281,12 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
 pub fn settings(ctx: &Ctx, cmd: SettingsCommand) -> CliResult {
     let client = ctx.client()?;
     let settings = match cmd {
-        SettingsCommand::Get { user } => client.settings_of(user.as_deref())?,
+        SettingsCommand::Get { user } => client.settings(user.as_deref())?,
         SettingsCommand::Set {
             key: SettingKey::ForwardTo,
             value,
             user,
-        } => client.update_settings_of(user.as_deref(), &json!({ "forward_to": value }))?,
+        } => client.update_settings(user.as_deref(), &json!({ "forward_to": value }))?,
     };
     let human = format!(
         "forward_to: {}",
@@ -328,7 +328,7 @@ pub fn user(ctx: &Ctx, cmd: UserCommand) -> CliResult {
                 .collect::<Vec<_>>()
                 .join("\n");
             let ids = list.iter().map(|u| u.name.clone()).collect();
-            let summary = format!("{} user{}", list.len(), if list.len() == 1 { "" } else { "s" });
+            let summary = crate::mail::plural(list.len(), "user");
             Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![crumb(
                 "invite",
                 "cloudmail user invite <name> --mailbox <address>",
@@ -337,23 +337,7 @@ pub fn user(ctx: &Ctx, cmd: UserCommand) -> CliResult {
         }
         UserCommand::Invite { name, mailboxes } => {
             let name = name.trim().to_ascii_lowercase();
-            let invite = match client.create_user(&name, &mailboxes) {
-                Ok((_, invite)) => invite,
-                // Already there: give them any new mailboxes and a fresh link.
-                Err(e) if e.kind == ErrorKind::BadRequest && e.message.contains("already exists") => {
-                    for m in &mailboxes {
-                        client.put_mailbox(
-                            m,
-                            &MailboxUpdate {
-                                user: Some(name.clone()),
-                                ..Default::default()
-                            },
-                        )?;
-                    }
-                    client.invite_user(&name)?
-                }
-                Err(e) => return Err(e.into()),
-            };
+            let (_, invite) = client.invite_user(&name, &mailboxes)?;
             let human = format!(
                 "Invite for {name}, valid once until {}:\n\n  {}\n\nSend them the link. On their computer, with Cloudmail installed:\n\n  cloudmail connect {}",
                 long_time(invite.expires_at),

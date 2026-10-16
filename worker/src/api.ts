@@ -7,10 +7,10 @@ import {
   findUser,
   issueInvite,
   listUsers,
+  NAME_RE,
   OWNER,
   redeemInvite,
   revokeUser,
-  validName,
 } from "./users";
 import {
   type Address,
@@ -611,21 +611,25 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
         if (body.user !== undefined || existing?.user_id !== u.id) return error("only the admin adds mailboxes or gives them to someone", 403);
         userId = u.id;
       } else if (typeof body.user === "string") {
-        const target = await findUser(env, body.user);
-        if (!target) return error(`no user named ${body.user}`, 404);
-        userId = target.id;
+        const target = await userIdFor(env, body.user);
+        if (target instanceof Response) return target;
+        userId = target;
       } else {
         userId = existing?.user_id ?? u.id;
       }
       // Mail to this address would be forwarded straight back here, forever.
       if (await isForwardTarget(env, email)) return error("this address is a forward_to target; change forward_to first");
-      const mailbox = await upsertMailbox(env, {
-        email,
-        userId,
-        name: body.name as string | undefined,
-        screen: body.screen as boolean | undefined,
-        position: body.position as number | undefined,
-      });
+      const mailbox = await upsertMailbox(
+        env,
+        {
+          email,
+          userId,
+          name: body.name as string | undefined,
+          screen: body.screen as boolean | undefined,
+          position: body.position as number | undefined,
+        },
+        existing,
+      );
       return json({ ok: true, mailbox });
     }
     if (method === "DELETE") {
@@ -640,9 +644,9 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     let userId = u.id;
     if (who) {
       if (!u.admin) return error("only the admin changes someone else's settings", 403);
-      const target = await findUser(env, who);
-      if (!target) return error(`no user named ${who}`, 404);
-      userId = target.id;
+      const target = await userIdFor(env, who);
+      if (target instanceof Response) return target;
+      userId = target;
     }
     if (method === "GET") return json({ settings: await getSettings(env, userId) });
     if (method === "PATCH") {
@@ -654,7 +658,7 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
         forward_to = normalizeEmail(body.forward_to);
         if (forward_to && !EMAIL_RE.test(forward_to)) return error("forward_to must be an email address");
         // Forwarding to an address this worker receives would route straight back here, forever.
-        if ((await mailboxes(env, null)).some((mb) => mb.email === forward_to)) return error("forward_to cannot be a mailbox here");
+        if (findMailbox(await mailboxes(env, null), forward_to)) return error("forward_to cannot be a mailbox here");
       }
       return json({ ok: true, settings: await updateSettings(env, userId, { forward_to }) });
     }
@@ -663,7 +667,15 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   return error("not found", 404);
 }
 
-/** The admin's user management: /api/users and /api/users/:name[/invite]. */
+/** A user's id by name, or the 404 to answer with. */
+async function userIdFor(env: Env, name: string): Promise<string | Response> {
+  return (await findUser(env, name))?.id ?? error(`no user named ${name}`, 404);
+}
+
+/**
+ * The admin's user management. `POST /api/users` invites someone: a new user, or an existing one
+ * given any new mailboxes and a fresh link (which also lets a revoked one back in).
+ */
 async function users(env: Env, req: Request, url: URL): Promise<Response> {
   const method = req.method;
   const path = url.pathname;
@@ -672,34 +684,31 @@ async function users(env: Env, req: Request, url: URL): Promise<Response> {
     if (method === "POST") {
       const body = await readJson<{ name?: unknown; mailboxes?: unknown }>(req);
       const name = typeof body?.name === "string" ? body.name.trim().toLowerCase() : "";
-      if (!validName(name)) return error("name must be 1–32 lowercase letters, digits, - or _, starting with a letter or digit");
+      if (!NAME_RE.test(name)) return error("name must be 1–32 lowercase letters, digits, - or _, starting with a letter or digit");
       const list = body?.mailboxes ?? [];
       if (!Array.isArray(list) || list.some((e) => typeof e !== "string" || !EMAIL_RE.test(normalizeEmail(e)))) {
         return error("mailboxes must be a list of email addresses");
       }
-      if (await findUser(env, name)) return error(`${name} already exists; send a new invite with POST /api/users/${name}/invite`, 409);
+      const existing = await findUser(env, name);
+      if (existing?.id === OWNER) return error("the admin signs in with the worker's API_TOKEN; rotate it with `cloudmail setup --force`");
       for (const e of list as string[]) {
         if (await isForwardTarget(env, e)) return error(`${normalizeEmail(e)} is a forward_to target; change forward_to first`);
       }
-      const id = await createUser(env, name);
+      const id = existing?.id ?? (await createUser(env, name));
       for (const e of list as string[]) await upsertMailbox(env, { email: e, userId: id });
       const invite = await issueInvite(env, id, url.origin);
-      const user = (await listUsers(env)).find((x) => x.name === name);
+      const user = { name, role: "user", mailboxes: (await mailboxes(env, id)).map((b) => b.email) };
       return json({ ok: true, user, invite });
     }
     return error("not found", 404);
   }
 
-  const m = path.match(/^\/api\/users\/([^/]+)(\/invite)?$/);
-  if (!m) return error("not found", 404);
+  const m = path.match(/^\/api\/users\/([^/]+)$/);
+  if (!m || method !== "DELETE") return error("not found", 404);
   const user = await findUser(env, safeDecode(m[1]));
   if (!user) return error("not found", 404);
   if (user.id === OWNER) return error("the admin signs in with the worker's API_TOKEN; rotate it with `cloudmail setup --force`");
-  if (method === "POST" && m[2]) return json({ ok: true, invite: await issueInvite(env, user.id, url.origin) });
-  if (method === "DELETE" && !m[2]) {
-    const purge = url.searchParams.get("purge") === "1";
-    await revokeUser(env, user, purge);
-    return json({ ok: true, purged: purge });
-  }
-  return error("not found", 404);
+  const purge = url.searchParams.get("purge") === "1";
+  await revokeUser(env, user, purge);
+  return json({ ok: true, purged: purge });
 }

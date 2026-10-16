@@ -239,20 +239,10 @@ pub fn load() -> Result<Config> {
         }
     }
 
-    let poll_seconds = file.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS).max(10);
-    match (api_url, api_token) {
-        (Some(api_url), Some(api_token)) => Ok(Config {
-            api_url,
-            api_token,
-            poll_seconds,
-            accounts: file.accounts,
-        }),
-        (None, _) if !file.accounts.is_empty() => Ok(Config {
-            api_url: String::new(),
-            api_token: String::new(),
-            poll_seconds,
-            accounts: file.accounts,
-        }),
+    let (api_url, api_token) = match (api_url, api_token) {
+        (Some(url), Some(token)) => Ok((url, token)),
+        // Linked accounts alone, without a worker.
+        (None, _) if !file.accounts.is_empty() => Ok((String::new(), String::new())),
         (url, _) => Err(Error::new(
             ErrorKind::Config,
             format!(
@@ -264,7 +254,13 @@ pub fn load() -> Result<Config> {
                 }
             ),
         )),
-    }
+    }?;
+    Ok(Config {
+        api_url,
+        api_token,
+        poll_seconds: file.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS).max(10),
+        accounts: file.accounts,
+    })
 }
 
 #[cfg(test)]

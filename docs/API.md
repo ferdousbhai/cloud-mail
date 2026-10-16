@@ -124,8 +124,7 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | PATCH | `/api/settings` | `{ "forward_to": "me@elsewhere.com" }` (`""` turns forwarding off); `?user=<name>` (admin) | `{ "ok": true, "settings": {…} }` |
 | GET | `/api/me` | | `{ "user": { "name", "role": "admin"\|"user" } }` |
 | GET | `/api/users` | | admin: `{ "users": [{ "name", "role", "mailboxes": [email], "connected", "invite_expires_at", "revoked", "created_at" }] }` |
-| POST | `/api/users` | `{ "name": "sam", "mailboxes"?: [email] }` | admin: `{ "ok": true, "user": User, "invite": Invite }`; 409 if the name exists |
-| POST | `/api/users/:name/invite` | | admin: `{ "ok": true, "invite": Invite }` – replaces any pending invite and lets a revoked user back in |
+| POST | `/api/users` | `{ "name": "sam", "mailboxes"?: [email] }` | admin: `{ "ok": true, "user": { "name", "role", "mailboxes" }, "invite": Invite }` – creates the user, or for an existing one adds the mailboxes and issues a new invite (replacing any pending one, and letting a revoked user back in) |
 | DELETE | `/api/users/:name` | `?purge=1` | admin: `{ "ok": true, "purged": bool }` – signs them out; with purge also deletes their mail, decisions, settings, mailboxes and the user |
 | POST | `/api/connect` | `{ "code": "inv_…" }` (no token) | `{ "ok": true, "token": "cm_…", "user": { "name", "role" } }`; 403 if the invite is invalid, used or expired |
 

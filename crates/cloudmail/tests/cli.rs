@@ -138,16 +138,6 @@ const APPROVED_SENDERS: &[&str] = &[
 fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
     let p = req.path.as_str();
     match (req.method.as_str(), p) {
-        // Every linked account's sender is approved, unless a test decides otherwise.
-        ("POST", "/api/senders/lookup") => {
-            let all: Vec<Value> = req.body["emails"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|e| json!({ "email": e, "status": "approved" }))
-                .collect();
-            ok(json!({ "senders": all }))
-        }
         ("POST", "/api/senders/batch") => ok(json!({ "ok": true, "changed": 0 })),
         // What a linked account's lists start from: everyone the fake accounts hear from, approved.
         ("GET", "/api/senders?status=approved") => ok(json!({ "senders": APPROVED_SENDERS
@@ -182,7 +172,7 @@ fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
         ("GET", "/api/attachments/a_1") => (200, b"%PDF".to_vec(), "application/pdf"),
         ("POST", "/api/threads/t_1/move") | ("POST", "/api/threads/t_1/read") => ok(json!({ "ok": true })),
         ("POST", "/api/senders/new%40y.com") => ok(json!({ "ok": true, "moved": 2 })),
-        ("POST", _) if p.starts_with("/api/senders/") && p != "/api/senders/lookup" && p != "/api/senders/batch" => {
+        ("POST", _) if p.starts_with("/api/senders/") && p != "/api/senders/batch" => {
             ok(json!({ "ok": true, "moved": 0 }))
         }
         ("POST", "/api/send") => ok(json!({ "ok": true, "thread_id": "t_1", "message": null })),
@@ -411,19 +401,10 @@ fn compose_from_stdin_and_mailbox_settings() {
 #[test]
 fn users_are_invited_listed_and_revoked() {
     let m = mock(|r| match (r.method.as_str(), r.path.as_str()) {
-        ("POST", "/api/users") if r.body["name"] == "sam" => (
-            409,
-            br#"{"error":"sam already exists; send a new invite with POST /api/users/sam/invite"}"#.to_vec(),
-            "application/json",
-        ),
         ("POST", "/api/users") => ok(json!({
             "ok": true,
             "user": { "name": r.body["name"], "role": "user", "mailboxes": r.body["mailboxes"], "connected": false },
             "invite": { "code": "inv_1", "url": "https://w.example/invite/inv_1", "expires_at": 1_800_000_000_000i64 },
-        })),
-        ("POST", "/api/users/sam/invite") => ok(json!({
-            "ok": true,
-            "invite": { "code": "inv_2", "url": "https://w.example/invite/inv_2", "expires_at": 1_800_000_000_000i64 },
         })),
         ("PUT", _) => ok(json!({ "ok": true, "mailbox": { "email": "x", "name": "", "screen": true, "position": 0 } })),
         ("GET", "/api/users") => ok(json!({ "users": [
@@ -449,19 +430,6 @@ fn users_are_invited_listed_and_revoked() {
         v["breadcrumbs"]
             .to_string()
             .contains("mailbox add sara@example.net --user sara --route")
-    );
-
-    // Inviting someone who exists gives them the mailbox and a new link.
-    let v = json_out(&cloudmail(
-        &m,
-        &["user", "invite", "sam", "--mailbox", "sam@example.net"],
-        None,
-    ));
-    assert_eq!(v["data"]["invite"]["code"], "inv_2");
-    let put = requests(&m).into_iter().find(|r| r.method == "PUT").unwrap();
-    assert_eq!(
-        (put.path.as_str(), &put.body),
-        ("/api/mailboxes/sam%40example.net", &json!({ "user": "sam" }))
     );
 
     let v = json_out(&cloudmail(&m, &["user", "list"], None));
@@ -2696,17 +2664,6 @@ fn screening(
                     .iter()
                     .filter(|(_, s)| s.as_str() == status)
                     .map(|(e, s)| json!({ "email": e, "name": "", "status": s, "decided_at": 1 }))
-                    .collect();
-                ok(json!({ "senders": found }))
-            }
-            ("POST", "/api/senders/lookup") => {
-                let d = decisions.lock().unwrap();
-                let found: Vec<Value> = req.body["emails"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.as_str())
-                    .filter_map(|e| d.get(e).map(|s| json!({ "email": e, "status": s })))
                     .collect();
                 ok(json!({ "senders": found }))
             }

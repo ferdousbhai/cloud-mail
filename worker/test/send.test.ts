@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, expect, test } from "bun:test";
-import { encodedSize, handleApi } from "../src/api";
-import { d1, migrate, r2 } from "./support";
+import { encodedSize } from "../src/api";
+import { d1, migrate, r2, request } from "./support";
 
 let db: Database;
 let bucket: ReturnType<typeof r2>;
@@ -31,14 +31,7 @@ beforeEach(() => {
 });
 
 function api(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
-  return handleApi(
-    new Request(`https://worker.example${path}`, {
-      method,
-      headers: { authorization: "Bearer test-token", "content-type": "application/json", ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-    env,
-  );
+  return request(env, "test-token", method, path, body, headers);
 }
 
 const b64 = (s: string | Uint8Array) => Buffer.from(s).toString("base64");

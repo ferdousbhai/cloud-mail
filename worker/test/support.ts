@@ -1,12 +1,25 @@
 import { Database } from "bun:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { handleApi } from "../src/api";
 
 // workerd has crypto.subtle.timingSafeEqual; Bun doesn't.
 const subtle = crypto.subtle as SubtleCrypto & { timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean };
 subtle.timingSafeEqual ??= (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 const MIGRATIONS = join(import.meta.dir, "..", "migrations");
+
+/** An API request to the worker, as `token`, with a JSON body. */
+export function request(env: Env, token: string, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
+  return handleApi(
+    new Request(`https://cloudmail.test.workers.dev${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+    env,
+  );
+}
 
 /** The worker's migrations in order; only those from `from` and before `until` (file names), when given. */
 export function migrate(db: Database, { from, until }: { from?: string; until?: string } = {}) {

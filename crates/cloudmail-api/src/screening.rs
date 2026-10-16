@@ -10,12 +10,26 @@
 //! filter or rule is spread over several; only Cloudmail's own (by label or name) are ever changed.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Each list's filters or rules, in order: (the filter or rule, its addresses).
 pub type Pieces<T> = HashMap<&'static str, Vec<(T, Vec<String>)>>;
 
 pub const APPROVED: &str = "approved";
 pub const BLOCKED: &str = "blocked";
+
+/// How long a read of an account's lists is reused within one process: longer than the app's
+/// default poll, so a poll reuses the previous one's.
+const TTL: Duration = Duration::from_secs(90);
+
+/// An address a decision can be kept for: one `@`, and a local part within RFC 5321's 64
+/// characters (iCloud refuses longer ones, which only one-off bounce addresses have).
+pub fn valid(email: &str) -> bool {
+    email
+        .split_once('@')
+        .is_some_and(|(local, domain)| !local.is_empty() && local.len() <= 64 && !domain.is_empty())
+}
 
 /// One account's decisions, by lowercase address.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -27,16 +41,26 @@ pub struct Lists {
 }
 
 impl Lists {
-    /// A sender's decision; a block wins over an approval left elsewhere.
-    pub fn status(&self, email: &str) -> Option<&'static str> {
-        let e = email.to_ascii_lowercase();
-        if self.blocked.contains(&e) {
-            Some(BLOCKED)
-        } else if self.approved.contains(&e) {
-            Some(APPROVED)
-        } else {
-            None
+    /// The lists a provider's filters or rules hold; kept when there are any.
+    pub fn from_pieces<T>(pieces: &Pieces<T>) -> Self {
+        let list = |kind| {
+            pieces
+                .get(kind)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, a)| a.clone())
+                .collect()
+        };
+        Lists {
+            kept: !pieces.is_empty(),
+            approved: list(APPROVED),
+            blocked: list(BLOCKED),
         }
+    }
+
+    /// Whether deciding these senders would change nothing.
+    pub fn settled<'a>(&self, emails: impl IntoIterator<Item = &'a str>, status: &str, only_undecided: bool) -> bool {
+        self.kept && self.clone().decide(emails, status, only_undecided) == 0
     }
 
     /// Puts senders on `status`'s list and takes them off the other; with `only_undecided`, a
@@ -55,7 +79,7 @@ impl Lists {
         let mut changed = 0;
         for e in emails {
             let e = e.trim().to_ascii_lowercase();
-            if !e.contains('@') || on.contains(&e) || (only_undecided && off.contains(&e)) {
+            if !valid(&e) || on.contains(&e) || (only_undecided && off.contains(&e)) {
                 continue;
             }
             off.remove(&e);
@@ -79,6 +103,32 @@ impl Lists {
         } else {
             &self.approved
         }
+    }
+}
+
+/// The lists as a provider last read or saved them, reused for `TTL` unless a fresh read is asked for.
+#[derive(Default)]
+pub struct Cache(Mutex<Option<(Instant, Lists)>>);
+
+impl Cache {
+    pub fn get(&self, fresh: bool, read: impl FnOnce() -> crate::Result<Lists>) -> crate::Result<Lists> {
+        if !fresh
+            && let Some((at, lists)) = self.0.lock().unwrap().as_ref()
+            && at.elapsed() < TTL
+        {
+            return Ok(lists.clone());
+        }
+        let lists = read()?;
+        self.put(&lists);
+        Ok(lists)
+    }
+
+    pub fn put(&self, lists: &Lists) {
+        *self.0.lock().unwrap() = Some((Instant::now(), lists.clone()));
+    }
+
+    pub fn clear(&self) {
+        *self.0.lock().unwrap() = None;
     }
 }
 
@@ -126,9 +176,9 @@ mod tests {
             l.decide(["Ana@X.com", "bob@y.com", "not-an-address"], APPROVED, false),
             2
         );
-        assert_eq!(l.status("ana@x.com"), Some(APPROVED));
+        assert_eq!(l.decisions()["ana@x.com"], APPROVED);
         assert_eq!(l.decide(["ana@x.com"], BLOCKED, false), 1);
-        assert_eq!((l.status("ana@x.com"), l.approved.len()), (Some(BLOCKED), 1));
+        assert_eq!((l.decisions()["ana@x.com"], l.approved.len()), (BLOCKED, 1));
         // Screening in correspondents never undoes a no, and repeating a decision changes nothing.
         assert_eq!(l.decide(["ana@x.com", "bob@y.com", "cy@z.com"], APPROVED, true), 1);
         assert_eq!(l.decide(["cy@z.com"], APPROVED, false), 0);
