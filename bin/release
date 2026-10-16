@@ -35,11 +35,29 @@ run_info=$(gh run view "$run" --repo "$gh_repo" --json headSha,event,conclusion,
   --jq '[.headSha,.event,.conclusion,.workflowName] | @tsv')
 [[ $run_info == "$source_commit"$'\tpush\tsuccess\tNative packages' ]] \
   || { echo 'CI must be a successful Native packages push run for the exact release commit.' >&2; exit 1; }
+# An artifact of the run, unzipped into a directory. gh's own downloader (`gh run download`) can
+# stall for good partway through on some connections; then curl takes over, resuming where a
+# stalled try stopped.
+download() { # name dir
+  gh run download "$run" --repo "$gh_repo" --name "$1" --dir "$2" && return
+  echo "gh couldn't download $1; trying curl" >&2
+  rm -rf "$2"
+  local id url
+  id=$(gh api "repos/$gh_repo/actions/runs/$run/artifacts" --jq ".artifacts[] | select(.name == \"$1\") | .id")
+  [[ -n $id ]] || { echo "No artifact $1 in run $run." >&2; return 1; }
+  url=$(curl -sS -o /dev/null -w '%{redirect_url}' -H "Authorization: Bearer $(gh auth token)" \
+    "https://api.github.com/repos/$gh_repo/actions/artifacts/$id/zip")
+  for try in 1 2 3 4 5; do
+    curl -sSfL -C - --speed-time 30 --speed-limit 1000 -o "$2.zip" "$url" && break
+    ((try < 5)) || { echo "Couldn't download $1." >&2; return 1; }
+  done
+  mkdir -p "$2" && unzip -q "$2.zip" -d "$2"
+}
 mkdir -p target
 out=$(mktemp -d "$PWD/target/release-repo-$version.XXXXXX")
 mkdir "$out/assets"
 for arch in x86_64 aarch64; do
-  gh run download "$run" --repo "$gh_repo" --name "cloudmail-$arch" --dir "$out/$arch"
+  download "cloudmail-$arch" "$out/$arch"
   [[ $(cat "$out/$arch/source-commit.txt") == "$source_commit" ]] || { echo 'Artifact source commit mismatch.' >&2; exit 1; }
   package="$out/$arch/cloudmail-$version-1-$arch.pkg.tar.zst"
   info=$(bsdtar -xOf "$package" .PKGINFO)
