@@ -274,22 +274,30 @@ impl Session {
         }
         let host = full.host_str().unwrap_or("").to_string();
         let result = match body {
-            _ if method == "GET" => self
-                .agent
-                .get(full.as_str())
-                .header("Cookie", &jar.cookie)
-                .header("Origin", ORIGIN)
-                .header("Referer", REFERER)
-                .call(),
+            _ if method == "GET" || method == "DELETE" => {
+                let req = if method == "GET" {
+                    self.agent.get(full.as_str())
+                } else {
+                    self.agent.delete(full.as_str())
+                };
+                req.header("Cookie", &jar.cookie)
+                    .header("Origin", ORIGIN)
+                    .header("Referer", REFERER)
+                    .header("Accept", "application/json")
+                    .call()
+            }
             body => {
                 let (content_type, bytes): (&str, &[u8]) = match body {
                     Some(Payload::Json(b)) => ("application/json", b),
                     Some(Payload::Bytes(b)) => ("application/octet-stream", b),
                     None => ("application/json", b"null"),
                 };
-                self.agent
-                    .post(full.as_str())
-                    .header("Cookie", &jar.cookie)
+                let req = match method {
+                    "PUT" => self.agent.put(full.as_str()),
+                    "PATCH" => self.agent.patch(full.as_str()),
+                    _ => self.agent.post(full.as_str()),
+                };
+                req.header("Cookie", &jar.cookie)
                     .header("Origin", ORIGIN)
                     .header("Referer", REFERER)
                     .header("Content-Type", content_type)
