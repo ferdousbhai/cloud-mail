@@ -40,18 +40,29 @@ struct Raw {
     disposition: Option<String>,
 }
 
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(60)))
+        .build()
+        .into()
+}
+
 impl Client {
     pub fn new(config: &Config) -> Self {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(60)))
-            .build()
-            .into();
         Self {
             base: config.api_url.trim_end_matches('/').to_string(),
             token: config.api_token.clone(),
-            agent,
+            agent: agent(),
         }
+    }
+
+    /// Trades a one-time invite code for this user's API token (the one call without a token).
+    pub fn connect(api_url: &str, code: &str) -> Result<Connected> {
+        let url = format!("{}/api/connect", api_url.trim_end_matches('/'));
+        Self::decode(Self::finish(
+            agent().post(url).send_json(serde_json::json!({ "code": code })),
+        )?)
     }
 
     pub fn base_url(&self) -> &str {
@@ -326,11 +337,17 @@ impl Client {
     }
 
     pub fn mailboxes(&self) -> Result<Vec<Mailbox>> {
+        self.list_mailboxes(false)
+    }
+
+    /// Your mailboxes, or with `all` (admin only) everyone's, each with its user.
+    pub fn list_mailboxes(&self, all: bool) -> Result<Vec<Mailbox>> {
         #[derive(serde::Deserialize)]
         struct Mailboxes {
             mailboxes: Vec<Mailbox>,
         }
-        self.get::<Mailboxes>("/api/mailboxes").map(|m| m.mailboxes)
+        self.get::<Mailboxes>(if all { "/api/mailboxes?all=1" } else { "/api/mailboxes" })
+            .map(|m| m.mailboxes)
     }
 
     /// Creates or updates a mailbox.
@@ -348,12 +365,79 @@ impl Client {
     }
 
     pub fn settings(&self) -> Result<Settings> {
-        self.get::<SettingsEnvelope>("/api/settings").map(|w| w.settings)
+        self.settings_of(None)
     }
 
     pub fn update_settings(&self, patch: &serde_json::Value) -> Result<Settings> {
-        self.patch::<SettingsEnvelope>("/api/settings", patch)
+        self.update_settings_of(None, patch)
+    }
+
+    fn settings_path(user: Option<&str>) -> String {
+        match user {
+            Some(u) => format!("/api/settings?user={}", Self::enc(u)),
+            None => "/api/settings".into(),
+        }
+    }
+
+    /// Your settings, or (admin only) another user's.
+    pub fn settings_of(&self, user: Option<&str>) -> Result<Settings> {
+        self.get::<SettingsEnvelope>(&Self::settings_path(user))
             .map(|w| w.settings)
+    }
+
+    pub fn update_settings_of(&self, user: Option<&str>, patch: &serde_json::Value) -> Result<Settings> {
+        self.patch::<SettingsEnvelope>(&Self::settings_path(user), patch)
+            .map(|w| w.settings)
+    }
+
+    /// Who this token belongs to.
+    pub fn me(&self) -> Result<Me> {
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            user: Me,
+        }
+        self.get::<Envelope>("/api/me").map(|e| e.user)
+    }
+
+    pub fn users(&self) -> Result<Vec<User>> {
+        #[derive(serde::Deserialize)]
+        struct Users {
+            users: Vec<User>,
+        }
+        self.get::<Users>("/api/users").map(|u| u.users)
+    }
+
+    /// Adds a user with these mailboxes and returns their first invite.
+    pub fn create_user(&self, name: &str, mailboxes: &[String]) -> Result<(User, Invite)> {
+        #[derive(serde::Deserialize)]
+        struct Created {
+            user: User,
+            invite: Invite,
+        }
+        self.post::<Created>(
+            "/api/users",
+            &serde_json::json!({ "name": name, "mailboxes": mailboxes }),
+        )
+        .map(|c| (c.user, c.invite))
+    }
+
+    /// A new invite for an existing user; the old invite stops working, and so does their token once it's used.
+    pub fn invite_user(&self, name: &str) -> Result<Invite> {
+        #[derive(serde::Deserialize)]
+        struct Invited {
+            invite: Invite,
+        }
+        self.post::<Invited>(
+            &format!("/api/users/{}/invite", Self::enc(name)),
+            &serde_json::json!({}),
+        )
+        .map(|i| i.invite)
+    }
+
+    /// Signs a user out everywhere; `purge` also deletes their mail, decisions, settings and mailboxes.
+    pub fn revoke_user(&self, name: &str, purge: bool) -> Result<()> {
+        let query = if purge { "?purge=1" } else { "" };
+        self.delete(&format!("/api/users/{}{query}", Self::enc(name)))
     }
 }
 

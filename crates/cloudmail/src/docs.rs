@@ -128,13 +128,14 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("mailbox", &["cloudmail mailbox list"]),
     (
         "mailbox list",
-        &["cloudmail mailbox list", "cloudmail mailbox list --json"],
+        &["cloudmail mailbox list", "cloudmail mailbox list --all --json"],
     ),
     (
         "mailbox add",
         &[
             "cloudmail mailbox add hi@example.com --name \"Jane Doe\"",
             "cloudmail mailbox add support@example.com --name \"Example Support\" --direct --route",
+            "cloudmail mailbox add sam@example.net --user sam --route",
         ],
     ),
     (
@@ -146,13 +147,37 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ),
     ("mailbox remove", &["cloudmail mailbox remove old@example.com --yes"]),
     ("settings", &["cloudmail settings get"]),
-    ("settings get", &["cloudmail settings get --json"]),
+    (
+        "settings get",
+        &["cloudmail settings get --json", "cloudmail settings get --user sam"],
+    ),
     (
         "settings set",
         &[
             "cloudmail settings set forward-to me@elsewhere.com",
             "cloudmail settings set forward-to \"\"",
+            "cloudmail settings set forward-to sam@elsewhere.com --user sam",
         ],
+    ),
+    ("user", &["cloudmail user list"]),
+    ("user list", &["cloudmail user list", "cloudmail user list --json"]),
+    (
+        "user invite",
+        &[
+            "cloudmail user invite sam --mailbox sam@example.net",
+            "cloudmail user invite sam",
+        ],
+    ),
+    (
+        "user revoke",
+        &[
+            "cloudmail user revoke sam --yes",
+            "cloudmail user revoke sam --purge --yes",
+        ],
+    ),
+    (
+        "connect",
+        &["cloudmail connect https://cloudmail.example.workers.dev/invite/inv_…"],
     ),
     ("config", &["cloudmail config show"]),
     (

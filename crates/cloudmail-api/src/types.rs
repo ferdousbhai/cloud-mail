@@ -196,16 +196,63 @@ pub struct Mailbox {
     /// true: first-time senders go to the Screener; false: straight to the Inbox.
     pub screen: bool,
     pub position: i64,
+    /// Whose mail it is (a user name; "owner" is the admin). Empty from a worker without users.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub user: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MailboxUpdate {
+    /// Give the mailbox to this user (admin only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<i64>,
+}
+
+/// Who the API token belongs to.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Me {
+    pub name: String,
+    /// "admin" or "user".
+    pub role: String,
+}
+
+/// Someone who reads their mail on this worker (`cloudmail user list`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct User {
+    pub name: String,
+    pub role: String,
+    pub mailboxes: Vec<String>,
+    /// Has a working token (the admin always does).
+    pub connected: bool,
+    /// When the pending invite expires (Unix ms), if there is one.
+    pub invite_expires_at: Option<i64>,
+    pub revoked: bool,
+    pub created_at: i64,
+}
+
+/// A one-time invite: `cloudmail connect <url>` on the invitee's machine.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Invite {
+    pub code: String,
+    pub url: String,
+    pub expires_at: i64,
+}
+
+/// What redeeming an invite returns.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Connected {
+    pub token: String,
+    pub user: Me,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

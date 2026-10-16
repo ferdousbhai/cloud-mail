@@ -71,7 +71,8 @@ fn mock(handler: impl Fn(&Req) -> (u16, Vec<u8>, &'static str) + Send + Sync + '
                         auth,
                     };
                     log.lock().unwrap().push(req.clone());
-                    let (status, bytes, ctype) = if req.auth != "Bearer test-token" {
+                    // Redeeming an invite is the one call without a token.
+                    let (status, bytes, ctype) = if req.auth != "Bearer test-token" && req.path != "/api/connect" {
                         (401, br#"{"error":"unauthorized"}"#.to_vec(), "application/json")
                     } else {
                         handler(&req)
@@ -384,6 +385,135 @@ fn compose_from_stdin_and_mailbox_settings() {
             .iter()
             .any(|r| r.method == "PATCH" && r.body == json!({ "forward_to": "" }))
     );
+}
+
+#[test]
+fn users_are_invited_listed_and_revoked() {
+    let m = mock(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("POST", "/api/users") if r.body["name"] == "sam" => (
+            409,
+            br#"{"error":"sam already exists; send a new invite with POST /api/users/sam/invite"}"#.to_vec(),
+            "application/json",
+        ),
+        ("POST", "/api/users") => ok(json!({
+            "ok": true,
+            "user": { "name": r.body["name"], "role": "user", "mailboxes": r.body["mailboxes"], "connected": false },
+            "invite": { "code": "inv_1", "url": "https://w.example/invite/inv_1", "expires_at": 1_800_000_000_000i64 },
+        })),
+        ("POST", "/api/users/sam/invite") => ok(json!({
+            "ok": true,
+            "invite": { "code": "inv_2", "url": "https://w.example/invite/inv_2", "expires_at": 1_800_000_000_000i64 },
+        })),
+        ("PUT", _) => ok(json!({ "ok": true, "mailbox": { "email": "x", "name": "", "screen": true, "position": 0 } })),
+        ("GET", "/api/users") => ok(json!({ "users": [
+            { "name": "owner", "role": "admin", "mailboxes": ["me@example.org"], "connected": true, "revoked": false },
+            { "name": "sara", "role": "user", "mailboxes": ["sara@example.net"], "connected": true, "revoked": false },
+        ] })),
+        ("DELETE", _) => ok(json!({ "ok": true })),
+        _ => default_handler(r),
+    });
+
+    let v = json_out(&cloudmail(
+        &m,
+        &["user", "invite", "Sara", "--mailbox", "sara@example.net"],
+        None,
+    ));
+    assert_eq!(v["data"]["invite"]["url"], "https://w.example/invite/inv_1");
+    let created = requests(&m).into_iter().find(|r| r.path == "/api/users").unwrap();
+    assert_eq!(
+        created.body,
+        json!({ "name": "sara", "mailboxes": ["sara@example.net"] })
+    );
+    assert!(
+        v["breadcrumbs"]
+            .to_string()
+            .contains("mailbox add sara@example.net --user sara --route")
+    );
+
+    // Inviting someone who exists gives them the mailbox and a new link.
+    let v = json_out(&cloudmail(
+        &m,
+        &["user", "invite", "sam", "--mailbox", "sam@example.net"],
+        None,
+    ));
+    assert_eq!(v["data"]["invite"]["code"], "inv_2");
+    let put = requests(&m).into_iter().find(|r| r.method == "PUT").unwrap();
+    assert_eq!(
+        (put.path.as_str(), &put.body),
+        ("/api/mailboxes/sam%40example.net", &json!({ "user": "sam" }))
+    );
+
+    let v = json_out(&cloudmail(&m, &["user", "list"], None));
+    assert_eq!(v["data"][1]["mailboxes"], json!(["sara@example.net"]));
+
+    let o = cloudmail(&m, &["user", "revoke", "sara"], None);
+    assert_eq!(json_out(&o)["error"]["code"], "confirmation_required");
+    assert!(
+        json_out(&cloudmail(&m, &["user", "revoke", "sara", "--purge", "--yes"], None))["ok"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        requests(&m)
+            .iter()
+            .any(|r| r.method == "DELETE" && r.path == "/api/users/sara?purge=1")
+    );
+}
+
+#[test]
+fn connect_trades_an_invite_for_a_token_in_the_keyring() {
+    let m = mock(|r| match r.path.as_str() {
+        "/api/connect" if r.body["code"] == "inv_good" => {
+            ok(json!({ "ok": true, "token": "cm_secret", "user": { "name": "sara", "role": "user" } }))
+        }
+        "/api/connect" => (
+            403,
+            br#"{"error":"this invite is invalid, used or expired; ask for a new one"}"#.to_vec(),
+            "application/json",
+        ),
+        _ => default_handler(r),
+    });
+    let home = temp_home("connect");
+    let mut bus = support::Bus::start(&home.join("bus"));
+    let keyring = support::keyring(&mut bus, &[]);
+    let config = home.join("config");
+    let run = |args: &[&str]| {
+        cloudmail_env(
+            &m,
+            args,
+            None,
+            &[
+                ("DBUS_SESSION_BUS_ADDRESS", Some(bus.address.as_str())),
+                ("XDG_CONFIG_HOME", Some(config.to_str().unwrap())),
+                ("CLOUDMAIL_API_URL", None),
+                ("CLOUDMAIL_API_TOKEN", None),
+            ],
+        )
+    };
+
+    let o = run(&["connect", "https://example.org/not-an-invite"]);
+    assert_eq!(json_out(&o)["error"]["code"], "usage");
+
+    let used = format!("{}/invite/inv_used", m.url);
+    let v = json_out(&run(&["connect", &used]));
+    assert_eq!(v["error"]["code"], "unauthorized");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("new link"));
+    assert_eq!(support::secret(&keyring, "api_token"), None);
+
+    let good = format!("{}/invite/inv_good", m.url);
+    let v = json_out(&run(&["connect", &good]));
+    assert_eq!(v["data"]["user"]["name"], "sara", "{v}");
+    assert_eq!(support::secret(&keyring, "api_token").as_deref(), Some("cm_secret"));
+    let file = std::fs::read_to_string(config.join("cloudmail/config.toml")).unwrap();
+    assert!(
+        file.contains(&format!("api_url = \"{}\"", m.url)) && !file.contains("cm_secret"),
+        "{file}"
+    );
+
+    // Already connected: only with --force.
+    let v = json_out(&run(&["connect", &good]));
+    assert_eq!(v["error"]["code"], "error");
+    assert!(json_out(&run(&["connect", &good, "--force"]))["ok"].as_bool().unwrap());
 }
 
 #[test]

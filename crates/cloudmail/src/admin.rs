@@ -3,7 +3,8 @@
 use clap::CommandFactory;
 use serde_json::json;
 
-use cloudmail_api::{MailboxUpdate, config};
+use cloudmail_api::text::long_time;
+use cloudmail_api::{Client, ErrorKind, MailboxUpdate, config, keyring};
 
 use crate::Ctx;
 use crate::cli::*;
@@ -79,13 +80,18 @@ pub fn status(ctx: &Ctx) -> CliResult {
     let counts = client.counts()?;
     let mailboxes = client.mailboxes()?;
     let settings = client.settings()?;
+    // A worker from before users has no /api/me.
+    let me = client.me().ok();
     let summary = format!(
         "{} unread of {} in the Inbox, {} in the Screener",
         counts.inbox_unread, counts.inbox, counts.screener
     );
     let human = format!(
-        "Worker:      {} (ok)\nConfig:      {}\nInbox:       {}, {} unread\nScreener:    {} waiting\nMailboxes:   {}\nForwarding:  {}",
+        "Worker:      {} (ok){}\nConfig:      {}\nInbox:       {}, {} unread\nScreener:    {} waiting\nMailboxes:   {}\nForwarding:  {}",
         client.base_url(),
+        me.as_ref()
+            .map(|m| format!("\nSigned in:   {} ({})", m.name, m.role))
+            .unwrap_or_default(),
         config::path().display(),
         crate::mail::plural(counts.inbox as usize, "thread"),
         counts.inbox_unread,
@@ -105,6 +111,7 @@ pub fn status(ctx: &Ctx) -> CliResult {
         "api_url": client.base_url(),
         "config_path": config::path(),
         "healthy": true,
+        "user": me,
         "counts": counts,
         "mailboxes": mailboxes.len(),
         "forward_to": settings.forward_to,
@@ -136,13 +143,13 @@ pub fn status(ctx: &Ctx) -> CliResult {
 pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
     let client = ctx.client()?;
     match cmd {
-        MailboxCommand::List => {
-            let list = client.mailboxes()?;
+        MailboxCommand::List { all } => {
+            let list = client.list_mailboxes(all)?;
             let summary = format!("{} mailbox{}", list.len(), if list.len() == 1 { "" } else { "es" });
             let human = if list.is_empty() {
                 "No mailboxes yet; add one with `cloudmail mailbox add <address>`".into()
             } else {
-                render::mailboxes(&list)
+                render::mailboxes(&list, all)
             };
             let ids = list.iter().map(|m| m.email.clone()).collect();
             Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![
@@ -158,6 +165,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             email,
             name,
             direct,
+            user,
             route,
         } => {
             let (addr, spec_screen) = setup::parse_mailbox_spec(&email)?;
@@ -165,6 +173,7 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             let mailbox = client.put_mailbox(
                 &addr,
                 &MailboxUpdate {
+                    user: user.clone(),
                     name,
                     screen: Some(!direct),
                     position: None,
@@ -172,6 +181,9 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
             )?;
             let mut data = json!({ "mailbox": mailbox });
             let mut summary = format!("Added {addr} ({})", if direct { "direct" } else { "screened" });
+            if let Some(u) = &user {
+                summary.push_str(&format!(" for {u}"));
+            }
             if route.route {
                 let r = setup::route_for_mailbox(&addr, &route, ctx.interactive())?;
                 summary.push_str(&format!("; routing: {}", r["status"].as_str().unwrap_or("")));
@@ -202,7 +214,15 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
                     CliError::not_found(format!("no mailbox {email}")).hint("add it with `cloudmail mailbox add`")
                 );
             }
-            let mailbox = client.put_mailbox(&email, &MailboxUpdate { name, screen, position })?;
+            let mailbox = client.put_mailbox(
+                &email,
+                &MailboxUpdate {
+                    user: None,
+                    name,
+                    screen,
+                    position,
+                },
+            )?;
             Ok(Response::new(&mailbox, format!("Updated {email}")))
         }
         MailboxCommand::Remove { email, yes } => {
@@ -222,11 +242,12 @@ pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {
 pub fn settings(ctx: &Ctx, cmd: SettingsCommand) -> CliResult {
     let client = ctx.client()?;
     let settings = match cmd {
-        SettingsCommand::Get => client.settings()?,
+        SettingsCommand::Get { user } => client.settings_of(user.as_deref())?,
         SettingsCommand::Set {
             key: SettingKey::ForwardTo,
             value,
-        } => client.update_settings(&json!({ "forward_to": value }))?,
+            user,
+        } => client.update_settings_of(user.as_deref(), &json!({ "forward_to": value }))?,
     };
     let human = format!(
         "forward_to: {}",
@@ -237,6 +258,158 @@ pub fn settings(ctx: &Ctx, cmd: SettingsCommand) -> CliResult {
         }
     );
     Ok(Response::new(&settings, "Worker settings").human(human))
+}
+
+pub fn user(ctx: &Ctx, cmd: UserCommand) -> CliResult {
+    let client = ctx.client()?;
+    match cmd {
+        UserCommand::List => {
+            let list = client.users()?;
+            let w = list.iter().map(|u| u.name.len()).max().unwrap_or(0);
+            let human = list
+                .iter()
+                .map(|u| {
+                    let state = if u.revoked {
+                        "revoked".to_string()
+                    } else if let Some(t) = u.invite_expires_at {
+                        format!("invited (until {})", long_time(t))
+                    } else if u.connected {
+                        "connected".to_string()
+                    } else {
+                        "not connected".to_string()
+                    };
+                    format!(
+                        "{}  {}  {}  {}",
+                        render::pad(&render::clean_line(&u.name), w),
+                        render::pad(&u.role, 5),
+                        render::pad(&state, 13),
+                        dim(&u.mailboxes.join(", "))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let ids = list.iter().map(|u| u.name.clone()).collect();
+            let summary = format!("{} user{}", list.len(), if list.len() == 1 { "" } else { "s" });
+            Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![crumb(
+                "invite",
+                "cloudmail user invite <name> --mailbox <address>",
+                "Let someone read their own mail here",
+            )]))
+        }
+        UserCommand::Invite { name, mailboxes } => {
+            let name = name.trim().to_ascii_lowercase();
+            let invite = match client.create_user(&name, &mailboxes) {
+                Ok((_, invite)) => invite,
+                // Already there: give them any new mailboxes and a fresh link.
+                Err(e) if e.kind == ErrorKind::BadRequest && e.message.contains("already exists") => {
+                    for m in &mailboxes {
+                        client.put_mailbox(
+                            m,
+                            &MailboxUpdate {
+                                user: Some(name.clone()),
+                                ..Default::default()
+                            },
+                        )?;
+                    }
+                    client.invite_user(&name)?
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let human = format!(
+                "Invite for {name}, valid once until {}:\n\n  {}\n\nSend them the link. On their computer, with Cloudmail installed:\n\n  cloudmail connect {}",
+                long_time(invite.expires_at),
+                invite.url,
+                shell_arg(&invite.url)
+            );
+            let mut crumbs = vec![crumb("list", "cloudmail user list", "See who's connected")];
+            for m in &mailboxes {
+                crumbs.push(crumb(
+                    "route",
+                    &format!(
+                        "cloudmail mailbox add {} --user {} --route",
+                        shell_arg(m),
+                        shell_arg(&name)
+                    ),
+                    "Point the address's Email Routing rule at the worker",
+                ));
+            }
+            Ok(Response::new(
+                json!({ "user": name, "invite": invite }),
+                format!("Invite for {name}: {}", invite.url),
+            )
+            .human(human)
+            .crumbs(crumbs))
+        }
+        UserCommand::Revoke { name, purge, yes } => {
+            let question = if purge {
+                format!(
+                    "Sign {name} out and delete all their mail, decisions, settings and mailboxes? This can't be undone."
+                )
+            } else {
+                format!(
+                    "Sign {name} out everywhere? Their mail stays; `cloudmail user invite {name}` lets them back in."
+                )
+            };
+            confirm(yes, &question)?;
+            client.revoke_user(&name, purge)?;
+            let summary = if purge {
+                format!("Removed {name} and their mail; remove their addresses' Email Routing rules too")
+            } else {
+                format!("Signed {name} out; their mail keeps arriving and is kept")
+            };
+            Ok(Response::new(json!({ "user": name, "purged": purge }), summary))
+        }
+    }
+}
+
+/// Splits an invite link into the worker's URL and the code.
+fn parse_invite(link: &str) -> Option<(&str, &str)> {
+    let (url, code) = link.trim().split_once("/invite/")?;
+    let code = code.trim_end_matches('/');
+    let web = url.starts_with("https://") || url.starts_with("http://");
+    (web && code.starts_with("inv_") && !code.contains(['/', '?', '#'])).then_some((url, code))
+}
+
+pub fn connect(args: &ConnectArgs) -> CliResult {
+    let (api_url, code) = parse_invite(&args.invite).ok_or_else(|| {
+        CliError::usage("that isn't a Cloudmail invite link")
+            .hint("it looks like https://cloudmail.<name>.workers.dev/invite/inv_…")
+    })?;
+    let path = config::path();
+    let existing = config::read_file(&path)?.unwrap_or_default();
+    if let Some(current) = existing.api_url.as_deref().filter(|u| !u.trim().is_empty())
+        && !args.force
+    {
+        return Err(
+            CliError::generic(format!("this machine is already connected to {current}"))
+                .hint("`cloudmail connect <link> --force` replaces it and its token"),
+        );
+    }
+    // The invite works once: make sure there's a keyring to keep the token in before using it up.
+    keyring::get(keyring::API_TOKEN)?;
+    let connected = Client::connect(api_url, code).map_err(|e| {
+        let unusable = e.kind == ErrorKind::Unauthorized;
+        let err = CliError::from(e);
+        if unusable {
+            err.hint("ask whoever invited you for a new link (`cloudmail user invite <name>`)")
+        } else {
+            err
+        }
+    })?;
+    keyring::set(keyring::API_TOKEN, "Cloudmail API token", &connected.token)?;
+    let file = config::FileConfig {
+        api_url: Some(api_url.to_string()),
+        poll_seconds: existing.poll_seconds.or(Some(config::DEFAULT_POLL_SECONDS)),
+        ..existing
+    };
+    config::save(&file)?;
+    let summary = format!("Connected to {api_url} as {}", connected.user.name);
+    Ok(
+        Response::new(json!({ "api_url": api_url, "user": connected.user }), summary).crumbs(vec![
+            crumb("status", "cloudmail status", "Check the connection"),
+            crumb("inbox", "cloudmail inbox", "List the Inbox"),
+        ]),
+    )
 }
 
 pub fn config_cmd(cmd: ConfigCommand) -> CliResult {

@@ -23,7 +23,7 @@ pub fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-fn pad(s: &str, w: usize) -> String {
+pub fn pad(s: &str, w: usize) -> String {
     let n = s.chars().count();
     if n >= w {
         s.to_string()
@@ -215,15 +215,26 @@ pub fn senders(list: &[Sender]) -> String {
         .join("\n")
 }
 
-pub fn mailboxes(list: &[Mailbox]) -> String {
+/// With `owners`, everyone's mailboxes with whose each is, rather than your own in order.
+pub fn mailboxes(list: &[Mailbox], owners: bool) -> String {
     let w = list.iter().map(|m| m.email.len()).max().unwrap_or(0);
+    let uw = list.iter().map(|m| m.user.len()).max().unwrap_or(0);
     list.iter()
         .enumerate()
         .map(|(i, m)| {
             let kind = if m.screen { "screened" } else { "direct" };
-            let default = if i == 0 { dim("  (default From)") } else { String::new() };
+            let default = if i == 0 && !owners {
+                dim("  (default From)")
+            } else {
+                String::new()
+            };
+            let owner = if owners {
+                format!("{}  ", pad(&clean_line(&m.user), uw))
+            } else {
+                String::new()
+            };
             format!(
-                "{}  {}  {}{default}",
+                "{}  {owner}{}  {}{default}",
                 pad(&clean_line(&m.email), w),
                 pad(kind, 8),
                 clean_line(&m.name)

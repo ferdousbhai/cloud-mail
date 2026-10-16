@@ -366,7 +366,9 @@ impl From<ApiError> for CliError {
             ),
             ErrorKind::Unauthorized => (
                 exit::AUTH,
-                Some("the api_token doesn't match the worker's API_TOKEN secret; check `cloudmail config show`"),
+                Some(
+                    "the worker didn't accept this token for that: check `cloudmail config show`; if you were invited, ask for a new invite",
+                ),
             ),
             ErrorKind::NotFound => (exit::NOT_FOUND, None),
             ErrorKind::BadRequest => (exit::USAGE, None),

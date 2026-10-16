@@ -1103,6 +1103,7 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
             client.put_mailbox(
                 addr,
                 &MailboxUpdate {
+                    user: None,
                     screen: Some(*screen),
                     ..Default::default()
                 },

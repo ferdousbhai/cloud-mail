@@ -154,6 +154,8 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Watch(a) => mail::watch(ctx, &a),
         Command::Mailbox(m) => admin::mailbox(ctx, m),
         Command::Settings(s) => admin::settings(ctx, s),
+        Command::User(u) => admin::user(ctx, u),
+        Command::Connect(a) => admin::connect(&a),
         Command::Config(c) => admin::config_cmd(c),
         Command::Account(a) => accounts::account(ctx, a),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),

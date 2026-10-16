@@ -82,6 +82,11 @@ pub enum Command {
     /// Manage the addresses the worker receives and sends from
     #[command(subcommand)]
     Mailbox(MailboxCommand),
+    /// Let someone else read their own mail on your worker: invite, list and revoke users (admin)
+    #[command(subcommand)]
+    User(UserCommand),
+    /// Connect to someone's worker with the invite link they sent you
+    Connect(ConnectArgs),
     /// View or change worker settings (forwarding)
     #[command(subcommand)]
     Settings(SettingsCommand),
@@ -423,7 +428,11 @@ pub struct RouteArgs {
 #[derive(Subcommand, Debug)]
 pub enum MailboxCommand {
     /// List your mailboxes in display order (the first is the default From)
-    List,
+    List {
+        /// Everyone's mailboxes, with whose each is (admin)
+        #[arg(long)]
+        all: bool,
+    },
     /// Add a mailbox (an address the worker receives and can send from)
     Add {
         email: String,
@@ -433,6 +442,9 @@ pub enum MailboxCommand {
         /// Deliver unknown senders straight to the Inbox (for support@-style addresses)
         #[arg(long)]
         direct: bool,
+        /// Whose mail it is: a user from `cloudmail user list` (admin; default: yours)
+        #[arg(long)]
+        user: Option<String>,
         #[command(flatten)]
         route: RouteArgs,
     },
@@ -459,14 +471,53 @@ pub enum MailboxCommand {
 #[derive(Subcommand, Debug)]
 pub enum SettingsCommand {
     /// Show worker settings
-    Get,
+    Get {
+        /// Another user's settings (admin)
+        #[arg(long)]
+        user: Option<String>,
+    },
     /// Change a worker setting
     Set {
         #[arg(value_enum)]
         key: SettingKey,
         /// New value ("" turns forwarding off)
         value: String,
+        /// Change another user's settings (admin)
+        #[arg(long)]
+        user: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UserCommand {
+    /// List everyone who reads mail on this worker, with their mailboxes
+    List,
+    /// Invite someone: prints a one-time link for `cloudmail connect` (valid 7 days); again for a new link
+    Invite {
+        /// Their user name (lowercase letters, digits, - and _)
+        name: String,
+        /// Give them this mailbox (repeatable); add its routing with `cloudmail mailbox add … --route`
+        #[arg(long = "mailbox", value_name = "ADDRESS")]
+        mailboxes: Vec<String>,
+    },
+    /// Sign someone out everywhere; their mail stays unless --purge
+    Revoke {
+        name: String,
+        /// Also delete their mail, screening decisions, settings and mailboxes
+        #[arg(long)]
+        purge: bool,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ConnectArgs {
+    /// The invite link: https://<worker>/invite/inv_…
+    pub invite: String,
+    /// Replace the worker this machine is already connected to
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
