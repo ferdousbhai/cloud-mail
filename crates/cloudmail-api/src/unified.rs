@@ -448,12 +448,12 @@ impl Mail {
 
     /// An account's lists, started the first time (see `seed`).
     fn lists_of(&self, p: &dyn Provider) -> Result<Lists> {
-        let lists = p.screen_lists(false)?;
+        let lists = p.screen_lists()?;
         if lists.kept {
             return Ok(lists);
         }
         p.update_screen_lists(&mut |lists| self.seed(p, lists))?;
-        p.screen_lists(false)
+        p.screen_lists()
     }
 
     /// Starts lists that aren't kept yet: the account's own addresses screened in, and with a
@@ -486,7 +486,7 @@ impl Mail {
     /// most one write; nothing at all when its lists (as last read) say so already. How many changed.
     fn decide_in(&self, p: &dyn Provider, senders: &[String], status: &str, only_undecided: bool) -> Result<usize> {
         let emails = || senders.iter().map(String::as_str);
-        if p.screen_lists(false)?.settled(emails(), status, only_undecided) {
+        if p.screen_lists()?.settled(emails(), status, only_undecided) {
             return Ok(0);
         }
         p.update_screen_lists(&mut |lists| Ok(self.seed(p, lists)? + lists.decide(emails(), status, only_undecided)))
@@ -520,7 +520,7 @@ impl Mail {
                 if !p.screened_by_cloudmail() {
                     return Ok(None);
                 }
-                Ok(Some((p.screen_lists(false)?, p.identities().unwrap_or_default())))
+                Ok(Some((p.screen_lists()?, p.identities().unwrap_or_default())))
             });
             (worker.join().unwrap_or_else(|_| Ok(Vec::new())), read)
         });

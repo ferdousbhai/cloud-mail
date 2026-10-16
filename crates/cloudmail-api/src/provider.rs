@@ -132,9 +132,9 @@ pub trait Provider: Send + Sync {
     fn screened_by_cloudmail(&self) -> bool {
         false
     }
-    /// The Screener's decisions kept in this account (Gmail filters, iCloud Mail rules); `fresh`
-    /// reads them again rather than from what this process read lately.
-    fn screen_lists(&self, _fresh: bool) -> Result<crate::screening::Lists> {
+    /// The Screener's decisions kept in this account (Gmail filters, iCloud Mail rules), as this
+    /// process read or wrote them lately.
+    fn screen_lists(&self) -> Result<crate::screening::Lists> {
         Ok(Default::default())
     }
     /// Changes the decisions kept in this account: reads them once, lets `change` alter them (it

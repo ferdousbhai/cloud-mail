@@ -632,8 +632,8 @@ impl Provider for Icloud {
         true
     }
 
-    fn screen_lists(&self, fresh: bool) -> Result<Lists> {
-        self.screen.get(fresh, || Ok(Lists::from_pieces(&self.screen_rules()?)))
+    fn screen_lists(&self) -> Result<Lists> {
+        self.screen.get(|| Ok(Lists::from_pieces(&self.screen_rules()?)))
     }
 
     fn update_screen_lists(&self, change: &mut dyn FnMut(&mut Lists) -> Result<usize>) -> Result<usize> {

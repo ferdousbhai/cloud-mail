@@ -1513,10 +1513,9 @@ impl Provider for Gmail {
         true
     }
 
-    fn screen_lists(&self, fresh: bool) -> Result<Lists> {
-        self.screen.get(fresh, || {
-            Ok(Lists::from_pieces(&self.screen_filters(&self.screen_labels(&[])?)?))
-        })
+    fn screen_lists(&self) -> Result<Lists> {
+        self.screen
+            .get(|| Ok(Lists::from_pieces(&self.screen_filters(&self.screen_labels(&[])?)?)))
     }
 
     fn update_screen_lists(&self, change: &mut dyn FnMut(&mut Lists) -> Result<usize>) -> Result<usize> {

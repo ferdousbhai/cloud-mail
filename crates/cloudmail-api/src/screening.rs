@@ -106,14 +106,13 @@ impl Lists {
     }
 }
 
-/// The lists as a provider last read or saved them, reused for `TTL` unless a fresh read is asked for.
+/// The lists as a provider last read or saved them, reused for `TTL`.
 #[derive(Default)]
 pub struct Cache(Mutex<Option<(Instant, Lists)>>);
 
 impl Cache {
-    pub fn get(&self, fresh: bool, read: impl FnOnce() -> crate::Result<Lists>) -> crate::Result<Lists> {
-        if !fresh
-            && let Some((at, lists)) = self.0.lock().unwrap().as_ref()
+    pub fn get(&self, read: impl FnOnce() -> crate::Result<Lists>) -> crate::Result<Lists> {
+        if let Some((at, lists)) = self.0.lock().unwrap().as_ref()
             && at.elapsed() < TTL
         {
             return Ok(lists.clone());
