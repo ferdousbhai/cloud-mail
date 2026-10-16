@@ -60,7 +60,6 @@ fn setup_hint(e: &cloudmail_api::Error) -> String {
         return e.to_string();
     }
     format!(
-        "Cloudmail isn't configured yet.\n\n{e}\n\nRun `cloudmail setup` to deploy a worker, or point {} at yours with `cloudmail config set api-url https://cloudmail.<you>.workers.dev` and `cloudmail config set api-token <the worker's API_TOKEN secret>` (kept in your keyring), then restart the app.",
-        config::path().display()
+        "Cloudmail isn't configured yet.\n\n{e}\n\nIf someone invited you, run `cloudmail connect <the invite link>` in a terminal. To run your own, `cloudmail setup you@yourdomain.com` deploys it to your Cloudflare account. Then restart the app.",
     )
 }

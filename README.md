@@ -27,6 +27,9 @@ or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to
 - You want an inbox your scripts or your local AI agent can read and answer through a plain
   CLI, without a Gmail API project.
 - You like HEY's Screener and want it on your own domain, in your own account.
+- Someone close to you, like a partner or a colleague, wants the same for their domains. You run it
+  and invite them; they install the app and connect with a link, with no Cloudflare account of
+  their own.
 
 ## How it works
 
@@ -49,6 +52,8 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 - **Inbox and Archive**, that's it. A reply on an archived thread brings it back. Delete removes a
   thread (for a linked account, it goes to that account's Trash).
 - **Privacy by default**: remote images and tracking pixels stay blocked until you ask for them.
+- **One admin, a few people.** Whoever deploys it is the admin and can invite others to read their
+  own mail on it; each person sees only their own mailboxes, Screener and settings.
 
 | Path | What |
 |---|---|
@@ -60,6 +65,8 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 
 ## What you need
 
+To run it (the admin):
+
 - A domain whose DNS is on Cloudflare.
 - A Cloudflare account. Receiving works on the free plan. To send to anyone you need the Workers
   Paid plan (about $5/month, with 3,000 emails/month included).
@@ -69,6 +76,9 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
   there and nowhere else. Omarchy and most Linux desktops have one.
 - Node.js/npm on the machine where you run `cloudmail setup`. It deploys the worker with
   Cloudflare's `cf` CLI.
+
+Invited to someone's? You only need the app (or just the CLI) and a keyring, then
+[connect](#share-it-with-someone): no Cloudflare account, domain setup or Node.js.
 
 ## Install
 
@@ -131,6 +141,10 @@ git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
 
 ## Set it up
 
+Setup is for the admin: the person whose Cloudflare account holds the domains. If someone invited
+you, skip this section and run `cloudmail connect <the link they sent you>` instead
+([more](#share-it-with-someone)); setup refuses to run for an invited user.
+
 ```sh
 cloudmail setup you@yourdomain.com
 ```
@@ -188,21 +202,34 @@ in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handl
 ## Share it with someone
 
 Someone whose domains are in your Cloudflare account can read and send their own mail through your
-deployment, without a Cloudflare login or a deployment of their own:
+deployment, without a Cloudflare login or a deployment of their own. You do the Cloudflare side:
 
 ```sh
-# you
-cloudmail user invite sam --mailbox sam@theirdomain.com          # prints a one-time link, valid 7 days
+cloudmail user invite sam --mailbox sam@theirdomain.com          # creates their mailbox, prints a one-time link (7 days)
 cloudmail mailbox add sam@theirdomain.com --user sam --route     # points the address at your worker
-
-# them, with Cloudmail installed
-cloudmail connect https://cloudmail.<you>.workers.dev/invite/inv_…
+cloudmail settings set forward-to sam@oldinbox.com --user sam    # optional: a copy to their old inbox while they switch
 ```
 
-They get their own token (in their keyring), mailboxes, Screener and settings, and see only their
-own mail; you see only yours. Upgrades stay with you. `cloudmail user list` shows who's connected,
-`cloudmail user revoke sam` signs them out (their mail stays; `--purge` deletes it). They should know
-that, as the Cloudflare account's owner, you can read their mail in D1 and R2.
+Invite first, then route, so their mail never lands in yours. The routing step asks before taking
+an address from an existing forward or worker, like setup does. The link is a credential: send it to
+them only.
+
+**They** [install Cloudmail](#install) (they don't run `setup`) and connect once:
+
+```sh
+cloudmail connect 'https://cloudmail.<you>.workers.dev/invite/inv_…'
+```
+
+Then they open Cloudmail from the app launcher. They get their own token (in their keyring),
+mailboxes, Screener and settings, and see only their own mail; you see only yours. Upgrades stay with
+you: re-running `cloudmail setup` updates the worker for everyone.
+
+- `cloudmail user list` shows who's connected.
+- `cloudmail user invite sam` again gives a new link (a new machine, or an expired link); once used,
+  it replaces their old token.
+- `cloudmail user revoke sam` signs them out (their mail stays; `--purge` deletes it, and you remove
+  their addresses' routing).
+- They should know that, as the Cloudflare account's owner, you can read their mail in D1 and R2.
 
 ## For AI agents
 
@@ -219,8 +246,8 @@ cloudmail commands --json     # every command, flag and example
 ```
 
 The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agent through setting
-up all your domains with the Cloudflare CLI, linking HEY, Gmail and iCloud Mail, and using the CLI,
-in about 1,500 tokens. The installed copy is refreshed automatically when a new
+up all your domains with the Cloudflare CLI (or connecting with an invite), inviting others, linking
+HEY, Gmail and iCloud Mail, and using the CLI, in about 2,000 tokens. The installed copy is refreshed automatically when a new
 cloudmail runs, and only a copy cloudmail wrote (marked `.managed-by-cloudmail`) is ever changed or
 removed.
 
@@ -284,16 +311,18 @@ What it doesn't do (yet), so you know before you move a domain:
 - **[maillab/cloud-mail](https://github.com/maillab/cloud-mail)** ("Cloud Mail") is a separate
   project: a responsive web mail service on Cloudflare Workers, with multiple users and admin
   roles, sending through Resend, and a live demo. Pick it if you need a browser or phone UI, or
-  accounts for several people. Cloudmail is for one person's mail across several domains, with a
-  Screener and a native app.
+  accounts for many people. Cloudmail is for your mail across several domains, plus a few people you
+  invite, with a Screener and a native app.
 - **HEY** is where the Screener idea comes from. HEY is hosted. Cloudmail runs on your domain in
   your Cloudflare account, and can show your HEY mail next to it.
 
 ## Security notes
 
-- The API is protected by a single bearer token, kept in your keyring (the Secret Service) and
-  nowhere else; a config.toml from an older version has its token moved there on first use. Without
-  a keyring, Cloudmail stops and says so rather than keep it in a file.
+- Each person has their own bearer token, kept in their keyring (the Secret Service) and nowhere
+  else; a config.toml from an older version has its token moved there on first use. Without a
+  keyring, Cloudmail stops and says so rather than keep it in a file. The admin's token is the
+  worker's `API_TOKEN` secret. Invited people's tokens and one-time invite codes are stored on the
+  worker only as SHA-256 hashes, and every API call answers for its token's user only.
 - iCloud Mail goes through icloud-session's sign-in; Cloudmail keeps no iCloud credential of its
   own. Gmail's sign-in is gws's, in Cloudmail's own gws directory: gws keeps its encryption key in a
   file there because its keyring backend shares one `gws-cli` entry with any gws of yours and still

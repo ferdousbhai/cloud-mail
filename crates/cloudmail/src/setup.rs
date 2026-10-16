@@ -837,8 +837,23 @@ fn choose_account(w: &Cf, flag: Option<&str>, previous: Option<String>, whoami: 
 }
 
 pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
+    refuse_invited_user()?;
     let existing_cfg = config::read_file(&config::path()).ok().flatten();
     run_with_config(args, interactive, existing_cfg)
+}
+
+/// Setup deploys and manages the worker, which is its admin's to do. Someone invited to it would
+/// only be sent to log in to Cloudflare for nothing (and could take over the worker's config).
+fn refuse_invited_user() -> CliResult<()> {
+    let Ok(cfg) = config::load() else { return Ok(()) };
+    match Client::new(&cfg).me() {
+        Ok(me) if me.role != "admin" => Err(CliError::usage(format!(
+            "setup is for the admin of {}; you're connected to it as {}",
+            cfg.api_url, me.name
+        ))
+        .hint("your mail is ready: `cloudmail status`; ask your admin to add or route addresses")),
+        _ => Ok(()),
+    }
 }
 
 /// `run` with the existing config passed in, so tests never read the user's own.

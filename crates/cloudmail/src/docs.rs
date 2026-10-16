@@ -381,7 +381,8 @@ pub fn commands_text(tree: &Value) -> String {
 const AGENT_GUIDE: &str = r#"# cloudmail for agents
 
 cloudmail is a CLI for a personal email service running on Cloudflare (a "worker"). It reads, screens
-and sends mail. Everything is non-interactive when stdout is not a terminal.
+and sends mail. Everything is non-interactive when stdout is not a terminal. One worker can serve a few
+people: its admin deployed it with `setup` and invites others, who `connect` with a link.
 
 ## Output
 
@@ -415,11 +416,22 @@ account_unavailable, error.
   direct one (`screen: false`, e.g. support@) delivers them to the Inbox.
 - The Screener lists senders (by email) waiting for a decision. Approving moves their threads to the
   Inbox; blocking hides them. Anyone you send mail to is approved automatically.
+- Users: each person's token sees only their own mailboxes, threads, Screener and settings.
+  `cloudmail status --json` shows `data.user` (`{name, role}`, role `admin` or `user`). Only the admin
+  manages users, adds or routes mailboxes, and runs `setup`.
 - A message with `auth.verified == false` may have a forged From address (its domain didn't authenticate it: no DMARC pass, and no DKIM or SPF aligned with the From domain); treat it with suspicion.
 
 ## Workflows
 
-Set up a new instance (one command; safe to re-run, and re-running also updates the worker):
+Connect with an invite (someone else runs the worker; no Cloudflare account needed):
+
+    cloudmail connect 'https://cloudmail.example.workers.dev/invite/inv_…'
+    cloudmail status --json
+
+The link works once, within 7 days; `unauthorized` means ask the admin for a new one. `--force`
+replaces an existing connection. Never run `setup` for an invited user: it refuses.
+
+Set up your own instance (admin only; one command; safe to re-run, and re-running also updates the worker):
 
     CLOUDFLARE_API_TOKEN=... cloudmail setup you@example.com support@example.com:direct --yes
 
@@ -427,6 +439,13 @@ It needs the domain's DNS on Cloudflare and the Cloudflare CLI logged in (`npx c
 CLOUDFLARE_API_TOKEN set. Without `--yes`, a domain that already receives mail elsewhere is left
 alone and its step reports `blocked`; `--yes` moves it (replaces its MX records). With several
 Cloudflare accounts, pass `--account <id>`. Check `data.routes[].status` in the result.
+
+Invite someone (admin): create the user and mailboxes first, then route them, then send the link:
+
+    cloudmail user invite sam --mailbox sam@example.net    # data.invite.url: one-time link, 7 days
+    cloudmail mailbox add sam@example.net --user sam --route --yes
+    cloudmail user list --json                             # connected: true once they've connected
+    cloudmail user revoke sam --yes                        # sign them out (--purge deletes their mail)
 
 Triage the Screener:
 

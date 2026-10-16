@@ -117,7 +117,7 @@ fn list() -> CliResult {
         "cloudmail  {}",
         worker
             .as_deref()
-            .unwrap_or("(worker not configured: run `cloudmail setup`)")
+            .unwrap_or("(worker not configured: `cloudmail connect <invite link>` or `cloudmail setup`)")
     );
     for s in &statuses {
         let state = if s.ok { "signed in" } else { "needs attention" };

@@ -470,7 +470,7 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
             with_attachments(&req)
         );
         if unconfigured.is_some() {
-            summary.push_str("; nothing can be sent until `cloudmail setup` has run");
+            summary.push_str("; nothing can be sent until cloudmail is connected (`cloudmail connect <invite link>` or `cloudmail setup`)");
         }
         let files: Vec<String> = req
             .attachments

@@ -1,18 +1,20 @@
 # cloud-mail
 
-Cloudmail: a Cloudflare Worker each user deploys to their own account to receive and send mail for
-their domains, the `cloudmail` CLI (alias `cmail`) and a GTK app that read it, with HEY, Gmail and
-iCloud Mail linked alongside. User docs: README.md; worker HTTP API: docs/API.md; linked accounts:
-docs/linked-accounts.md; development and releases: CONTRIBUTING.md.
+Cloudmail: a Cloudflare Worker that its admin deploys to their own account (`cloudmail setup`) to
+receive and send mail for their domains, and can share with a few invited users (`cloudmail user
+invite` / `cloudmail connect`; each sees only their own mail), the `cloudmail` CLI (alias `cmail`) and
+a GTK app that read it, with HEY, Gmail and iCloud Mail linked alongside. User docs: README.md; worker
+HTTP API: docs/API.md; linked accounts: docs/linked-accounts.md; development and releases:
+CONTRIBUTING.md.
 
 ## Layout
 
 | path | what |
 |---|---|
 | `crates/cloudmail-api` | library shared by CLI and app: worker `Client` (`client.rs`), config (`config.rs`), the `Provider` trait (`provider.rs`) and its HEY, Gmail and iCloud Mail implementations (`hey.rs`, `gmail.rs`, `icloud.rs`, `session.rs`), merging and screening across providers (`unified.rs`), linking (`accounts.rs`), Secret Service (`keyring.rs`) |
-| `crates/cloudmail` | the CLI: clap definitions (`cli.rs`), mail commands (`mail.rs`), `setup` on Cloudflare (`setup.rs`), mailboxes and settings (`admin.rs`), JSON envelope and exit codes (`output.rs`), `agent-guide`, `commands` and the built-in skill (`docs.rs`). Tests in `tests/cli.rs` with fakes (`tests/fake-hey`, `tests/fake-gws`, `tests/support`) |
+| `crates/cloudmail` | the CLI: clap definitions (`cli.rs`), mail commands (`mail.rs`), `setup` on Cloudflare (`setup.rs`), mailboxes, settings, `user` and `connect` (`admin.rs`), JSON envelope and exit codes (`output.rs`), `agent-guide`, `commands` and the built-in skill (`docs.rs`). Tests in `tests/cli.rs` with fakes (`tests/fake-hey`, `tests/fake-gws`, `tests/support`) |
 | `crates/cloudmail-gtk` | GTK 4 + WebKitGTK 6.0 app (`src/ui/`); needs Rust 1.95 |
-| `worker/` | the Worker (TypeScript, `cf` CLI): `src/api.ts` (bearer-token JSON API under `/api/*`, plus `/health`), `src/ingest.ts` (incoming email), `src/store.ts`, `src/mailboxes.ts`. D1 schema in `migrations/`; tests in `test/` (bun) |
+| `worker/` | the Worker (TypeScript, `cf` CLI): `src/api.ts` (bearer-token JSON API under `/api/*`, plus `/health`), `src/ingest.ts` (incoming email), `src/store.ts`, `src/mailboxes.ts`, `src/users.ts` (tokens, invites; the `API_TOKEN` secret is the admin, user `owner`). D1 schema in `migrations/`; tests in `test/` (bun) |
 | `skills/cloudmail/SKILL.md` | the agent skill; compiled into the CLI (`include_str!` in `docs.rs`) and printed by `cloudmail skill`; `skill install|remove` and the startup refresh live in `src/agent_skill.rs`, shared verbatim with our other product CLIs |
 | `bin/` | `check` (every check), release and package scripts |
 | `packaging/` | Arch repo and AUR packaging, with their tests |
@@ -42,6 +44,10 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
 - A new linked provider implements `Provider`, prefixes its IDs with its account name and is added to
   `provider::open`.
 - The worker's committed lockfile is `bun.lock` (`package-lock.json` is ignored).
+- Every worker query that touches mail, senders, mailboxes or settings is scoped by `user_id`; a new
+  endpoint or query must be too (`worker/test/users.test.ts` checks isolation). Only the admin runs
+  `setup`, manages users and adds or routes mailboxes; docs and messages for "not configured" offer
+  `cloudmail connect <invite link>` before `setup`.
 
 ## Gotchas
 

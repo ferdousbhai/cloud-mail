@@ -461,6 +461,24 @@ fn users_are_invited_listed_and_revoked() {
 }
 
 #[test]
+fn setup_is_only_for_the_admin() {
+    let m = mock(|r| match r.path.as_str() {
+        "/api/me" => ok(json!({ "user": { "name": "sara", "role": "user" } })),
+        _ => default_handler(r),
+    });
+    let v = json_out(&cloudmail(&m, &["setup", "sara@example.net", "--dry-run"], None));
+    assert_eq!(v["error"]["code"], "usage", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("connected to it as sara")
+    );
+    // Nothing else was asked of the worker, and cf never ran.
+    assert!(requests(&m).iter().all(|r| r.path == "/api/me"));
+}
+
+#[test]
 fn connect_trades_an_invite_for_a_token_in_the_keyring() {
     let m = mock(|r| match r.path.as_str() {
         "/api/connect" if r.body["code"] == "inv_good" => {
@@ -650,10 +668,9 @@ fn errors_have_codes_and_exit_statuses() {
     assert_eq!(o.status.code(), Some(0));
     let v = json_out(&o);
     assert!(
-        v["summary"]
-            .as_str()
-            .unwrap()
-            .ends_with("nothing can be sent until `cloudmail setup` has run"),
+        v["summary"].as_str().unwrap().ends_with(
+            "nothing can be sent until cloudmail is connected (`cloudmail connect <invite link>` or `cloudmail setup`)"
+        ),
         "{v}"
     );
     assert_eq!(v["meta"]["warnings"][0]["code"], "not_configured");

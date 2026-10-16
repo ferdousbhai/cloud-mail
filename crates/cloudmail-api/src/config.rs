@@ -239,7 +239,7 @@ pub fn load() -> Result<Config> {
         (url, _) => Err(Error::new(
             ErrorKind::Config,
             format!(
-                "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail setup` sets both",
+                "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail connect <invite link>` or `cloudmail setup` sets both",
                 if url.is_none() {
                     format!("api_url is missing from {}", path().display())
                 } else {

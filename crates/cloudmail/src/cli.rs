@@ -97,7 +97,7 @@ pub enum Command {
     #[command(subcommand)]
     Account(AccountCommand),
 
-    /// Set up (or update) your mail service on Cloudflare: `cloudmail setup you@yourdomain.com`
+    /// Deploy (or update) your own mail service on Cloudflare: `cloudmail setup you@yourdomain.com` (invited? use `connect`)
     Setup(SetupArgs),
 
     /// List every command with its arguments, flags and examples

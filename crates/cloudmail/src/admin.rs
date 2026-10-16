@@ -39,7 +39,7 @@ pub fn orientation() -> Response {
     let status_line = match &cfg {
         Ok(c) => format!("Configured: {} (config {})", c.api_url, path.display()),
         Err(_) => format!(
-            "Not configured yet: run `cloudmail setup`, or create {}",
+            "Not configured yet: run `cloudmail connect <invite link>` if someone invited you, or `cloudmail setup` to deploy your own (config: {})",
             path.display()
         ),
     };
@@ -68,7 +68,7 @@ pub fn orientation() -> Response {
         if configured {
             "cloudmail is configured"
         } else {
-            "cloudmail is not configured; run `cloudmail setup`"
+            "cloudmail is not configured; run `cloudmail connect <invite link>` (invited) or `cloudmail setup` (your own)"
         },
     )
     .human(human.trim_end())

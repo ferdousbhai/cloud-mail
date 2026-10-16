@@ -102,7 +102,9 @@ fi
 cat <<EOT
 
 Done. Launch "Cloudmail" from the app launcher (Super + Space), or run: cloudmail
-To deploy your own mail worker to your Cloudflare account:
+Invited to someone's Cloudmail? Connect with the link they sent you:
+  cloudmail connect <invite link>
+To deploy your own mail worker to your Cloudflare account instead:
   cloudmail setup you@yourdomain.com
 Updates arrive with the rest of the system: omarchy update (or pacman -Syu elsewhere)
 EOT
