@@ -1,8 +1,21 @@
 # cloudmail API
 
 Base URL: the Worker URL (e.g. `https://cloudmail.<subdomain>.workers.dev`).
-Every `/api/*` request needs `Authorization: Bearer <API_TOKEN>`. JSON in, JSON out.
-Timestamps are Unix milliseconds. Errors: `{ "error": "message" }` with a 4xx/5xx status.
+Every `/api/*` request except `POST /api/connect` needs `Authorization: Bearer <token>`. JSON in, JSON
+out. Timestamps are Unix milliseconds. Errors: `{ "error": "message" }` with a 4xx/5xx status.
+
+## Users
+
+One worker can hold several people's mail. The worker's `API_TOKEN` secret signs in as the admin, user
+`owner`, who has everything from before users existed. The admin invites others; each gets their own
+token and sees only their own mailboxes, threads, screening decisions and settings. Every endpoint below
+answers for the token's user, and someone else's thread, message or attachment is a 404. Incoming mail
+belongs to the user of the mailbox it was sent to (the admin's when the address has no mailbox). Mail to
+two users is stored once for each, and a reply only joins its own user's threads.
+
+Tokens and invite codes are stored as SHA-256 hashes. An invite works once, for 7 days; redeeming it
+gives the user a new token and invalidates any earlier one. The admin can read every user's mail in
+D1 and R2: users keep their mail apart from each other, not from the Cloudflare account's owner.
 
 ## Model
 
@@ -80,7 +93,8 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 
 // Mailbox – an address the worker receives and can send from. The first is the default From.
 // screen: true sends first-time senders to the Screener; false delivers straight to the Inbox.
-{ "email": "hi@example.com", "name": "Jane Doe", "screen": true, "position": 0 }
+// user: whose mail it is.
+{ "email": "hi@example.com", "name": "Jane Doe", "screen": true, "position": 0, "user": "owner" }
 
 // PendingSender (screener): any non-blocked sender with threads waiting in the screener
 { "email": "new@person.com", "name": "New Person", "thread_count": 2, "last_subject": "Hi", "last_at": 1727600000000 }
@@ -103,11 +117,20 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | GET | `/api/attachments/:id` | | raw bytes with `Content-Type` and `Content-Disposition` |
 | GET | `/api/messages/:id/raw` | | original `.eml` (`message/rfc822`) |
 | GET | `/api/identities` | | `{ "identities": [Address], "default": Address \| null }` – addresses you can send from (= mailboxes); `default` is null when there are none |
-| GET | `/api/mailboxes` | | `{ "mailboxes": [Mailbox] }` in display order |
-| PUT | `/api/mailboxes/:email` | `{ "name"?: string, "screen"?: bool, "position"?: int }` | `{ "ok": true, "mailbox": Mailbox }` – creates or updates |
-| DELETE | `/api/mailboxes/:email` | | `{ "ok": true }` |
-| GET | `/api/settings` | | `{ "settings": { "forward_to": "" } }` |
-| PATCH | `/api/settings` | `{ "forward_to": "me@elsewhere.com" }` (`""` turns forwarding off) | `{ "ok": true, "settings": {…} }` |
+| GET | `/api/mailboxes` | `?all=1` (admin: everyone's) | `{ "mailboxes": [Mailbox] }` in display order |
+| PUT | `/api/mailboxes/:email` | `{ "name"?: string, "screen"?: bool, "position"?: int, "user"?: string }` | `{ "ok": true, "mailbox": Mailbox }` – creates or updates. Only the admin creates mailboxes or gives one to a `user` (which moves the threads addressed to it); others can change their own |
+| DELETE | `/api/mailboxes/:email` | | `{ "ok": true }` (admin) |
+| GET | `/api/settings` | `?user=<name>` (admin) | `{ "settings": { "forward_to": "" } }` |
+| PATCH | `/api/settings` | `{ "forward_to": "me@elsewhere.com" }` (`""` turns forwarding off); `?user=<name>` (admin) | `{ "ok": true, "settings": {…} }` |
+| GET | `/api/me` | | `{ "user": { "name", "role": "admin"\|"user" } }` |
+| GET | `/api/users` | | admin: `{ "users": [{ "name", "role", "mailboxes": [email], "connected", "invite_expires_at", "revoked", "created_at" }] }` |
+| POST | `/api/users` | `{ "name": "sam", "mailboxes"?: [email] }` | admin: `{ "ok": true, "user": User, "invite": Invite }`; 409 if the name exists |
+| POST | `/api/users/:name/invite` | | admin: `{ "ok": true, "invite": Invite }` – replaces any pending invite and lets a revoked user back in |
+| DELETE | `/api/users/:name` | `?purge=1` | admin: `{ "ok": true, "purged": bool }` – signs them out; with purge also deletes their mail, decisions, settings, mailboxes and the user |
+| POST | `/api/connect` | `{ "code": "inv_…" }` (no token) | `{ "ok": true, "token": "cm_…", "user": { "name", "role" } }`; 403 if the invite is invalid, used or expired |
+
+`Invite` is `{ "code": "inv_…", "url": "https://<worker>/invite/inv_…", "expires_at": … }`. Opening the
+`url` in a browser (`GET /invite/:code`, no token) shows how to use it: `cloudmail connect <url>`.
 
 ### POST /api/send
 
@@ -138,4 +161,5 @@ Health check (no auth): `GET /health` → `{ "ok": true }`.
 
 Receiving also needs a Cloudflare Email Routing rule per address pointing at the worker; the API
 cannot create those (they are managed with `cloudmail setup` / `cloudmail mailbox add --route`, which use Cloudflare's `cf` CLI).
-The forward target must be a verified Email Routing destination address.
+The forward target must be a verified Email Routing destination address (in the admin's Cloudflare
+account, also for another user's forwarding).

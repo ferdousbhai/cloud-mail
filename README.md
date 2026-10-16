@@ -185,6 +185,25 @@ Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `#` delete, 
 `y`/`n` in the Screener, `/` search, `L` load remote images, `?` all keys. To open `mailto:` links
 in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handler/mailto`.
 
+## Share it with someone
+
+Someone whose domains are in your Cloudflare account can read and send their own mail through your
+deployment, without a Cloudflare login or a deployment of their own:
+
+```sh
+# you
+cloudmail user invite sam --mailbox sam@theirdomain.com          # prints a one-time link, valid 7 days
+cloudmail mailbox add sam@theirdomain.com --user sam --route     # points the address at your worker
+
+# them, with Cloudmail installed
+cloudmail connect https://cloudmail.<you>.workers.dev/invite/inv_…
+```
+
+They get their own token (in their keyring), mailboxes, Screener and settings, and see only their
+own mail; you see only yours. Upgrades stay with you. `cloudmail user list` shows who's connected,
+`cloudmail user revoke sam` signs them out (their mail stays; `--purge` deletes it). They should know
+that, as the Cloudflare account's owner, you can read their mail in D1 and R2.
+
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
@@ -248,8 +267,9 @@ What it doesn't do (yet), so you know before you move a domain:
   Google shows "Google hasn't verified this app" at sign-in, and at most 100 people can link a
   Gmail account with it. You can use your own Google OAuth client instead
   ([how](CONTRIBUTING.md#google-sign-in-for-gmail)).
-- **One user per deployment.** The API has a single bearer token. It's personal mail with several
-  addresses, not a multi-user mail server.
+- **A few people, not an organization.** You can invite someone to read their own mail on your
+  deployment ([Share it](#share-it-with-someone)), but you're the admin of their mail, and there are no
+  roles, groups or shared mailboxes.
 - **It's young.** The first release was on 29 September 2026.
 
 ## How it compares

@@ -52,6 +52,12 @@ Setup drives the Cloudflare CLI as `npx cf`; for other Cloudflare work, find com
 Later: add an address with `cloudmail mailbox add sales@a.com --route`; forwarding with
 `cloudmail settings set forward-to <addr>` (`""` turns it off; Cloudflare emails that address to verify).
 
+**Someone else's mail on the same worker** (admin): `cloudmail user invite sam --mailbox sam@b.com`
+prints a one-time link (7 days); route the address with `cloudmail mailbox add sam@b.com --user sam --route`
+(same confirmations as setup). On their machine: `cloudmail connect <link>`; they never need Cloudflare.
+They see only their own mail. `cloudmail user list`, `cloudmail user revoke sam --yes` (`--purge` deletes
+their mail too).
+
 ## Link other mail (optional, each needs one sign-in by the user)
 
 Sign-ins open a browser or window, so from an agent either pass `--login` (opens it on the user's
