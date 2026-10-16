@@ -51,7 +51,8 @@
 //! `ruleId`) replaces one, `DELETE unified/rule/<ruleId>` removes one. Rules that act on arrival
 //! need the `BLOCK` tag (blocked: `MOVE` to `Archive`) or `RE_CATEGORIZE` (approved: the `Personal`
 //! category); a rule takes up to 500 addresses (2,000 is `RULE_BODY_MAX_LIMIT`), and iCloud checks
-//! them (`ERROR_RULE_CONDITION_INVALID_EMAIL`). Cloudmail's are named `Cloudmail Screener: …`.
+//! them (`ERROR_RULE_CONDITION_INVALID_EMAIL` for a local part over 64 characters, the RFC 5321 limit,
+//! which one-off bounce addresses exceed; those are left out, as no later mail comes from them). Cloudmail's are named `Cloudmail Screener: …`.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -672,7 +673,13 @@ impl Provider for Icloud {
         for kind in [APPROVED, BLOCKED] {
             let existing = rules.remove(kind).unwrap_or_default();
             let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
-            let want = screening::rechunk(&pieces, lists.list(kind), |p| p.len() <= RULE_ADDRESSES);
+            let keepable = lists
+                .list(kind)
+                .iter()
+                .filter(|e| e.split('@').next().is_some_and(|local| local.len() <= 64))
+                .cloned()
+                .collect();
+            let want = screening::rechunk(&pieces, &keepable, |p| p.len() <= RULE_ADDRESSES);
             for (i, piece) in want.iter().enumerate() {
                 let mut rule = Self::screen_rule(kind, i + 1, piece);
                 match existing.get(i) {

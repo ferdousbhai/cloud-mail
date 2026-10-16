@@ -746,7 +746,11 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
             if addresses.len() > 500 {
                 return refuse("RULE_BODY_MAX_LIMIT");
             }
-            if addresses.iter().any(|a| !a.as_str().is_some_and(|a| a.contains('@'))) {
+            let valid = |a: &str| {
+                a.split_once('@')
+                    .is_some_and(|(local, _)| !local.is_empty() && local.len() <= 64)
+            };
+            if addresses.iter().any(|a| !a.as_str().is_some_and(valid)) {
                 return refuse("ERROR_RULE_CONDITION_INVALID_EMAIL");
             }
             if r.method == "PUT" {

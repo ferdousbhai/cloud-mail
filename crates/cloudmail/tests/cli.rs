@@ -2939,6 +2939,8 @@ fn a_long_screener_list_spreads_over_icloud_rules() {
         for i in 0..700 {
             d.insert(format!("friend{i}@example.com"), "approved".to_string());
         }
+        // A one-off bounce address with a local part iCloud refuses (over 64 characters).
+        d.insert(format!("{}@bounce.example", "x".repeat(70)), "approved".to_string());
     }
     let m = mock(screening(decisions.clone()));
     let h = icloud_home("long-list", true, true);
@@ -2957,7 +2959,8 @@ fn a_long_screener_list_spreads_over_icloud_rules() {
             && names.contains(&"Cloudmail Screener: approved 2".to_string()),
         "{names:?}"
     );
-    assert!(h.mail.screen_list("approved").len() > 700);
+    let approved = h.mail.screen_list("approved");
+    assert!(approved.len() > 700 && !approved.iter().any(|e| e.ends_with("@bounce.example")));
 }
 
 #[test]
