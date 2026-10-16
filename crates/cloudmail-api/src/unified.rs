@@ -65,7 +65,9 @@ type WorkerIds = (i64, Vec<String>);
 
 #[derive(Clone)]
 pub struct Mail {
-    pub client: Client,
+    /// The worker, if there is one; without it only linked accounts are shown, unscreened (HEY
+    /// keeps its own Screener).
+    pub client: Option<Client>,
     pub accounts: Vec<Arc<dyn Provider>>,
     /// Configured accounts that couldn't be opened (unknown provider, …).
     pub broken: Vec<AccountWarning>,
@@ -168,7 +170,7 @@ pub fn merge(mut a: Vec<ThreadSummary>, b: Vec<ThreadSummary>, limit: u32) -> Ve
 }
 
 impl Mail {
-    pub fn new(client: Client, config: &Config) -> Self {
+    pub fn new(client: Option<Client>, config: &Config) -> Self {
         let mut accounts = Vec::new();
         let mut broken = Vec::new();
         for (name, cfg) in &config.accounts {
@@ -186,7 +188,17 @@ impl Mail {
     }
 
     pub fn from_config(config: &Config) -> Self {
-        Self::new(Client::new(config), config)
+        Self::new(config.has_worker().then(|| Client::new(config)), config)
+    }
+
+    /// The worker, or an error saying what this needs when there's none.
+    pub fn worker(&self) -> Result<&Client> {
+        self.client.as_ref().ok_or_else(no_worker)
+    }
+
+    /// Whether your worker's Screener decides for this account (Gmail, iCloud Mail): only when there is one.
+    fn screens(&self, p: &dyn Provider) -> bool {
+        self.client.is_some() && p.screened_by_worker()
     }
 
     pub fn has_accounts(&self) -> bool {
@@ -199,10 +211,10 @@ impl Mail {
     }
 
     /// Who handles an ID: its linked account, else the worker.
-    pub fn provider(&self, id: &str) -> &dyn Provider {
+    pub fn provider(&self, id: &str) -> Result<&dyn Provider> {
         match self.account_for(id) {
-            Some(p) => p.as_ref(),
-            None => &self.client,
+            Some(p) => Ok(p.as_ref()),
+            None => Ok(self.worker()?),
         }
     }
 
@@ -232,7 +244,7 @@ impl Mail {
         let worker_folder = provider::CORE_FOLDERS.contains(&folder);
         if !self.has_accounts() {
             let threads = if worker_folder {
-                self.client.list_threads(q)?
+                self.worker()?.list_threads(q)?
             } else {
                 Vec::new()
             };
@@ -246,15 +258,14 @@ impl Mail {
         }
         let (worker, (extra, mut warnings, hidden)) = std::thread::scope(|s| {
             let extra = s.spawn(|| self.accounts_list(q));
-            let worker = if worker_folder {
-                self.client.list_threads(q)
-            } else {
-                Ok(Vec::new())
+            let worker = match &self.client {
+                Some(c) if worker_folder => c.list_threads(q),
+                _ => Ok(Vec::new()),
             };
             (worker, extra.join().unwrap_or_default())
         });
         let worker = worker?;
-        let more = worker.len() as u32 >= q.limit.max(1);
+        let more = self.client.is_some() && worker.len() as u32 >= q.limit.max(1);
         warnings.extend(self.broken.iter().cloned());
         Ok(Listing {
             threads: merge(worker, extra, q.limit),
@@ -273,7 +284,7 @@ impl Mail {
             q.folder.as_str()
         };
         let results = self.each_account(|p| {
-            if p.screened_by_worker() {
+            if self.screens(p) {
                 // An account without a Screener has its waiting mail in its Inbox.
                 let (inner, limit) = if folder == "screener" {
                     ("inbox", SCREEN_SCAN)
@@ -311,7 +322,7 @@ impl Mail {
             self.accounts
                 .iter()
                 .find(|p| p.name() == name)
-                .filter(|p| p.screened_by_worker())
+                .filter(|p| self.screens(p.as_ref()))
         };
         let own: HashMap<String, Vec<String>> = results
             .iter()
@@ -344,10 +355,9 @@ impl Mail {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let decisions = if emails.is_empty() {
-            Ok(HashMap::new())
-        } else {
-            self.client.sender_statuses(&emails)
+        let decisions = match &self.client {
+            Some(c) if !emails.is_empty() => c.sender_statuses(&emails),
+            _ => Ok(HashMap::new()),
         };
         results
             .into_iter()
@@ -394,14 +404,15 @@ impl Mail {
         };
         if !self.has_accounts() {
             return Ok(Listing {
-                threads: self.client.list_threads(&q)?,
+                threads: self.worker()?.list_threads(&q)?,
                 warnings: self.broken.clone(),
                 ..Default::default()
             });
         }
         let (worker, (extra, mut warnings, hidden)) = std::thread::scope(|s| {
             let extra = s.spawn(|| self.accounts_search(query, limit));
-            (self.client.list_threads(&q), extra.join().unwrap_or_default())
+            let worker = self.client.as_ref().map_or(Ok(Vec::new()), |c| c.list_threads(&q));
+            (worker, extra.join().unwrap_or_default())
         });
         warnings.extend(self.broken.iter().cloned());
         Ok(Listing {
@@ -500,13 +511,16 @@ impl Mail {
 
     /// The worker's threads with activity around the given threads' times: what their copies would match.
     fn worker_index(&self, threads: &[ThreadSummary]) -> Vec<ThreadSummary> {
+        let Some(client) = &self.client else {
+            return Vec::new();
+        };
         let Some(oldest) = threads.iter().map(|t| t.last_at).filter(|t| *t > 0).min() else {
             return Vec::new();
         };
         let since = Some(oldest - DUPLICATE_WINDOW_MS - 1);
         // 200 is the most the worker returns per request.
         let fetch = |folder: &str| {
-            self.client
+            client
                 .list_threads(&ThreadQuery {
                     folder: folder.into(),
                     since,
@@ -527,6 +541,9 @@ impl Mail {
     /// threads that couldn't be read are missing.
     fn worker_message_ids(&self, threads: &[&ThreadSummary]) -> HashMap<String, Vec<String>> {
         let mut out = HashMap::new();
+        let Some(client) = &self.client else {
+            return out;
+        };
         let mut todo: Vec<(String, i64)> = Vec::new();
         let mut pending = HashSet::new();
         {
@@ -545,7 +562,7 @@ impl Mail {
             let read: Vec<_> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|(id, at)| (id.clone(), *at, s.spawn(move || self.client.thread(id))))
+                    .map(|(id, at)| (id.clone(), *at, s.spawn(move || client.thread(id))))
                     .collect();
                 handles
                     .into_iter()
@@ -572,11 +589,12 @@ impl Mail {
     /// also waiting in the worker's is shown once (deciding decides both).
     pub fn screener(&self) -> Result<(Vec<PendingSender>, Vec<AccountWarning>)> {
         if !self.has_accounts() {
-            return Ok((self.client.screener()?, self.broken.clone()));
+            return Ok((self.worker()?.screener()?, self.broken.clone()));
         }
         let (worker, (extra, mut warnings)) = std::thread::scope(|s| {
             let extra = s.spawn(|| self.accounts_screener());
-            (self.client.screener(), extra.join().unwrap_or_default())
+            let worker = self.client.as_ref().map_or(Ok(Vec::new()), |c| c.screener());
+            (worker, extra.join().unwrap_or_default())
         });
         warnings.extend(self.broken.iter().cloned());
         Ok((merge_senders(worker?, extra), warnings))
@@ -593,7 +611,7 @@ impl Mail {
                 Err(e) => warnings.push(AccountWarning::new(&name, &e)),
             }
         }
-        if self.accounts.iter().any(|p| p.screened_by_worker()) {
+        if self.accounts.iter().any(|p| self.screens(p.as_ref())) {
             let (waiting, w, _) = self.accounts_list(&ThreadQuery {
                 folder: "screener".into(),
                 limit: SCREEN_SCAN,
@@ -602,7 +620,7 @@ impl Mail {
             warnings.extend(w);
             let screened: Vec<ThreadSummary> = waiting
                 .into_iter()
-                .filter(|t| self.account_for(&t.id).is_some_and(|p| p.screened_by_worker()))
+                .filter(|t| self.account_for(&t.id).is_some_and(|p| self.screens(p.as_ref())))
                 .collect();
             senders.extend(waiting_senders(&screened));
         }
@@ -618,12 +636,20 @@ impl Mail {
             return p.decide_sender(key, status).map(|n| (n, Vec::new()));
         }
         if !self.has_accounts() {
-            return self.client.decide_sender(key, status).map(|n| (n, Vec::new()));
+            return self.worker()?.decide_sender(key, status).map(|n| (n, Vec::new()));
         }
         // The worker's decision is the one that counts for the accounts it screens; it comes first.
-        let mut moved = self.client.decide_sender(key, status)?;
+        // Without one, only accounts with a Screener of their own (HEY) can decide.
+        let mut moved = match &self.client {
+            Some(c) => c.decide_sender(key, status)?,
+            None if self.accounts.iter().all(|p| p.screened_by_worker()) => return Err(no_worker()),
+            None => 0,
+        };
         let extra = self.each_account(|p| {
             if p.screened_by_worker() {
+                if self.client.is_none() {
+                    return Ok(0);
+                }
                 if status != "blocked" {
                     return Ok(0);
                 }
@@ -669,10 +695,10 @@ impl Mail {
     }
 
     /// Who sends a message: the account whose message it replies to, else the account that owns
-    /// the From address, else the worker.
-    pub fn sender_for(&self, req: &SendRequest) -> &dyn Provider {
+    /// the From address, else the worker (without one, the first linked account).
+    pub fn sender_for(&self, req: &SendRequest) -> Result<&dyn Provider> {
         if let Some(p) = req.reply_to_message_id.as_deref().and_then(|id| self.account_for(id)) {
-            return p.as_ref();
+            return Ok(p.as_ref());
         }
         if let Some(from) = req
             .from
@@ -684,18 +710,27 @@ impl Mail {
                 if p.identities()
                     .is_ok_and(|ids| ids.iter().any(|a| a.email.eq_ignore_ascii_case(&from)))
                 {
-                    return p.as_ref();
+                    return Ok(p.as_ref());
                 }
             }
         }
-        &self.client
+        if let Some(c) = &self.client {
+            return Ok(c);
+        }
+        if req.reply_to_message_id.is_some() || req.from.as_deref().is_some_and(|f| !f.is_empty()) {
+            return Err(no_worker());
+        }
+        self.accounts
+            .first()
+            .map(|p| p.as_ref() as &dyn Provider)
+            .ok_or_else(no_worker)
     }
 
     pub fn send(&self, req: &SendRequest) -> Result<SendResponse> {
-        let sender = self.sender_for(req);
+        let sender = self.sender_for(req)?;
         crate::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
         let mut sent = sender.send(req)?;
-        if sender.screened_by_worker() {
+        if let Some(client) = self.client.as_ref().filter(|_| sender.screened_by_worker()) {
             // People you write to are screened in, as the worker does for its own mail.
             let to: Vec<Address> = req
                 .to
@@ -706,7 +741,7 @@ impl Mail {
                 .map(|a| crate::gmail::address_from(&a))
                 .filter(|a| a.email.contains('@'))
                 .collect();
-            if let Err(e) = self.client.decide_senders(&to, "approved", false) {
+            if let Err(e) = client.decide_senders(&to, "approved", false) {
                 sent.warning = Some(format!(
                     "sent, but its recipients couldn't be screened in: {}",
                     e.message
@@ -719,12 +754,20 @@ impl Mail {
     /// Screens in the people a newly linked account already corresponds with (never overriding
     /// a decision); how many were new.
     pub fn screen_in_correspondents(&self, account: &dyn Provider) -> Result<i64> {
-        if !account.screened_by_worker() {
+        let Some(client) = self.client.as_ref().filter(|_| account.screened_by_worker()) else {
             return Ok(0);
-        }
+        };
         let people = account.correspondents(100)?;
-        self.client.decide_senders(&people, "approved", true)
+        client.decide_senders(&people, "approved", true)
     }
+}
+
+/// What a worker-only action says without a worker.
+fn no_worker() -> Error {
+    Error::new(
+        ErrorKind::Config,
+        "that needs a Cloudmail worker; this computer only shows linked accounts (Gmail, iCloud Mail, HEY). `cloudmail connect <invite link>` joins someone's, `cloudmail setup` deploys your own",
+    )
 }
 
 #[cfg(test)]

@@ -60,6 +60,6 @@ fn setup_hint(e: &cloudmail_api::Error) -> String {
         return e.to_string();
     }
     format!(
-        "Cloudmail isn't configured yet.\n\n{e}\n\nIf someone invited you, run `cloudmail connect <the invite link>` in a terminal. To run your own, `cloudmail setup you@yourdomain.com` deploys it to your Cloudflare account. Then restart the app.",
+        "Cloudmail isn't configured yet.\n\n{e}\n\nIf someone invited you, run `cloudmail connect <the invite link>` in a terminal. To run your own, `cloudmail setup you@yourdomain.com` deploys it to your Cloudflare account. Or just link Gmail, iCloud Mail or HEY with the accounts button in the sidebar to read those here. Then restart the app.",
     )
 }

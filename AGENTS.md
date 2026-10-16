@@ -3,7 +3,8 @@
 Cloudmail: a Cloudflare Worker that its admin deploys to their own account (`cloudmail setup`) to
 receive and send mail for their domains, and can share with a few invited users (`cloudmail user
 invite` / `cloudmail connect`; each sees only their own mail), the `cloudmail` CLI (alias `cmail`) and
-a GTK app that read it, with HEY, Gmail and iCloud Mail linked alongside. User docs: README.md; worker
+a GTK app that read it, with HEY, Gmail and iCloud Mail linked alongside (or on their own, without a
+worker). User docs: README.md; worker
 HTTP API: docs/API.md; linked accounts: docs/linked-accounts.md; development and releases:
 CONTRIBUTING.md.
 
@@ -43,11 +44,14 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
   it).
 - A new linked provider implements `Provider`, prefixes its IDs with its account name and is added to
   `provider::open`.
+- The worker is optional: `Mail.client` is `None` with linked accounts only (`Config::has_worker`).
+  Use `Mail::worker()` (errors with what's needed) for worker-only work; Gmail and iCloud Mail are
+  screened only when there is a worker (`Mail::screens`).
 - The worker's committed lockfile is `bun.lock` (`package-lock.json` is ignored).
 - Every worker query that touches mail, senders, mailboxes or settings is scoped by `user_id`; a new
   endpoint or query must be too (`worker/test/users.test.ts` checks isolation). Only the admin runs
   `setup`, manages users and adds or routes mailboxes; docs and messages for "not configured" offer
-  `cloudmail connect <invite link>` before `setup`.
+  `cloudmail connect <invite link>` before `setup`, and linking accounts as the no-worker option.
 
 ## Gotchas
 

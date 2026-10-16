@@ -432,7 +432,7 @@ impl Ui {
             .unwrap_or(config::DEFAULT_POLL_SECONDS);
         let ui = Rc::new(Self {
             window,
-            client: mail.as_ref().map(|m| m.client.clone()),
+            client: mail.as_ref().and_then(|m| m.client.clone()),
             mail,
             identities: RefCell::new(None),
             account_identities: RefCell::new(Vec::new()),
@@ -648,7 +648,7 @@ impl Ui {
             }
         ));
 
-        if ui.client.is_some() {
+        if ui.mail.is_some() {
             ui.set_view(View::Inbox);
             ui.check_new();
             ui.load_identities();
@@ -817,7 +817,9 @@ impl Ui {
 
     fn load_list(self: &Rc<Self>, soft: bool) {
         self.semantic_base.borrow_mut().clear();
-        let Some(client) = self.client.clone() else { return };
+        if self.mail.is_none() {
+            return;
+        }
         let generation = self.list_gen.get() + 1;
         self.list_gen.set(generation);
         self.exhausted.set(false);
@@ -842,10 +844,9 @@ impl Ui {
         if accounts.is_none() {
             self.parts.borrow_mut().accounts = Some(Default::default());
         }
-        if view.account_only() {
-            self.exhausted.set(true);
-            self.parts.borrow_mut().worker = Some(Default::default());
-        } else {
+        // Without a worker every view is the accounts' alone.
+        let worker = self.client.clone().filter(|_| !view.account_only());
+        if let Some(client) = worker {
             let query = query.clone();
             util::run(
                 move || -> Result<(Vec<ThreadSummary>, Vec<PendingSender>), String> {
@@ -885,6 +886,9 @@ impl Ui {
                     }
                 ),
             );
+        } else {
+            self.exhausted.set(true);
+            self.parts.borrow_mut().worker = Some(Default::default());
         }
         if let Some(mail) = accounts {
             util::run(
@@ -937,9 +941,14 @@ impl Ui {
                 ),
             );
         }
-        if view.account_only() {
+        if self.accounts_alone(view) {
             self.apply_parts();
         }
+    }
+
+    /// A view showing only the linked accounts' threads: a HEY box, or any view without a worker.
+    fn accounts_alone(&self, view: View) -> bool {
+        view.account_only() || self.client.is_none()
     }
 
     /// Builds the list from the parts in: nothing until the worker's (or, for a HEY box, the
@@ -950,7 +959,7 @@ impl Ui {
         let (worker, accounts) = {
             let parts = self.parts.borrow();
             let Some(worker) = parts.worker.clone() else { return };
-            if view.account_only() && parts.accounts.is_none() {
+            if self.accounts_alone(view) && parts.accounts.is_none() {
                 return;
             }
             (worker, parts.accounts.clone().unwrap_or_default())
@@ -1320,7 +1329,7 @@ impl Ui {
         *self.opening.borrow_mut() = Some(id.to_string());
         let id = id.to_string();
         util::run(
-            move || mail.provider(&id).thread(&id, true),
+            move || mail.provider(&id)?.thread(&id, true),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
@@ -1437,7 +1446,7 @@ impl Ui {
         self.toast(&format!("Downloading {filename}…"));
         util::run(
             move || {
-                let bytes = mail.provider(&id).download_attachment(&id)?.bytes;
+                let bytes = mail.provider(&id)?.download_attachment(&id)?.bytes;
                 let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 let path = unused_path(dir.join(attachment_file_name(&filename)));
@@ -1526,7 +1535,7 @@ impl Ui {
             };
             id
         };
-        if !mail.provider(&id).deletes_permanently() {
+        if !mail.provider(&id).is_ok_and(|p| p.deletes_permanently()) {
             self.finish_delete(id);
             return;
         }
@@ -1555,8 +1564,8 @@ impl Ui {
 
     fn finish_delete(self: &Rc<Self>, id: String) {
         let Some(mail) = self.mail.clone() else { return };
-        let permanent = mail.provider(&id).deletes_permanently();
-        let label = mail.provider(&id).label().to_string();
+        let permanent = mail.provider(&id).is_ok_and(|p| p.deletes_permanently());
+        let label = mail.provider(&id).map(|p| p.label().to_string()).unwrap_or_default();
         let idx = self.threads.borrow().iter().position(|t| t.id == id);
         if let Some(idx) = idx {
             self.threads.borrow_mut().remove(idx);
@@ -1579,7 +1588,7 @@ impl Ui {
             format!("Moved to {label}'s Trash")
         });
         util::run(
-            move || mail.provider(&id).delete_thread(&id),
+            move || mail.provider(&id)?.delete_thread(&id),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
@@ -1623,7 +1632,7 @@ impl Ui {
         let leaves_view =
             matches!((view, folder), (View::Inbox, "archive") | (View::Archive, "inbox")) || view.account_only();
         let new_folder = if folder == "archive" {
-            mail.provider(&id).archive_folder().to_string()
+            mail.provider(&id).map_or("archive", |p| p.archive_folder()).to_string()
         } else {
             folder.to_string()
         };
@@ -1653,7 +1662,7 @@ impl Ui {
             _ => "Moved to Inbox",
         });
         util::run(
-            move || mail.provider(&id).move_thread(&id, folder),
+            move || mail.provider(&id)?.move_thread(&id, folder),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
@@ -1708,7 +1717,7 @@ impl Ui {
             }
         }
         util::run(
-            move || mail.provider(&id).set_unread(&id, unread),
+            move || mail.provider(&id)?.set_unread(&id, unread),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
@@ -1914,24 +1923,28 @@ impl Ui {
     }
 
     pub fn load_identities(self: &Rc<Self>) {
-        let Some(client) = self.client.clone() else { return };
-        util::run(
-            move || client.identities(),
-            clone!(
-                #[weak(rename_to = ui)]
-                self,
-                move |result| match result {
-                    Ok(ids) => {
-                        *ui.identities.borrow_mut() = Some(ids);
-                        // A load still in flight will build its rows with the identities in place.
-                        if ui.view.get() != View::Screener && !ui.list_loading.get() {
-                            ui.rebuild_rows();
+        if let Some(client) = self.client.clone() {
+            util::run(
+                move || client.identities(),
+                clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    move |result| match result {
+                        Ok(ids) => {
+                            *ui.identities.borrow_mut() = Some(ids);
+                            // A load still in flight will build its rows with the identities in place.
+                            if ui.view.get() != View::Screener && !ui.list_loading.get() {
+                                ui.rebuild_rows();
+                            }
                         }
+                        Err(e) => eprintln!("identities: {e}"),
                     }
-                    Err(e) => eprintln!("identities: {e}"),
-                }
-            ),
-        );
+                ),
+            );
+        } else {
+            // No worker, no mailboxes of its own: only the accounts' addresses.
+            *self.identities.borrow_mut() = Some(Default::default());
+        }
         if let Some(mail) = self.mail.clone().filter(|m| m.has_accounts()) {
             util::run(
                 move || Ok::<_, String>(mail.account_identities().0),
@@ -1957,31 +1970,40 @@ impl Ui {
     // ---- polling ----------------------------------------------------------
 
     fn refresh_counts(self: &Rc<Self>) {
-        let Some(client) = self.client.clone() else { return };
+        let Some(client) = self.client.clone() else {
+            self.show_counts(&Default::default());
+            return;
+        };
         util::run(
             move || client.counts(),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |result: Result<crate::api::Counts, String>| {
-                    let Ok(c) = result else { return };
-                    let set = |i: usize, n: i64| {
-                        ui.badges[i].set_label(&n.to_string());
-                        ui.badges[i].set_visible(n > 0);
-                    };
-                    let (account_screener, account_unread) = ui.account_counts.get();
-                    let unread = c.inbox_unread + account_unread;
-                    set(0, c.screener + account_screener);
-                    set(1, unread);
-                    let title = if unread > 0 {
-                        format!("Cloudmail ({unread})")
-                    } else {
-                        "Cloudmail".into()
-                    };
-                    ui.window.set_title(Some(&title));
+                    if let Ok(c) = result {
+                        ui.show_counts(&c);
+                    }
                 }
             ),
         );
+    }
+
+    /// The badges and title: the worker's counts plus the linked accounts'.
+    fn show_counts(&self, c: &crate::api::Counts) {
+        let set = |i: usize, n: i64| {
+            self.badges[i].set_label(&n.to_string());
+            self.badges[i].set_visible(n > 0);
+        };
+        let (account_screener, account_unread) = self.account_counts.get();
+        let unread = c.inbox_unread + account_unread;
+        set(0, c.screener + account_screener);
+        set(1, unread);
+        let title = if unread > 0 {
+            format!("Cloudmail ({unread})")
+        } else {
+            "Cloudmail".into()
+        };
+        self.window.set_title(Some(&title));
     }
 
     fn poll(self: &Rc<Self>) {
@@ -1993,12 +2015,18 @@ impl Ui {
     }
 
     fn check_new(self: &Rc<Self>) {
-        let Some(client) = self.client.clone() else { return };
+        if self.mail.is_none() {
+            return;
+        }
+        let client = self.client.clone();
         let accounts = self.mail.clone().filter(|m| m.has_accounts());
         self.refresh_counts();
         util::run(
             move || {
-                let (mut inbox, mut screener) = (client.threads("inbox", None, None, 25)?, client.screener()?);
+                let (mut inbox, mut screener) = match &client {
+                    Some(c) => (c.threads("inbox", None, None, 25)?, c.screener()?),
+                    None => (Vec::new(), Vec::new()),
+                };
                 let mut counts = (0, 0);
                 let mut warnings = Vec::new();
                 if let Some(mail) = accounts {
@@ -2093,7 +2121,7 @@ impl Ui {
             }
             return Proceed;
         }
-        if typing || mods.contains(gdk::ModifierType::ALT_MASK) || self.client.is_none() {
+        if typing || mods.contains(gdk::ModifierType::ALT_MASK) || self.mail.is_none() {
             return Proceed;
         }
         if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {

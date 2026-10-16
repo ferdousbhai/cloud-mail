@@ -106,5 +106,7 @@ Invited to someone's Cloudmail? Connect with the link they sent you:
   cloudmail connect <invite link>
 To deploy your own mail worker to your Cloudflare account instead:
   cloudmail setup you@yourdomain.com
+Or just read your Gmail, iCloud Mail or HEY here:
+  cloudmail account add gmail     # or: icloud, hey
 Updates arrive with the rest of the system: omarchy update (or pacman -Syu elsewhere)
 EOT

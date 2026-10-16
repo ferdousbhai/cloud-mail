@@ -2,6 +2,12 @@
 
 Optional. Until you add an account, nothing changes. Back to the [README](../README.md).
 
+Linked accounts also work **without a Cloudmail worker**: link them on a computer where you never ran
+`cloudmail setup` or `cloudmail connect`, and Cloudmail is simply your app and CLI for them. Gmail
+and iCloud Mail then have no Screener (their whole Inbox shows; see
+[One Screener](#one-screener-for-gmail-and-icloud-mail)); HEY keeps its own. Mailboxes, users and
+forwarding are a worker's, and say so. Setting up or joining a worker later adds the Screener.
+
 ## HEY
 
 If you also have a [HEY](https://hey.com) account, Cloudmail can show it next to your own mail, in the
@@ -120,7 +126,8 @@ mail loads as usual and one line says what's wrong. `cloudmail account login icl
 ## One Screener for Gmail and iCloud Mail
 
 Gmail and iCloud Mail have no Screener, so your worker's decides for them: one decision per sender,
-wherever their mail comes.
+wherever their mail comes. (Without a worker there's no Screener for them: everything in their
+Inbox shows.)
 
 - Mail from someone with no decision yet waits in the Screener and stays out of your Inbox.
 - Yes: their mail is in your Inbox from then on, in every account.

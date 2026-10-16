@@ -40,7 +40,7 @@ thread_local! {
 }
 
 pub fn open(ui: &Rc<Ui>, draft: Draft) {
-    if ui.client.is_none() {
+    if ui.mail.is_none() {
         return;
     }
     let window = gtk::Window::builder()
@@ -164,8 +164,9 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     c.window.connect_destroy(move |_| drop(keep.take()));
 
     fill_from(&c, ui, draft.from.as_deref());
-    if ui.identities.borrow().is_none() {
-        let client = ui.client.clone().unwrap();
+    if ui.identities.borrow().is_none()
+        && let Some(client) = ui.client.clone()
+    {
         let wanted = draft.from;
         util::run(
             move || client.identities(),

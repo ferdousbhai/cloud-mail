@@ -28,7 +28,7 @@ impl Ctx {
     }
 
     pub fn client(&self) -> CliResult<&Client> {
-        Ok(&self.mail()?.client)
+        Ok(self.mail()?.worker()?)
     }
 
     /// The worker plus any linked accounts (HEY, Gmail) from the config.

@@ -360,7 +360,9 @@ impl From<ApiError> for CliError {
         let (exit, hint) = match e.kind {
             ErrorKind::Config => (
                 exit::AUTH,
-                Some("invited? run `cloudmail connect <invite link>`; your own deployment: `cloudmail setup`"),
+                Some(
+                    "invited? `cloudmail connect <invite link>`; your own deployment: `cloudmail setup`; only Gmail, iCloud Mail or HEY: `cloudmail account add`",
+                ),
             ),
             ErrorKind::Unauthorized => (
                 exit::AUTH,

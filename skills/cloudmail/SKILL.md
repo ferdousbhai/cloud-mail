@@ -4,7 +4,8 @@ description: |
   Set up and use cloudmail: the user's own email on Cloudflare (their domains), with HEY, Gmail and
   iCloud Mail shown alongside. Use for setting up mail on a domain, connecting with an invite link to
   someone else's Cloudmail, inviting people, linking mail accounts, and ANY email task: reading the
-  inbox, screening senders, searching, replying, composing, attachments.
+  inbox, screening senders, searching, replying, composing, attachments. Also works with only linked
+  accounts (no worker).
 ---
 
 # cloudmail
@@ -17,10 +18,11 @@ see only their own mail. When piped, every command prints one JSON envelope
 `{ok:false, error:{code, message, hint}}` on failure. Follow `error.hint` and `breadcrumbs`.
 
 Start with `cloudmail status --json`: `data.healthy` means it's ready, so skip to **Use**
-(`data.user.role` is `admin` or `user`). `error.code == "not_configured"` (or no `cloudmail`): ask
-whether someone invited them (an invite link `https://…/invite/inv_…`). Invited → **Connect**. Only
-someone who owns the domains in their own Cloudflare account → **Set up**. Never run `setup` for an
-invited user: it is the admin's, and refuses to run for anyone else.
+(`data.user.role` is `admin` or `user`; `data.api_url == null` means linked accounts only, no worker).
+`error.code == "not_configured"` (or no `cloudmail`): ask what they want. Invited (an invite link
+`https://…/invite/inv_…`) → **Connect**. Their own domains in their own Cloudflare account →
+**Set up**. Only Gmail, iCloud Mail or HEY → **Link other mail**, no worker needed. Never run `setup`
+for an invited user: it is the admin's, and refuses to run for anyone else.
 Details on demand only: `cloudmail <cmd> --help`, `cloudmail agent-guide`, `cloudmail commands --json`.
 
 ## Install
@@ -80,6 +82,10 @@ New link (lost machine, expired): `cloudmail user invite sam` again; it replaces
 every user's mail in D1/R2; users only see their own.
 
 ## Link other mail (optional, each needs one sign-in by the user)
+
+Works with or without a worker. Without one, Cloudmail shows only these accounts: Gmail and iCloud
+Mail have no Screener (their whole Inbox shows), HEY keeps its own, and `mailbox`, `user`, `settings`
+and `watch` fail with `not_configured` ("needs a Cloudmail worker").
 
 Sign-ins open a browser or window, so from an agent either pass `--login` (opens it on the user's
 desktop) or have the user run it in their terminal. Without either, `add` fails with `not_logged_in`.

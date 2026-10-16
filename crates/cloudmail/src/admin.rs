@@ -37,14 +37,18 @@ pub fn orientation() -> Response {
     let configured = cfg.is_ok();
     let path = config::path();
     let status_line = match &cfg {
-        Ok(c) => format!("Configured: {} (config {})", c.api_url, path.display()),
+        Ok(c) if c.has_worker() => format!("Configured: {} (config {})", c.api_url, path.display()),
+        Ok(_) => format!(
+            "Linked accounts only, no Cloudmail worker (config {}); `cloudmail connect <invite link>` or `cloudmail setup` adds one",
+            path.display()
+        ),
         Err(_) => format!(
             "Not configured yet: run `cloudmail connect <invite link>` if someone invited you, or `cloudmail setup` to deploy your own (config: {})",
             path.display()
         ),
     };
     let mut human = format!(
-        "{} {}\nYour own email on Cloudflare: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
+        "{} {}\nYour own email on Cloudflare, with Gmail, iCloud Mail and HEY alongside: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
         bold("cloudmail"),
         env!("CARGO_PKG_VERSION"),
         bold("Common commands:")
@@ -63,12 +67,12 @@ pub fn orientation() -> Response {
             "version": env!("CARGO_PKG_VERSION"),
             "configured": configured,
             "config_path": path,
-            "api_url": cfg.as_ref().ok().map(|c| c.api_url.clone()),
+            "api_url": cfg.as_ref().ok().filter(|c| c.has_worker()).map(|c| c.api_url.clone()),
         }),
         if configured {
             "cloudmail is configured"
         } else {
-            "cloudmail is not configured; run `cloudmail connect <invite link>` (invited) or `cloudmail setup` (your own)"
+            "cloudmail is not configured; run `cloudmail connect <invite link>` (invited), `cloudmail setup` (your own), or `cloudmail account add gmail|icloud|hey` (linked accounts only)"
         },
     )
     .human(human.trim_end())
@@ -76,7 +80,33 @@ pub fn orientation() -> Response {
 }
 
 pub fn status(ctx: &Ctx) -> CliResult {
-    let client = ctx.client()?;
+    let mail = ctx.mail()?;
+    let Some(client) = &mail.client else {
+        // Linked accounts only: they are the whole status.
+        let (statuses, human) = account_statuses(mail);
+        let data = json!({
+            "api_url": null,
+            "config_path": config::path(),
+            "healthy": true,
+            "user": null,
+            "accounts": statuses,
+        });
+        let human = format!(
+            "Worker:      none (linked accounts only; no Screener for Gmail or iCloud Mail)\nConfig:      {}{human}",
+            config::path().display()
+        );
+        return Ok(Response::new(data, "Linked accounts only, no Cloudmail worker")
+            .human(human)
+            .crumbs(vec![
+                crumb("inbox", "cloudmail inbox", "List the Inbox"),
+                crumb("connect", "cloudmail connect <invite link>", "Join someone's Cloudmail"),
+                crumb(
+                    "setup",
+                    "cloudmail setup you@yourdomain.com",
+                    "Deploy your own, with the Screener",
+                ),
+            ]));
+    };
     let counts = client.counts()?;
     let mailboxes = client.mailboxes()?;
     let settings = client.settings()?;
@@ -118,14 +148,24 @@ pub fn status(ctx: &Ctx) -> CliResult {
     });
     let mut human = human;
     // Linked accounts only appear for people who added one.
-    let mail = ctx.mail()?;
     if mail.has_accounts() {
-        let statuses: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = mail.accounts.iter().map(|p| s.spawn(move || p.status())).collect();
-            handles.into_iter().filter_map(|h| h.join().ok()).collect()
-        });
-        for st in &statuses {
-            human.push_str(&format!(
+        let (statuses, lines) = account_statuses(mail);
+        human.push_str(&lines);
+        data["accounts"] = json!(statuses);
+    }
+    Ok(Response::new(data, summary).human(human).crumbs(crumbs))
+}
+
+/// Each linked account's status, and a line each for people.
+fn account_statuses(mail: &cloudmail_api::Mail) -> (Vec<cloudmail_api::AccountStatus>, String) {
+    let statuses: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = mail.accounts.iter().map(|p| s.spawn(move || p.status())).collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let lines = statuses
+        .iter()
+        .map(|st| {
+            format!(
                 "\n{:<13}{}",
                 format!("{}:", st.label),
                 if st.ok {
@@ -133,11 +173,10 @@ pub fn status(ctx: &Ctx) -> CliResult {
                 } else {
                     st.detail.clone()
                 }
-            ));
-        }
-        data["accounts"] = json!(statuses);
-    }
-    Ok(Response::new(data, summary).human(human).crumbs(crumbs))
+            )
+        })
+        .collect();
+    (statuses, lines)
 }
 
 pub fn mailbox(ctx: &Ctx, cmd: MailboxCommand) -> CliResult {

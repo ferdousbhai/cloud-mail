@@ -137,13 +137,13 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
     let on = |id: &str| mail.provider(id);
     match cmd {
         ThreadCommand::Read { id, html, mark_read } => {
-            let mut detail = on(&id).thread(&id, html).map_err(missing(
+            let mut detail = on(&id)?.thread(&id, html).map_err(missing(
                 "thread",
                 &id,
                 "list threads with `cloudmail inbox` or `cloudmail search <words>`",
             ))?;
             if mark_read && detail.thread.unread {
-                on(&id).set_unread(&id, false)?;
+                on(&id)?.set_unread(&id, false)?;
                 detail.thread.unread = false;
             }
             let t = &detail.thread;
@@ -216,14 +216,17 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
             .crumbs(crumbs))
         }
         // A HEY thread's "archive" is a move to Paper Trail (HEY has no Archive); Gmail's drops the Inbox label.
-        ThreadCommand::Archive { ids } => each(&ids, "archived", |id| on(id).move_thread(id, "archive")),
-        ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| on(id).move_thread(id, "inbox")),
-        ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| on(id).set_unread(id, true)),
-        ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| on(id).set_unread(id, false)),
+        ThreadCommand::Archive { ids } => each(&ids, "archived", |id| on(id)?.move_thread(id, "archive")),
+        ThreadCommand::Unarchive { ids } => each(&ids, "moved to the Inbox", |id| on(id)?.move_thread(id, "inbox")),
+        ThreadCommand::Unread { ids } => each(&ids, "marked unread", |id| on(id)?.set_unread(id, true)),
+        ThreadCommand::Markread { ids } => each(&ids, "marked read", |id| on(id)?.set_unread(id, false)),
         // Your worker's threads are deleted for good, so that asks first; a linked account's go to
         // its own Trash (Gmail, iCloud Mail, HEY), where they can be restored.
         ThreadCommand::Delete { ids, yes } => {
-            let permanent = ids.iter().filter(|id| on(id).deletes_permanently()).count();
+            let permanent = ids
+                .iter()
+                .filter(|id| on(id).is_ok_and(|p| p.deletes_permanently()))
+                .count();
             if permanent > 0 {
                 confirm(yes, &format!("Permanently delete {}?", plural(permanent, "thread")))?;
             }
@@ -232,7 +235,7 @@ pub fn thread(ctx: &Ctx, cmd: ThreadCommand) -> CliResult {
                 n if n == ids.len() => "deleted",
                 _ => "deleted (a linked account's to its Trash)",
             };
-            each(&ids, verb, |id| on(id).delete_thread(id))
+            each(&ids, verb, |id| on(id)?.delete_thread(id))
         }
     }
 }
@@ -457,7 +460,7 @@ fn send_or_preview(ctx: &Ctx, req: SendRequest, dry_run: bool) -> CliResult {
         let unconfigured = match ctx.mail() {
             Ok(mail) => {
                 if !req.attachments.is_empty() {
-                    let sender = mail.sender_for(&req);
+                    let sender = mail.sender_for(&req)?;
                     cloudmail_api::attach::check_limit(&req.attachments, sender.attachment_limit(), sender.label())?;
                 }
                 None
@@ -609,7 +612,7 @@ pub fn build_reply(
 pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
     let files = attachments(&a.attach)?;
     let mail = ctx.mail()?;
-    let on = mail.provider(&a.thread_id);
+    let on = mail.provider(&a.thread_id)?;
     let detail = on.thread(&a.thread_id, false).map_err(missing(
         "thread",
         &a.thread_id,
@@ -623,7 +626,7 @@ pub fn reply(ctx: &Ctx, a: &ReplyArgs) -> CliResult {
             (ids, first)
         }
         None => {
-            let ids = mail.client.identities()?;
+            let ids = mail.worker()?.identities()?;
             (ids.identities, ids.default)
         }
     };
@@ -659,7 +662,7 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
     let mail = ctx.mail()?;
     match cmd {
         AttachmentCommand::List { thread_id } => {
-            let detail = mail.provider(&thread_id).thread(&thread_id, false).map_err(missing(
+            let detail = mail.provider(&thread_id)?.thread(&thread_id, false).map_err(missing(
                 "thread",
                 &thread_id,
                 "list threads with `cloudmail inbox`",
@@ -699,7 +702,7 @@ pub fn attachment(ctx: &Ctx, cmd: AttachmentCommand) -> CliResult {
             )]))
         }
         AttachmentCommand::Save { id, output } => {
-            let dl = mail.provider(&id).download_attachment(&id).map_err(missing(
+            let dl = mail.provider(&id)?.download_attachment(&id).map_err(missing(
                 "attachment",
                 &id,
                 "list them with `cloudmail attachment list <thread-id>`",
@@ -756,7 +759,7 @@ fn target_path(output: Option<PathBuf>, name: &str) -> PathBuf {
 
 pub fn raw(ctx: &Ctx, a: &RawArgs) -> CliResult {
     let mail = ctx.mail()?;
-    let bytes = mail.provider(&a.id).raw_message(&a.id).map_err(missing("raw message", &a.id, "message IDs (m_…, gmail:<thread>/<message>) are in `cloudmail thread read <id> --json`; sent messages have no raw copy"))?;
+    let bytes = mail.provider(&a.id)?.raw_message(&a.id).map_err(missing("raw message", &a.id, "message IDs (m_…, gmail:<thread>/<message>) are in `cloudmail thread read <id> --json`; sent messages have no raw copy"))?;
     match &a.output {
         Some(p) if p.as_os_str() != "-" => {
             let path = target_path(Some(p.clone()), &format!("{}.eml", a.id.replace(['/', ':'], "_")));

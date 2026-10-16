@@ -26,6 +26,8 @@ or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to
   follows your theme. The CLI runs on other Linux systems too.
 - You want an inbox your scripts or your local AI agent can read and answer through a plain
   CLI, without a Gmail API project.
+- You just want a keyboard-first Linux app and CLI for your Gmail, iCloud Mail or HEY. Link them
+  and go; no domain or Cloudflare account needed ([more](#your-hey-gmail-and-icloud-mail-too-optional)).
 - You like HEY's Screener and want it on your own domain, in your own account.
 - Someone close to you, like a partner or a colleague, wants the same for their domains. You run it
   and invite them; they install the app and connect with a link, with no Cloudflare account of
@@ -79,6 +81,9 @@ To run it (the admin):
 
 Invited to someone's? You only need the app (or just the CLI) and a keyring, then
 [connect](#share-it-with-someone): no Cloudflare account, domain setup or Node.js.
+
+Only want your Gmail, iCloud Mail or HEY? The app (or CLI) and a keyring, then
+[link them](#your-hey-gmail-and-icloud-mail-too-optional); no worker at all.
 
 ## Install
 
@@ -143,7 +148,8 @@ git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
 
 Setup is for the admin: the person whose Cloudflare account holds the domains. If someone invited
 you, skip this section and run `cloudmail connect <the link they sent you>` instead
-([more](#share-it-with-someone)); setup refuses to run for an invited user.
+([more](#share-it-with-someone)); setup refuses to run for an invited user. If you only want
+Gmail, iCloud Mail or HEY, skip it too and [link them](#your-hey-gmail-and-icloud-mail-too-optional).
 
 ```sh
 cloudmail setup you@yourdomain.com
@@ -247,9 +253,9 @@ cloudmail commands --json     # every command, flag and example
 
 The skill ([skills/cloudmail/SKILL.md](skills/cloudmail/SKILL.md)) walks an agent through setting
 up all your domains with the Cloudflare CLI (or connecting with an invite), inviting others, linking
-HEY, Gmail and iCloud Mail, and using the CLI, in about 2,000 tokens. The installed copy is refreshed automatically when a new
-cloudmail runs, and only a copy cloudmail wrote (marked `.managed-by-cloudmail`) is ever changed or
-removed.
+HEY, Gmail and iCloud Mail, and using the CLI, in about 2,000 tokens. The installed copy is
+refreshed automatically when a new cloudmail runs, and only a copy cloudmail wrote (marked
+`.managed-by-cloudmail`) is ever changed or removed.
 
 ## Your HEY, Gmail and iCloud Mail too (optional)
 
@@ -270,8 +276,13 @@ cloudmail account list        # which accounts are linked and working
 cloudmail account remove hey  # unlink (HEY itself is untouched)
 ```
 
-Gmail and iCloud Mail have no Screener, so yours decides for them too: one decision per sender,
-wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
+**No worker needed.** On a computer that never ran `setup` or `connect`, linked accounts are all
+Cloudmail shows: the app and CLI work the same, but Gmail and iCloud Mail have no Screener (their
+whole Inbox shows) and there are no mailboxes of your own. HEY keeps its Screener. In the app, the
+accounts button in the sidebar links them from the first screen.
+
+With a worker, Gmail and iCloud Mail have no Screener of their own, so yours decides for them too:
+one decision per sender, wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
 Archive and the Screener, how forwarded copies are hidden, and what happens when a sign-in expires:
 [docs/linked-accounts.md](docs/linked-accounts.md).
 

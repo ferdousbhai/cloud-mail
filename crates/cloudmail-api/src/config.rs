@@ -8,6 +8,7 @@ pub const DEFAULT_POLL_SECONDS: u32 = 60;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// The worker; both empty when Cloudmail only shows linked accounts (see `has_worker`).
     pub api_url: String,
     pub api_token: String,
     pub poll_seconds: u32,
@@ -35,6 +36,14 @@ pub struct AccountConfig {
     /// read from the file only to move an older version's into the keyring.
     #[serde(default, skip_serializing)]
     pub client_secret: Option<String>,
+}
+
+impl Config {
+    /// Whether there's a Cloudmail worker (deployed with `setup`, or joined with `connect`). Without
+    /// one, Cloudmail shows linked accounts only: no Screener for Gmail and iCloud Mail, no mailboxes.
+    pub fn has_worker(&self) -> bool {
+        !self.api_url.is_empty()
+    }
 }
 
 /// The keyring name of a linked account's own OAuth client secret.
@@ -207,7 +216,8 @@ pub fn keyring_token() -> Result<Option<String>> {
 }
 
 /// Loads config: the URL from env (CLOUDMAIL_API_URL, legacy CLOUD_MAIL_*) over the file, the token
-/// from env (CLOUDMAIL_API_TOKEN) over the keyring.
+/// from env (CLOUDMAIL_API_TOKEN) over the keyring. Linked accounts alone are a config too, without
+/// a worker.
 pub fn load() -> Result<Config> {
     migrate_legacy();
     let mut file = match read_file(&path())? {
@@ -229,17 +239,24 @@ pub fn load() -> Result<Config> {
         }
     }
 
+    let poll_seconds = file.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS).max(10);
     match (api_url, api_token) {
         (Some(api_url), Some(api_token)) => Ok(Config {
             api_url,
             api_token,
-            poll_seconds: file.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS).max(10),
+            poll_seconds,
+            accounts: file.accounts,
+        }),
+        (None, _) if !file.accounts.is_empty() => Ok(Config {
+            api_url: String::new(),
+            api_token: String::new(),
+            poll_seconds,
             accounts: file.accounts,
         }),
         (url, _) => Err(Error::new(
             ErrorKind::Config,
             format!(
-                "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail connect <invite link>` or `cloudmail setup` sets both",
+                "cloudmail isn't configured: {} (or set CLOUDMAIL_API_URL / CLOUDMAIL_API_TOKEN); `cloudmail connect <invite link>` or `cloudmail setup` sets both, or link Gmail, iCloud Mail or HEY with `cloudmail account add`",
                 if url.is_none() {
                     format!("api_url is missing from {}", path().display())
                 } else {

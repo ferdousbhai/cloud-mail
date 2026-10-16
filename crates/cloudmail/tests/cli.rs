@@ -1301,6 +1301,52 @@ fn gmail_inbox_merges_by_time_and_hides_exact_copies() {
 }
 
 #[test]
+fn linked_accounts_work_without_a_worker() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("no-worker", GMAIL, true);
+    let no_worker = [("CLOUDMAIL_API_URL", ""), ("CLOUDMAIL_API_TOKEN", "")];
+    let run = |args: &[&str]| h.run(&m, args, &no_worker);
+
+    // Gmail's mail, unscreened: everything in its Inbox shows, and no worker is asked anything.
+    let o = run(&["inbox"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let v = json_out(&o);
+    assert!(
+        !ids(&v).is_empty() && ids(&v).iter().all(|id| id.starts_with("gmail:")),
+        "{v}"
+    );
+
+    let v = json_out(&run(&["status"]));
+    assert_eq!(
+        (v["data"]["healthy"].as_bool(), &v["data"]["api_url"]),
+        (Some(true), &Value::Null),
+        "{v}"
+    );
+    assert_eq!(v["data"]["accounts"][0]["name"], "gmail");
+
+    // New mail goes out through Gmail.
+    let o = run(&["compose", "--to", "bob@example.net", "--subject", "Hi", "-m", "Hello"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(h.sent().contains("bob@example.net"));
+
+    // What only a worker has says so.
+    for args in [
+        &["mailbox", "list"][..],
+        &["screener", "approve", "bob@example.net"][..],
+    ] {
+        let v = json_out(&run(args));
+        assert_eq!(v["error"]["code"], "not_configured", "{args:?}: {v}");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("needs a Cloudmail worker")
+        );
+    }
+    assert!(requests(&m).is_empty(), "{:?}", requests(&m));
+}
+
+#[test]
 fn gmail_listings_fetch_only_changed_threads_across_runs() {
     let m = mock(gmail_handler);
     let h = gmail_home("cache", GMAIL, true);

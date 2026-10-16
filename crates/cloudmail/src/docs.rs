@@ -416,6 +416,10 @@ account_unavailable, error.
   direct one (`screen: false`, e.g. support@) delivers them to the Inbox.
 - The Screener lists senders (by email) waiting for a decision. Approving moves their threads to the
   Inbox; blocking hides them. Anyone you send mail to is approved automatically.
+- No worker: with only linked accounts (Gmail, iCloud Mail, HEY), every mail command works on them;
+  `status` has `api_url: null`. Gmail and iCloud Mail are then unscreened (HEY keeps its Screener),
+  and worker-only commands (`mailbox`, `user`, `settings`, `watch`, `senders`) fail with
+  `not_configured`.
 - Users: each person's token sees only their own mailboxes, threads, Screener and settings.
   `cloudmail status --json` shows `data.user` (`{name, role}`, role `admin` or `user`). Only the admin
   manages users, adds or routes mailboxes, and runs `setup`.
