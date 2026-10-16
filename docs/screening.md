@@ -9,7 +9,10 @@ say yes or no, once, for that sender.
   and later mail from them goes there too. Nothing is bounced, so the sender can't tell. Changed
   your mind? Approve them, and their blocked mail comes back to the Inbox, unread.
 
-`cloudmail screener` lists who's waiting; `cloudmail senders` lists everyone you've already decided on.
+`cloudmail screener` lists who's waiting; `cloudmail senders` lists everyone you've already decided on,
+and where each decision is kept: your worker, Gmail's filters, iCloud Mail's rules. A sender
+decided differently in two places (say, unblocked on icloud.com) is marked; deciding again records
+it everywhere. A block anywhere wins.
 
 ## Who skips it
 

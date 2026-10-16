@@ -62,7 +62,7 @@ pub enum Command {
 
     /// List senders waiting in the Screener, or screen them in or out
     Screener(ScreenerArgs),
-    /// List senders your worker has screened (Gmail's and iCloud's lists live in those accounts)
+    /// List everyone you've screened in or out, and where each decision is kept (worker, Gmail, iCloud Mail)
     Senders(SendersArgs),
 
     /// Write and send a new message
@@ -270,8 +270,18 @@ pub enum ScreenerCommand {
 
 #[derive(Args, Debug)]
 pub struct SendersArgs {
-    #[arg(long, value_enum, default_value_t = SenderStatus::Approved)]
-    pub status: SenderStatus,
+    /// Only approved or only blocked senders (default: both, blocked first)
+    #[arg(long, value_enum)]
+    pub status: Option<SenderStatus>,
+    /// Only senders whose address or name contains this
+    #[arg(long, value_name = "TEXT")]
+    pub search: Option<String>,
+    /// Only what one place keeps: `worker`, or a linked account's name (see `cloudmail account list`)
+    #[arg(long, value_name = "NAME")]
+    pub account: Option<String>,
+    /// Only senders whose decision differs between places (or is missing from one)
+    #[arg(long)]
+    pub disagreeing: bool,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]

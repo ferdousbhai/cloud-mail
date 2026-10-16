@@ -75,7 +75,15 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("screener block", &["cloudmail screener block spam@bad.biz"]),
-    ("senders", &["cloudmail senders", "cloudmail senders --status blocked"]),
+    (
+        "senders",
+        &[
+            "cloudmail senders",
+            "cloudmail senders --status blocked --search example.com",
+            "cloudmail senders --disagreeing --json",
+            "cloudmail senders --account gmail",
+        ],
+    ),
     (
         "compose",
         &[
@@ -457,6 +465,8 @@ Triage the Screener:
     cloudmail threads list --folder screener --json # the waiting threads themselves
     cloudmail screener approve alice@example.com
     cloudmail screener block spam@bad.biz
+    cloudmail senders --json                        # everyone decided, and where: {email, status, in, disagrees}
+    cloudmail senders --disagreeing                 # decided differently in two places; decide again to settle
 
 Read and reply:
 

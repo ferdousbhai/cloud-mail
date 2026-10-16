@@ -1,7 +1,7 @@
 //! Human-readable rendering for terminals.
 
 use cloudmail_api::text::{format_addresses, human_size, long_time, short_time};
-use cloudmail_api::{Mailbox, PendingSender, Sender, ThreadDetail, ThreadSummary};
+use cloudmail_api::{Decided, Mailbox, PendingSender, ThreadDetail, ThreadSummary};
 
 use crate::output::{bold, dim};
 
@@ -200,19 +200,54 @@ pub fn screener(list: &[PendingSender]) -> String {
         .join("\n")
 }
 
-pub fn senders(list: &[Sender]) -> String {
-    list.iter()
-        .map(|s| {
-            let when = s.decided_at.map(short_time).unwrap_or_default();
-            format!(
-                "{}  {}  {}",
-                pad(&clean_line(&s.email), 36),
-                pad(&truncate(&clean_line(&s.name), 28), 28),
+/// Decided senders under Blocked and Approved, each with where its decision is kept.
+pub fn decided(list: &[Decided]) -> String {
+    if list.is_empty() {
+        return "No decisions yet".into();
+    }
+    let mut out = Vec::new();
+    for (status, title) in [("blocked", "Blocked"), ("approved", "Approved")] {
+        let rows: Vec<&Decided> = list.iter().filter(|d| d.status == status).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(bold(&format!("{title} ({})", rows.len())));
+        for d in rows {
+            let agree: Vec<&str> = d
+                .places
+                .iter()
+                .filter(|(_, s)| *s == status)
+                .map(|(p, _)| p.as_str())
+                .collect();
+            let differ: Vec<String> = d
+                .places
+                .iter()
+                .filter(|(_, s)| *s != status)
+                .map(|(p, s)| format!("{p}: {s}"))
+                .collect();
+            let place = if d.disagrees {
+                let mut p = agree.join(", ");
+                if !differ.is_empty() {
+                    p.push_str(&format!(" · {}", differ.join(", ")));
+                }
+                format!("{p}  ← disagrees")
+            } else {
+                "everywhere".into()
+            };
+            let when = d.decided_at.map(short_time).unwrap_or_default();
+            out.push(format!(
+                "  {}  {}  {}  {}",
+                pad(&truncate(&clean_line(&d.email), 36), 36),
+                pad(&truncate(&clean_line(&d.name), 20), 20),
+                pad(&place, 28),
                 dim(&when)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            ));
+        }
+    }
+    out.join("\n")
 }
 
 /// With `owners`, everyone's mailboxes with whose each is, rather than your own in order.

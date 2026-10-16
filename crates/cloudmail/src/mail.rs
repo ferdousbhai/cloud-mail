@@ -373,11 +373,72 @@ fn decide(ctx: &Ctx, mail: &Mail, emails: &[String], status: &str) -> CliResult 
         .warnings(&warnings, ctx.mode))
 }
 
-pub fn senders(ctx: &Ctx, status: SenderStatus) -> CliResult {
-    let list = ctx.client()?.senders(status.as_str())?;
-    let summary = format!("{} {}", plural(list.len(), "sender"), status.as_str());
-    let ids = list.iter().map(|s| s.email.clone()).collect();
-    Ok(Response::new(&list, summary).human(render::senders(&list)).ids(ids))
+pub fn senders(ctx: &Ctx, a: &SendersArgs) -> CliResult {
+    let mail = ctx.mail()?;
+    if let Some(name) = &a.account {
+        let known = (name == "worker" && mail.client.is_some())
+            || mail
+                .accounts
+                .iter()
+                .any(|p| p.name() == name && p.screened_by_cloudmail());
+        if !known {
+            return Err(CliError::usage(format!("{name} keeps no Screener decisions here"))
+                .hint("use `worker` or a Gmail or iCloud Mail account's name from `cloudmail account list`"));
+        }
+    }
+    let (all, warnings) = mail.decided_senders()?;
+    let search = a.search.as_deref().map(str::to_lowercase);
+    let list: Vec<cloudmail_api::Decided> = all
+        .into_iter()
+        .filter_map(|mut d| {
+            if let Some(name) = &a.account {
+                // As that place has it.
+                d.status = d.places.get(name)?.clone();
+            }
+            let status_ok = a.status.is_none_or(|s| s.as_str() == d.status);
+            let search_ok = search
+                .as_ref()
+                .is_none_or(|q| d.email.contains(q.as_str()) || d.name.to_lowercase().contains(q.as_str()));
+            (status_ok && search_ok && (!a.disagreeing || d.disagrees)).then_some(d)
+        })
+        .collect();
+    let count = |s: &str| list.iter().filter(|d| d.status == s).count();
+    let disagreeing = list.iter().filter(|d| d.disagrees).count();
+    let mut summary = format!("{} approved, {} blocked", count("approved"), count("blocked"));
+    if disagreeing > 0 {
+        summary.push_str(&format!("; {disagreeing} disagree between places"));
+    }
+    let mut crumbs = Vec::new();
+    if disagreeing > 0 {
+        crumbs.push(crumb(
+            "settle",
+            "cloudmail screener approve|block <email>",
+            "Decide again: it's recorded everywhere",
+        ));
+    }
+    // Accounts with a Screener of their own (HEY) keep their decisions to themselves.
+    let own: Vec<String> = mail
+        .accounts
+        .iter()
+        .filter(|p| !p.screened_by_cloudmail())
+        .map(|p| p.name().to_string())
+        .collect();
+    let mut human = render::decided(&list);
+    if !own.is_empty() {
+        human.push_str(&format!(
+            "\n\n{}",
+            output::dim(&format!(
+                "{} keep their own decisions; they aren't listed here.",
+                own.join(", ")
+            ))
+        ));
+    }
+    let ids = list.iter().map(|d| d.email.clone()).collect();
+    let mut response = Response::new(&list, summary).human(human).ids(ids).crumbs(crumbs);
+    if !own.is_empty() {
+        response = response.meta("not_included", &own);
+    }
+    Ok(response.warnings(&warnings, ctx.mode))
 }
 
 // ---------- sending ----------

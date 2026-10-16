@@ -22,4 +22,4 @@ pub use config::Config;
 pub use error::{Error, ErrorKind, Result};
 pub use provider::{AccountStatus, AccountWarning, ExtraFolder, Provider};
 pub use types::*;
-pub use unified::{Listing, Mail};
+pub use unified::{Decided, Listing, Mail};

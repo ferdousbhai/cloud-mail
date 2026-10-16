@@ -1511,6 +1511,67 @@ fn gmail_screener_decisions_live_in_its_filters() {
 }
 
 #[test]
+fn senders_lists_every_decision_and_where_it_is_kept() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("senders", GMAIL, true);
+    h.run(&m, &["inbox"], &[]);
+    // Blocked in Gmail; this mock worker keeps saying Joe is approved, so the two disagree.
+    h.run(&m, &["screener", "block", "joe@x.com"], &[]);
+    let emails = |v: &Value| -> Vec<String> {
+        v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["email"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let find = |v: &Value, email: &str| {
+        v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["email"] == email)
+            .cloned()
+    };
+
+    let v = json_out(&h.run(&m, &["senders"], &[]));
+    let joe = find(&v, "joe@x.com").expect("Joe is listed");
+    assert_eq!(joe["status"], "blocked", "a block anywhere wins: {joe}");
+    assert_eq!(joe["in"], json!({ "worker": "approved", "gmail": "blocked" }));
+    assert_eq!(joe["disagrees"], true);
+    let ana = find(&v, "ana@example.net").unwrap();
+    assert_eq!(
+        (ana["status"].as_str(), ana["disagrees"].as_bool()),
+        (Some("approved"), Some(false)),
+        "{ana}"
+    );
+    assert_eq!(v["data"][0]["email"], "joe@x.com", "blocked first");
+    assert!(v["summary"].as_str().unwrap().contains("1 disagree"), "{v}");
+    assert!(v["breadcrumbs"].to_string().contains("screener approve|block"));
+
+    let v = json_out(&h.run(&m, &["senders", "--disagreeing"], &[]));
+    assert_eq!(emails(&v), ["joe@x.com"]);
+    let v = json_out(&h.run(&m, &["senders", "--account", "worker", "--search", "JOE"], &[]));
+    assert_eq!(v["data"][0]["status"], "approved", "as the worker has it: {v}");
+    let v = json_out(&h.run(&m, &["senders", "--status", "approved", "--search", "example.net"], &[]));
+    assert!(emails(&v).contains(&"ana@example.net".to_string()) && !emails(&v).contains(&"joe@x.com".to_string()));
+    let v = json_out(&h.run(&m, &["senders", "--account", "hey"], &[]));
+    assert_eq!(v["error"]["code"], "usage");
+
+    // Without a worker: just what the account keeps.
+    let v = json_out(&h.run(
+        &m,
+        &["senders"],
+        &[("CLOUDMAIL_API_URL", ""), ("CLOUDMAIL_API_TOKEN", "")],
+    ));
+    assert_eq!(
+        find(&v, "joe@x.com").unwrap()["in"],
+        json!({ "gmail": "blocked" }),
+        "{v}"
+    );
+}
+
+#[test]
 fn gmail_signed_in_before_filters_says_to_sign_in_again() {
     let m = mock(gmail_handler);
     let h = gmail_home("old-scope", GMAIL, true);

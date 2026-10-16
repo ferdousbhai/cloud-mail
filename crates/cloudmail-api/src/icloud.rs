@@ -641,6 +641,10 @@ impl Provider for Icloud {
         true
     }
 
+    fn keeps_screening_for(&self, email: &str) -> bool {
+        email.split('@').next().is_some_and(|local| local.len() <= 64)
+    }
+
     fn screen_lists(&self, fresh: bool) -> Result<Lists> {
         if !fresh
             && let Some((at, lists)) = self.screen.lock().unwrap().as_ref()
@@ -676,7 +680,7 @@ impl Provider for Icloud {
             let keepable = lists
                 .list(kind)
                 .iter()
-                .filter(|e| e.split('@').next().is_some_and(|local| local.len() <= 64))
+                .filter(|e| self.keeps_screening_for(e))
                 .cloned()
                 .collect();
             let want = screening::rechunk(&pieces, &keepable, |p| p.len() <= RULE_ADDRESSES);

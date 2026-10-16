@@ -114,6 +114,7 @@ cloudmail thread archive|unarchive|markread|unread <tid>...
 cloudmail thread delete <tid>...          # yours: for good (--yes); linked: to its Trash
 cloudmail screener --json                  # senders waiting: [{email, name, thread_count, last_subject}]
 cloudmail screener approve|block <email>... # decides that sender in every account
+cloudmail senders --json                   # everyone decided: {email, status, in: {worker, gmail, …}, disagrees}
 cloudmail reply <tid> -m "…" [--all] [--attach f] --dry-run --json   # then without --dry-run
 cloudmail compose --to a@x.com --subject S -m "…" [--from <your addr>] [--attach f]
 cloudmail mailbox list --json              # the user's own addresses (valid --from values)

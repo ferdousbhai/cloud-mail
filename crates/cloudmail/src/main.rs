@@ -146,7 +146,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Search(a) => mail::search(ctx, &a),
         Command::Thread(t) => mail::thread(ctx, t),
         Command::Screener(a) => mail::screener(ctx, a.command),
-        Command::Senders(a) => mail::senders(ctx, a.status),
+        Command::Senders(a) => mail::senders(ctx, &a),
         Command::Compose(a) => mail::compose(ctx, &a),
         Command::Reply(a) => mail::reply(ctx, &a),
         Command::Attachment(a) => mail::attachment(ctx, a),

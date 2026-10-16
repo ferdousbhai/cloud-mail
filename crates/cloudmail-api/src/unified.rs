@@ -22,7 +22,7 @@
 //! (HEY's CLI exposes none) it is a copy when the sender's address and the subject (ignoring
 //! Re:/Fwd:) match and the latest activity is within `DUPLICATE_WINDOW_MS`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::client::{Client, ThreadQuery};
@@ -77,6 +77,22 @@ pub struct Mail {
     pub broken: Vec<AccountWarning>,
     /// Worker threads' Message-IDs, by thread ID, with the `last_at` they were read at.
     worker_ids: Arc<Mutex<HashMap<String, WorkerIds>>>,
+}
+
+/// One sender's Screener decisions, wherever they are kept (`Mail::decided_senders`).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Decided {
+    pub email: String,
+    pub name: String,
+    /// What Cloudmail does with their mail: blocked when any place blocks them, as screening does.
+    pub status: String,
+    /// When the worker recorded it (Gmail's filters and iCloud's rules keep no time).
+    pub decided_at: Option<i64>,
+    /// Each place's decision: `worker`, or a linked account's name.
+    #[serde(rename = "in")]
+    pub places: BTreeMap<String, String>,
+    /// Whether the places differ, or some place that keeps decisions has none for them.
+    pub disagrees: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -445,6 +461,90 @@ impl Mail {
         p.save_screen_lists(&lists)?;
         lists.kept = true;
         Ok(lists)
+    }
+
+    /// Every sender decided on anywhere: the worker's decisions and every screened account's
+    /// lists, one row each, blocked first, then the most recent. An account whose lists can't be
+    /// read is a warning; the worker's failure fails this. HEY keeps its decisions to itself.
+    pub fn decided_senders(&self) -> Result<(Vec<Decided>, Vec<AccountWarning>)> {
+        let mut rows: BTreeMap<String, Decided> = BTreeMap::new();
+        // Each place that keeps decisions, with the account (None: the worker).
+        let mut places: Vec<(String, Option<&Arc<dyn Provider>>)> = Vec::new();
+        let mut warnings = self.broken.clone();
+        if let Some(c) = &self.client {
+            places.push(("worker".into(), None));
+            for status in [BLOCKED, APPROVED] {
+                for s in c.senders(status)? {
+                    let row = rows.entry(s.email.to_ascii_lowercase()).or_default();
+                    row.name = s.name;
+                    row.decided_at = s.decided_at;
+                    row.places.insert("worker".into(), status.into());
+                }
+            }
+        }
+        let read = self.each_account(|p| {
+            if self.screens(p) {
+                p.screen_lists(false).map(Some)
+            } else {
+                Ok(None)
+            }
+        });
+        // Your own addresses sit on the accounts' lists so your mail is never screened; they aren't
+        // decisions about anyone.
+        let own: HashSet<String> = self
+            .each_account(|p| {
+                if self.screens(p) {
+                    p.identities()
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+            .into_iter()
+            .flat_map(|(_, r)| r.unwrap_or_default())
+            .map(|a| a.email.to_ascii_lowercase())
+            .collect();
+        for (name, r) in read {
+            match r {
+                Ok(Some(lists)) => {
+                    places.push((name.clone(), self.accounts.iter().find(|p| p.name() == name)));
+                    for (email, status) in lists.decisions() {
+                        rows.entry(email)
+                            .or_default()
+                            .places
+                            .insert(name.clone(), status.into());
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => warnings.push(AccountWarning::new(&name, &e)),
+            }
+        }
+        let mut out: Vec<Decided> = rows
+            .into_iter()
+            .filter(|(email, _)| !own.contains(email))
+            .map(|(email, mut row)| {
+                row.email = email;
+                row.status = if row.places.values().any(|s| s == BLOCKED) {
+                    BLOCKED
+                } else {
+                    APPROVED
+                }
+                .into();
+                let first = row.places.values().next().cloned();
+                // Missing from a place that can't keep it (iCloud refuses some addresses) isn't a disagreement.
+                let missing = places.iter().any(|(name, account)| {
+                    !row.places.contains_key(name) && account.is_none_or(|p| p.keeps_screening_for(&row.email))
+                });
+                row.disagrees = missing || row.places.values().any(|s| Some(s) != first.as_ref());
+                row
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (b.status == BLOCKED)
+                .cmp(&(a.status == BLOCKED))
+                .then(b.decided_at.cmp(&a.decided_at))
+                .then(a.email.cmp(&b.email))
+        });
+        Ok((out, warnings))
     }
 
     /// Records a decision for these senders in every screened account (and the worker, whose

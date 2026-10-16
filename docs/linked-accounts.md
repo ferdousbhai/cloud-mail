@@ -149,7 +149,8 @@ What a decision does:
 - No: their later mail skips the account's Inbox on the server, their threads in its Inbox are
   archived now, and Cloudmail leaves them out of everything but Archive and Sent.
 - A decision goes to every account Cloudmail screens, and to your worker's Screener too (which
-  decides its own mail as it arrives).
+  decides its own mail as it arrives). `cloudmail senders` lists every decision and where it is
+  kept, and marks a sender the places disagree on (`--disagreeing` lists just those).
 - Linking an account screens in the people it already corresponds with (its Inbox's senders and
   whoever its sent mail went to), and whoever you write to is screened in, as your worker does for
   its own mail. A no is never undone by linking.
