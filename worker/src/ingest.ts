@@ -2,15 +2,18 @@ import PostalMime from "postal-mime";
 import { getDomain } from "tldts";
 import { deleteThread, type Folder, type NewAttachment, type NewMessage, senderStatus, setSenderStatus, storeMessage, type ThreadRef } from "./store";
 import { DEFAULT_SETTINGS, findMailbox, getSettings, type Mailbox, mailboxes } from "./mailboxes";
+import { OWNER } from "./users";
 import { flattenAddresses, messageIdList, normalizeEmail, normalizeMessageId, toArrayBuffer } from "./util";
 
 export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
   const envelopeTo = normalizeEmail(message.to);
 
-  const [boxes, settings] = await Promise.all([
-    mailboxes(env).catch(() => [] as Mailbox[]),
-    getSettings(env).catch(() => ({ ...DEFAULT_SETTINGS })),
-  ]);
+  const allBoxes = await mailboxes(env, null).catch(() => [] as Mailbox[]);
+  // Whose mail this is: the recipient mailbox's user. An address routed here without a mailbox
+  // entry is the admin's.
+  const userId = findMailbox(allBoxes, envelopeTo)?.user_id ?? OWNER;
+  const boxes = allBoxes.filter((b) => b.user_id === userId);
+  const settings = await getSettings(env, userId).catch(() => ({ ...DEFAULT_SETTINGS }));
 
   // Optional copy to another (verified) address, e.g. during migration. Forward before touching raw.
   if (settings.forward_to) {
@@ -23,7 +26,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
 
   const raw = await new Response(message.raw).arrayBuffer();
   try {
-    await ingest(raw, envelopeTo, normalizeEmail(message.from), boxes, env);
+    await ingest(raw, envelopeTo, normalizeEmail(message.from), userId, boxes, env);
   } catch (err) {
     // Never bounce mail because of a storage bug; keep the original for reprocessing.
     console.error("ingest failed", err);
@@ -111,19 +114,27 @@ export function isVerified(auth: AuthVerdict, fromEmail: string, envelopeFrom: s
   return dkimAligned || spfAligned;
 }
 
-async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string, boxes: Mailbox[], env: Env): Promise<void> {
+/** Stores one incoming message for `userId`, whose mailboxes are `boxes`. */
+async function ingest(
+  raw: ArrayBuffer,
+  envelopeTo: string,
+  envelopeFrom: string,
+  userId: string,
+  boxes: Mailbox[],
+  env: Env,
+): Promise<void> {
   const parsed = await PostalMime.parse(raw, { attachmentEncoding: "arraybuffer" });
   const messageId = normalizeMessageId(parsed.messageId);
 
   // One message can arrive several times: once per recipient mailbox (often concurrently), or
-  // directly and through a list. A unique index keeps one stored copy; see absorbDuplicate.
+  // directly and through a list. A unique index keeps one stored copy per user; see absorbDuplicate.
   const findEarlier = () =>
     messageId
       ? env.DB.prepare(
           `SELECT m.id AS message_id, m.thread_id, t.folder, m.from_email, m.auth, t.message_count FROM messages m
-           JOIN threads t ON t.id = m.thread_id WHERE m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
+           JOIN threads t ON t.id = m.thread_id WHERE m.user_id = ? AND m.message_id = ? AND m.outgoing = 0 LIMIT 1`,
         )
-          .bind(messageId)
+          .bind(userId, messageId)
           .first<StoredCopy>()
       : Promise.resolve(null);
   const earlier = await findEarlier();
@@ -140,12 +151,12 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const spoofable = !!auth && !auth.verified;
 
   const ownAddress = !!findMailbox(boxes, from.email);
-  let status = ownAddress ? "approved" : await senderStatus(env, from.email);
+  let status = ownAddress ? "approved" : await senderStatus(env, userId, from.email);
   // Mail claiming to be from one of your own addresses that isn't verified is forged: quarantine it
   // (the Screener lists senders to decide on, and you are not one to decide on).
   if (ownAddress && spoofable) status = "blocked";
   if (!status && screened) {
-    await setSenderStatus(env, from.email, from.name || null, "pending");
+    await setSenderStatus(env, userId, from.email, from.name || null, "pending");
     status = "pending";
   }
 
@@ -162,7 +173,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
     // one), so replace it. A different sender reusing the Message-ID never replaces anything.
     if (storedUntrusted && !spoofable && stored.from_email === from.email) {
       if (stored.message_count === 1) {
-        await deleteThread(env, stored.thread_id);
+        await deleteThread(env, userId, stored.thread_id);
       } else {
         // The forgery already has replies: keep it (flagged) where it is, but it stops claiming
         // the Message-ID, so the genuine copy is stored and threads normally.
@@ -216,6 +227,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
   const date = Number.isFinite(parsedDate) && parsedDate < now + 86_400_000 ? parsedDate : now;
 
   const message: NewMessage = {
+    userId,
     outgoing: false,
     messageId,
     inReplyTo: normalizeMessageId(parsed.inReplyTo),
@@ -249,7 +261,7 @@ async function ingest(raw: ArrayBuffer, envelopeTo: string, envelopeFrom: string
 
   // A decision made while this message was being stored applies to it too: setSenderStatus moved
   // the sender's threads before this one existed (or before it went back to the Screener).
-  const nowStatus = screened && !ownAddress ? await senderStatus(env, from.email) : null;
+  const nowStatus = screened && !ownAddress ? await senderStatus(env, userId, from.email) : null;
   if (nowStatus === "blocked") {
     await env.DB.prepare("UPDATE threads SET folder = 'blocked', unread = 0 WHERE id = ? AND folder = 'screener'")
       .bind(stored.threadId)

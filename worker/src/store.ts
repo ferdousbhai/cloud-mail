@@ -15,6 +15,8 @@ export interface NewAttachment {
 }
 
 export interface NewMessage {
+  /** Whose mail this is (users.id). */
+  userId: string;
   outgoing: boolean;
   messageId: string | null;
   inReplyTo: string | null;
@@ -41,8 +43,10 @@ export interface NewMessage {
   joinThread?: (thread: ThreadRef) => boolean;
 }
 
-export async function senderStatus(env: Env, email: string): Promise<SenderStatus | null> {
-  const row = await env.DB.prepare("SELECT status FROM senders WHERE email = ?").bind(email).first<{ status: SenderStatus }>();
+export async function senderStatus(env: Env, userId: string, email: string): Promise<SenderStatus | null> {
+  const row = await env.DB.prepare("SELECT status FROM senders WHERE user_id = ? AND email = ?")
+    .bind(userId, email)
+    .first<{ status: SenderStatus }>();
   return row?.status ?? null;
 }
 
@@ -52,16 +56,16 @@ export interface ThreadRef {
   sender_email: string | null;
 }
 
-/** Threads containing any of these Message-IDs, most recent first. */
-async function findThreadsByMessageIds(env: Env, ids: string[]): Promise<ThreadRef[]> {
+/** One user's threads containing any of these Message-IDs, most recent first. */
+async function findThreadsByMessageIds(env: Env, userId: string, ids: string[]): Promise<ThreadRef[]> {
   if (ids.length === 0) return [];
   const unique = [...new Set(ids)].slice(-50);
   const placeholders = unique.map(() => "?").join(",");
   const rows = await env.DB.prepare(
     `SELECT t.id, t.folder, t.sender_email, MAX(m.date) AS latest FROM messages m JOIN threads t ON t.id = m.thread_id
-     WHERE m.message_id IN (${placeholders}) GROUP BY t.id ORDER BY latest DESC LIMIT 20`,
+     WHERE m.user_id = ? AND m.message_id IN (${placeholders}) GROUP BY t.id ORDER BY latest DESC LIMIT 20`,
   )
-    .bind(...unique)
+    .bind(userId, ...unique)
     .all<ThreadRef & { latest: number }>();
   return rows.results.map(({ id, folder, sender_email }) => ({ id, folder, sender_email }));
 }
@@ -72,14 +76,14 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
 
   let thread: { id: string; folder: Folder } | null = null;
   if (msg.threadId) {
-    thread = await env.DB.prepare("SELECT id, folder FROM threads WHERE id = ?").bind(msg.threadId).first();
+    thread = await env.DB.prepare("SELECT id, folder FROM threads WHERE id = ? AND user_id = ?").bind(msg.threadId, msg.userId).first();
   }
   if (!thread) {
     // Includes the message's own id so a message you sent to yourself joins the thread it was sent from.
     const ids = [...msg.refs, msg.inReplyTo, msg.outgoing ? null : msg.messageId];
     // The newest referenced thread this message may join; a reply-all that also references a
     // newcomer's separate Screener thread still joins the conversation it belongs to.
-    const candidates = await findThreadsByMessageIds(env, ids.filter((x): x is string => !!x));
+    const candidates = await findThreadsByMessageIds(env, msg.userId, ids.filter((x): x is string => !!x));
     thread = candidates.find((t) => !msg.joinThread || msg.joinThread(t)) ?? null;
   }
 
@@ -155,11 +159,11 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
     const party = msg.outgoing ? (msg.to[0] ?? msg.cc[0] ?? msg.from) : msg.from;
     stmts.push(
       env.DB.prepare(
-        `INSERT INTO threads (id, subject, folder, sender_email, from_name, from_email, to_address, snippet,
+        `INSERT INTO threads (id, user_id, subject, folder, sender_email, from_name, from_email, to_address, snippet,
            message_count, unread, has_attachments, last_sent_at, last_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
       ).bind(
-        threadId, subject, msg.newThreadFolder,
+        threadId, msg.userId, subject, msg.newThreadFolder,
         msg.outgoing ? (msg.to[0]?.email ?? null) : msg.from.email,
         party.name, party.email,
         msg.outgoing ? msg.from.email : msg.envelopeTo,
@@ -174,11 +178,11 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
 
   stmts.push(
     env.DB.prepare(
-      `INSERT INTO messages (id, thread_id, outgoing, message_id, in_reply_to, refs, from_name, from_email,
+      `INSERT INTO messages (id, user_id, thread_id, outgoing, message_id, in_reply_to, refs, from_name, from_email,
          to_json, cc_json, reply_to_json, envelope_to, subject, text_body, text_key, html_body, html_key, date, raw_key, auth)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
-      id, threadId, msg.outgoing ? 1 : 0, msg.messageId, msg.inReplyTo, msg.refs.join(" ") || null,
+      id, msg.userId, threadId, msg.outgoing ? 1 : 0, msg.messageId, msg.inReplyTo, msg.refs.join(" ") || null,
       msg.from.name, msg.from.email,
       JSON.stringify(msg.to), JSON.stringify(msg.cc), JSON.stringify(msg.replyTo),
       msg.envelopeTo, msg.subject, textBody, textKey, htmlBody, htmlKey, msg.date, rawKey,
@@ -211,28 +215,36 @@ export async function storeMessage(env: Env, msg: NewMessage): Promise<{ id: str
   return { id, threadId };
 }
 
-/** Records a screening decision and moves that sender's screener threads accordingly. */
-export async function setSenderStatus(env: Env, email: string, name: string | null, status: SenderStatus): Promise<number> {
+/** Records one user's screening decision and moves that sender's screener threads accordingly. */
+export async function setSenderStatus(
+  env: Env,
+  userId: string,
+  email: string,
+  name: string | null,
+  status: SenderStatus,
+): Promise<number> {
   const now = Date.now();
   const [, moved] = await env.DB.batch([
     status === "pending"
       ? // First sight of a sender never overrides a decision made meanwhile (or by a racing delivery).
         env.DB.prepare(
-          "INSERT INTO senders (email, name, status, decided_at, created_at) VALUES (?, ?, 'pending', NULL, ?) ON CONFLICT (email) DO NOTHING",
-        ).bind(email, name, now)
+          `INSERT INTO senders (user_id, email, name, status, decided_at, created_at) VALUES (?, ?, ?, 'pending', NULL, ?)
+           ON CONFLICT (user_id, email) DO NOTHING`,
+        ).bind(userId, email, name, now)
       : env.DB.prepare(
-          `INSERT INTO senders (email, name, status, decided_at, created_at) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (email) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at,
+          `INSERT INTO senders (user_id, email, name, status, decided_at, created_at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (user_id, email) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at,
              name = COALESCE(senders.name, excluded.name)`,
-        ).bind(email, name, status, now, now),
+        ).bind(userId, email, name, status, now, now),
     status === "approved"
       ? // Mail back from Blocked was never seen (blocking marks it read), so it comes back unread.
         env.DB.prepare(
           `UPDATE threads SET unread = CASE WHEN folder = 'blocked' THEN 1 ELSE unread END, folder = 'inbox'
-           WHERE sender_email = ? AND folder IN ('screener', 'blocked')`,
-        ).bind(email)
+           WHERE user_id = ? AND sender_email = ? AND folder IN ('screener', 'blocked')`,
+        ).bind(userId, email)
       : status === "blocked"
-        ? env.DB.prepare("UPDATE threads SET folder = 'blocked', unread = 0 WHERE sender_email = ? AND folder = 'screener'").bind(email)
+        ? env.DB.prepare("UPDATE threads SET folder = 'blocked', unread = 0 WHERE user_id = ? AND sender_email = ? AND folder = 'screener'")
+            .bind(userId, email)
         : env.DB.prepare("SELECT 1"),
   ]);
   return moved.meta.changes ?? 0;
@@ -245,21 +257,24 @@ export async function setSenderStatus(env: Env, email: string, name: string | nu
  */
 export async function setSenderStatuses(
   env: Env,
+  userId: string,
   senders: { email: string; name: string | null }[],
   status: "approved" | "blocked",
   onlyUndecided: boolean,
 ): Promise<number> {
   let changed = 0;
   for (const s of senders) {
-    const current = await senderStatus(env, s.email);
+    const current = await senderStatus(env, userId, s.email);
     if (current === status || (onlyUndecided && (current === "approved" || current === "blocked"))) continue;
-    await setSenderStatus(env, s.email, s.name, status);
+    await setSenderStatus(env, userId, s.email, s.name, status);
     changed++;
   }
   return changed;
 }
 
-export async function deleteThread(env: Env, threadId: string): Promise<boolean> {
+export async function deleteThread(env: Env, userId: string, threadId: string): Promise<boolean> {
+  const owned = await env.DB.prepare("SELECT 1 AS hit FROM threads WHERE id = ? AND user_id = ?").bind(threadId, userId).first();
+  if (!owned) return false;
   const messages = await env.DB.prepare("SELECT raw_key, html_key, text_key FROM messages WHERE thread_id = ?")
     .bind(threadId)
     .all<{ raw_key: string | null; html_key: string | null; text_key: string | null }>();

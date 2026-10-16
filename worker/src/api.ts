@@ -1,5 +1,17 @@
-import { deleteMailbox, getSettings, mailboxes, updateSettings, upsertMailbox } from "./mailboxes";
+import { deleteMailbox, findMailbox, getSettings, isForwardTarget, mailboxes, updateSettings, upsertMailbox } from "./mailboxes";
 import { deleteThread, senderStatus, setSenderStatus, setSenderStatuses, storeMessage } from "./store";
+import {
+  authenticate,
+  type Caller,
+  createUser,
+  findUser,
+  issueInvite,
+  listUsers,
+  OWNER,
+  redeemInvite,
+  revokeUser,
+  validName,
+} from "./users";
 import {
   type Address,
   arrayBufferToBase64,
@@ -11,7 +23,6 @@ import {
   normalizeMessageId,
   parseAddressList,
   textToHtml,
-  timingSafeEqual,
 } from "./util";
 
 interface ThreadRow {
@@ -148,8 +159,8 @@ function asRecipient(a: Address) {
   return a.name ? { email: a.email, name: a.name } : a.email;
 }
 
-async function identities(env: Env): Promise<Address[]> {
-  return (await mailboxes(env)).map(({ name, email }) => ({ name, email }));
+async function identities(env: Env, userId: string): Promise<Address[]> {
+  return (await mailboxes(env, userId)).map(({ name, email }) => ({ name, email }));
 }
 
 /** decodeURIComponent that yields "" (an invalid address) instead of throwing on malformed input. */
@@ -169,7 +180,7 @@ async function readJson<T>(req: Request): Promise<T | null> {
   }
 }
 
-async function listThreads(env: Env, url: URL): Promise<Response> {
+async function listThreads(env: Env, u: Caller, url: URL): Promise<Response> {
   const folder = url.searchParams.get("folder") ?? "inbox";
   const limit = Math.max(1, Math.min(Math.trunc(Number(url.searchParams.get("limit"))) || 50, 200));
   const before = Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
@@ -182,27 +193,27 @@ async function listThreads(env: Env, url: URL): Promise<Response> {
     const match = ftsQuery(q);
     if (!match) return json({ threads: [] });
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE folder != 'blocked' AND last_at < ? AND last_at > ? ${unread} AND id IN (
-         SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE user_id = ? AND folder != 'blocked' AND last_at < ? AND last_at > ? ${unread} AND id IN (
+         SELECT m.thread_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ? AND m.user_id = ?
        ) ORDER BY last_at DESC LIMIT ?`,
     )
-      .bind(before, since, match, limit)
+      .bind(u.id, before, since, match, u.id, limit)
       .all<ThreadRow>();
   } else if (folder === "sent") {
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE last_sent_at IS NOT NULL AND last_sent_at < ? AND last_sent_at > ?
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE user_id = ? AND last_sent_at IS NOT NULL AND last_sent_at < ? AND last_sent_at > ?
        ${unread} ORDER BY last_sent_at DESC LIMIT ?`,
     )
-      .bind(before, since, limit)
+      .bind(u.id, before, since, limit)
       .all<ThreadRow>();
     return json({ threads: rows.results.map((t) => ({ ...threadSummary(t), last_at: t.last_sent_at })) });
   } else if (folder === "all" || ["inbox", "archive", "screener", "blocked"].includes(folder)) {
     const [where, binds] = folder === "all" ? ["folder != 'blocked'", []] : ["folder = ?", [folder]];
     rows = await env.DB.prepare(
-      `SELECT ${THREAD_COLUMNS} FROM threads WHERE ${where} AND last_at < ? AND last_at > ?
+      `SELECT ${THREAD_COLUMNS} FROM threads WHERE user_id = ? AND ${where} AND last_at < ? AND last_at > ?
        ${unread} ORDER BY last_at DESC LIMIT ?`,
     )
-      .bind(...binds, before, since, limit)
+      .bind(u.id, ...binds, before, since, limit)
       .all<ThreadRow>();
   } else {
     return error("unknown folder");
@@ -279,7 +290,7 @@ export function parseAttachments(input: unknown): OutgoingAttachment[] | string 
   return out;
 }
 
-async function send(env: Env, req: Request): Promise<Response> {
+async function send(env: Env, u: Caller, req: Request): Promise<Response> {
   // Base64 makes attachments a third bigger in the request than in the message; anything far past
   // the message limit can't be sent anyway, so don't read it.
   if (Number(req.headers.get("content-length")) > 2 * MAX_MESSAGE_BYTES) {
@@ -296,7 +307,7 @@ async function send(env: Env, req: Request): Promise<Response> {
   const attachments = parseAttachments(body.attachments);
   if (typeof attachments === "string") return error(attachments);
 
-  const ids = await identities(env);
+  const ids = await identities(env, u.id);
   const requested = body.from ? parseAddressList(body.from)[0] : ids[0];
   const identity = requested && ids.find((i) => i.email === requested.email);
   if (!identity) return error("from must be one of your mailboxes");
@@ -304,7 +315,9 @@ async function send(env: Env, req: Request): Promise<Response> {
 
   let original: MessageRow | null = null;
   if (body.reply_to_message_id) {
-    original = await env.DB.prepare("SELECT * FROM messages WHERE id = ?").bind(body.reply_to_message_id).first<MessageRow>();
+    original = await env.DB.prepare("SELECT * FROM messages WHERE id = ? AND user_id = ?")
+      .bind(body.reply_to_message_id, u.id)
+      .first<MessageRow>();
     if (!original) return error("reply_to_message_id not found", 404);
   }
 
@@ -358,6 +371,7 @@ async function send(env: Env, req: Request): Promise<Response> {
   // client would retry and send it twice.
   try {
     const { id, threadId } = await storeMessage(env, {
+      userId: u.id,
       outgoing: true,
       messageId: normalizeMessageId(result.messageId) ?? `<${result.messageId}>`,
       inReplyTo: original?.message_id ?? null,
@@ -382,7 +396,7 @@ async function send(env: Env, req: Request): Promise<Response> {
     // Anyone you write to is screened in.
     for (const r of [...to, ...cc, ...bcc]) {
       if (ids.some((i) => i.email === r.email)) continue;
-      if ((await senderStatus(env, r.email)) !== "approved") await setSenderStatus(env, r.email, r.name || null, "approved");
+      if ((await senderStatus(env, u.id, r.email)) !== "approved") await setSenderStatus(env, u.id, r.email, r.name || null, "approved");
     }
 
     const [message] = await loadMessages(env, "id = ?", [id]);
@@ -402,38 +416,62 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
-  if (path === "/health") return json({ ok: true });
-  if (!path.startsWith("/api/")) return error("not found", 404);
-
-  const auth = req.headers.get("authorization") ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  if (!env.API_TOKEN || !token || !timingSafeEqual(token, env.API_TOKEN)) return error("unauthorized", 401);
-
   const method = req.method;
   let m: RegExpMatchArray | null;
+
+  if (path === "/health") return json({ ok: true });
+  // Someone opened an invite link in a browser: say what to do with it. Says nothing about the code.
+  if (method === "GET" && path.startsWith("/invite/")) {
+    return new Response(
+      `This is an invitation to read your mail with Cloudmail.\n\nOn your computer, install Cloudmail and run:\n\n  cloudmail connect ${url.origin}${path}\n`,
+      { headers: { "content-type": "text/plain; charset=utf-8" } },
+    );
+  }
+  if (!path.startsWith("/api/")) return error("not found", 404);
+
+  // The one call without a token: trading an invite for one.
+  if (method === "POST" && path === "/api/connect") {
+    const body = await readJson<{ code?: unknown }>(req);
+    const code = typeof body?.code === "string" ? body.code.trim() : "";
+    const redeemed = code ? await redeemInvite(env, code) : null;
+    if (!redeemed) return error("this invite is invalid, used or expired; ask for a new one", 403);
+    return json({ ok: true, ...redeemed });
+  }
+
+  const auth = req.headers.get("authorization") ?? "";
+  const u = await authenticate(env, auth.startsWith("Bearer ") ? auth.slice(7) : "");
+  if (!u) return error("unauthorized", 401);
+
+  if (method === "GET" && path === "/api/me") return json({ user: { name: u.name, role: u.admin ? "admin" : "user" } });
+  if (path === "/api/users" || path.startsWith("/api/users/")) {
+    if (!u.admin) return error("only the admin manages users", 403);
+    return users(env, req, url);
+  }
 
   if (method === "GET" && path === "/api/counts") {
     const row = await env.DB.prepare(
       `SELECT
-         (SELECT COUNT(*) FROM senders s WHERE s.status != 'blocked'
-            AND EXISTS (SELECT 1 FROM threads t WHERE t.sender_email = s.email AND t.folder = 'screener')) AS screener,
-         (SELECT COUNT(*) FROM threads WHERE folder = 'inbox') AS inbox,
-         (SELECT COUNT(*) FROM threads WHERE folder = 'inbox' AND unread = 1) AS inbox_unread`,
-    ).first<{ screener: number; inbox: number; inbox_unread: number }>();
+         (SELECT COUNT(*) FROM senders s WHERE s.user_id = ?1 AND s.status != 'blocked'
+            AND EXISTS (SELECT 1 FROM threads t WHERE t.user_id = ?1 AND t.sender_email = s.email AND t.folder = 'screener')) AS screener,
+         (SELECT COUNT(*) FROM threads WHERE user_id = ?1 AND folder = 'inbox') AS inbox,
+         (SELECT COUNT(*) FROM threads WHERE user_id = ?1 AND folder = 'inbox' AND unread = 1) AS inbox_unread`,
+    )
+      .bind(u.id)
+      .first<{ screener: number; inbox: number; inbox_unread: number }>();
     return json(row);
   }
 
-  if (method === "GET" && path === "/api/threads") return listThreads(env, url);
+  if (method === "GET" && path === "/api/threads") return listThreads(env, u, url);
 
   if ((m = path.match(/^\/api\/threads\/([\w-]+)$/))) {
     const id = m[1];
     if (method === "GET") {
-      const t = await env.DB.prepare(`SELECT ${THREAD_COLUMNS} FROM threads WHERE id = ?`).bind(id).first<ThreadRow>();
+      const t = await env.DB.prepare(`SELECT ${THREAD_COLUMNS} FROM threads WHERE id = ? AND user_id = ?`).bind(id, u.id).first<ThreadRow>();
       if (!t) return error("not found", 404);
       return json({ thread: threadSummary(t), messages: await loadMessages(env, "thread_id = ?", [id]) });
     }
     if (method === "DELETE") {
-      return (await deleteThread(env, id)) ? json({ ok: true }) : error("not found", 404);
+      return (await deleteThread(env, u.id, id)) ? json({ ok: true }) : error("not found", 404);
     }
   }
 
@@ -441,39 +479,41 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     const body = await readJson<{ folder?: string }>(req);
     if (body?.folder !== "inbox" && body?.folder !== "archive") return error("folder must be inbox or archive");
     // Only between Inbox and Archive: a Screener or Blocked thread leaves by deciding on its sender.
-    const res = await env.DB.prepare("UPDATE threads SET folder = ? WHERE id = ? AND folder IN ('inbox', 'archive')")
-      .bind(body.folder, m[1])
+    const res = await env.DB.prepare("UPDATE threads SET folder = ? WHERE id = ? AND user_id = ? AND folder IN ('inbox', 'archive')")
+      .bind(body.folder, m[1], u.id)
       .run();
     if (res.meta.changes) return json({ ok: true });
-    const t = await env.DB.prepare("SELECT folder FROM threads WHERE id = ?").bind(m[1]).first<{ folder: string }>();
+    const t = await env.DB.prepare("SELECT folder FROM threads WHERE id = ? AND user_id = ?").bind(m[1], u.id).first<{ folder: string }>();
     if (!t) return error("not found", 404);
     return error(`this thread is in ${t.folder}; approve or block its sender instead (POST /api/senders/:email)`, 409);
   }
 
   if (method === "POST" && (m = path.match(/^\/api\/threads\/([\w-]+)\/read$/))) {
     const body = await readJson<{ unread?: boolean }>(req);
-    const res = await env.DB.prepare("UPDATE threads SET unread = ? WHERE id = ?").bind(body?.unread ? 1 : 0, m[1]).run();
+    const res = await env.DB.prepare("UPDATE threads SET unread = ? WHERE id = ? AND user_id = ?").bind(body?.unread ? 1 : 0, m[1], u.id).run();
     return res.meta.changes ? json({ ok: true }) : error("not found", 404);
   }
 
   if (method === "GET" && path === "/api/screener") {
     const rows = await env.DB.prepare(
       `SELECT s.email, s.name, COUNT(t.id) AS thread_count, MAX(t.last_at) AS last_at,
-         (SELECT subject FROM threads t2 WHERE t2.sender_email = s.email AND t2.folder = 'screener'
+         (SELECT subject FROM threads t2 WHERE t2.user_id = s.user_id AND t2.sender_email = s.email AND t2.folder = 'screener'
             ORDER BY t2.last_at DESC LIMIT 1) AS last_subject
-       FROM senders s JOIN threads t ON t.sender_email = s.email AND t.folder = 'screener'
-       WHERE s.status != 'blocked'
+       FROM senders s JOIN threads t ON t.user_id = s.user_id AND t.sender_email = s.email AND t.folder = 'screener'
+       WHERE s.user_id = ? AND s.status != 'blocked'
        GROUP BY s.email ORDER BY last_at DESC`,
-    ).all();
+    )
+      .bind(u.id)
+      .all();
     return json({ senders: rows.results.map((r) => ({ ...r, name: r.name ?? "" })) });
   }
 
   if (method === "GET" && path === "/api/senders") {
     const status = url.searchParams.get("status") ?? "approved";
     const rows = await env.DB.prepare(
-      "SELECT email, COALESCE(name, '') AS name, status, decided_at FROM senders WHERE status = ? ORDER BY decided_at DESC",
+      "SELECT email, COALESCE(name, '') AS name, status, decided_at FROM senders WHERE user_id = ? AND status = ? ORDER BY decided_at DESC",
     )
-      .bind(status)
+      .bind(u.id, status)
       .all();
     return json({ senders: rows.results });
   }
@@ -487,8 +527,8 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     const found: { email: string; status: string }[] = [];
     for (let i = 0; i < emails.length; i += 90) {
       const chunk = emails.slice(i, i + 90);
-      const rows = await env.DB.prepare(`SELECT email, status FROM senders WHERE email IN (${chunk.map(() => "?").join(",")})`)
-        .bind(...chunk)
+      const rows = await env.DB.prepare(`SELECT email, status FROM senders WHERE user_id = ? AND email IN (${chunk.map(() => "?").join(",")})`)
+        .bind(u.id, ...chunk)
         .all<{ email: string; status: string }>();
       found.push(...rows.results);
     }
@@ -503,7 +543,7 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
       .filter((s): s is { email: string; name?: unknown } => typeof s === "object" && s !== null && typeof (s as { email?: unknown }).email === "string")
       .map((s) => ({ email: normalizeEmail(s.email), name: typeof s.name === "string" && s.name.trim() ? s.name.trim() : null }))
       .filter((s) => s.email.includes("@"));
-    const changed = await setSenderStatuses(env, senders, body.status, body.only_undecided === true);
+    const changed = await setSenderStatuses(env, u.id, senders, body.status, body.only_undecided === true);
     return json({ ok: true, changed });
   }
 
@@ -512,14 +552,16 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     if (!email.includes("@")) return error("invalid email address");
     const body = await readJson<{ status?: string }>(req);
     if (body?.status !== "approved" && body?.status !== "blocked") return error("status must be approved or blocked");
-    const moved = await setSenderStatus(env, email, null, body.status);
+    const moved = await setSenderStatus(env, u.id, email, null, body.status);
     return json({ ok: true, moved });
   }
 
-  if (method === "POST" && path === "/api/send") return send(env, req);
+  if (method === "POST" && path === "/api/send") return send(env, u, req);
 
   if (method === "GET" && (m = path.match(/^\/api\/attachments\/([\w-]+)$/))) {
-    const a = await env.DB.prepare("SELECT * FROM attachments WHERE id = ?").bind(m[1]).first<AttachmentRow>();
+    const a = await env.DB.prepare("SELECT a.* FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.id = ? AND m.user_id = ?")
+      .bind(m[1], u.id)
+      .first<AttachmentRow>();
     const obj = a && (await env.BUCKET.get(a.r2_key));
     if (!a || !obj) return error("not found", 404);
     return new Response(obj.body, {
@@ -531,7 +573,9 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
   if (method === "GET" && (m = path.match(/^\/api\/messages\/([\w-]+)\/raw$/))) {
-    const row = await env.DB.prepare("SELECT raw_key FROM messages WHERE id = ?").bind(m[1]).first<{ raw_key: string | null }>();
+    const row = await env.DB.prepare("SELECT raw_key FROM messages WHERE id = ? AND user_id = ?")
+      .bind(m[1], u.id)
+      .first<{ raw_key: string | null }>();
     const obj = row?.raw_key && (await env.BUCKET.get(row.raw_key));
     if (!obj) return error("not found", 404);
     return new Response(obj.body, {
@@ -540,36 +584,67 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   }
 
   if (method === "GET" && path === "/api/identities") {
-    const ids = await identities(env);
+    const ids = await identities(env, u.id);
     return json({ identities: ids, default: ids[0] ?? null });
   }
 
-  if (method === "GET" && path === "/api/mailboxes") return json({ mailboxes: await mailboxes(env) });
+  if (method === "GET" && path === "/api/mailboxes") {
+    // The admin can see who has which address.
+    const all = u.admin && url.searchParams.get("all") === "1";
+    return json({ mailboxes: await mailboxes(env, all ? null : u.id) });
+  }
 
   if ((m = path.match(/^\/api\/mailboxes\/([^/]+)$/))) {
     const email = normalizeEmail(safeDecode(m[1]));
     if (method === "PUT") {
-      const body = await readJson<{ name?: unknown; screen?: unknown; position?: unknown }>(req);
+      const body = await readJson<{ name?: unknown; screen?: unknown; position?: unknown; user?: unknown }>(req);
       if (!body) return error("invalid JSON");
       if (!EMAIL_RE.test(email)) return error("invalid email address");
-      // Mail to this address would be forwarded straight back here, forever.
-      if ((await getSettings(env)).forward_to === email) return error("this address is the forward_to target; change forward_to first");
       if (body.name !== undefined && typeof body.name !== "string") return error("name must be a string");
       if (body.screen !== undefined && typeof body.screen !== "boolean") return error("screen must be a boolean");
       if (body.position !== undefined && !Number.isInteger(body.position)) return error("position must be an integer");
+      if (body.user !== undefined && typeof body.user !== "string") return error("user must be a user name");
+      const existing = findMailbox(await mailboxes(env, null), email);
+      let userId: string;
+      if (!u.admin) {
+        // Anyone can rename or reorder their own addresses; adding or giving them away is the admin's.
+        if (body.user !== undefined || existing?.user_id !== u.id) return error("only the admin adds mailboxes or gives them to someone", 403);
+        userId = u.id;
+      } else if (typeof body.user === "string") {
+        const target = await findUser(env, body.user);
+        if (!target) return error(`no user named ${body.user}`, 404);
+        userId = target.id;
+      } else {
+        userId = existing?.user_id ?? u.id;
+      }
+      // Mail to this address would be forwarded straight back here, forever.
+      if (await isForwardTarget(env, email)) return error("this address is a forward_to target; change forward_to first");
       const mailbox = await upsertMailbox(env, {
         email,
+        userId,
         name: body.name as string | undefined,
         screen: body.screen as boolean | undefined,
         position: body.position as number | undefined,
       });
       return json({ ok: true, mailbox });
     }
-    if (method === "DELETE") return (await deleteMailbox(env, email)) ? json({ ok: true }) : error("not found", 404);
+    if (method === "DELETE") {
+      if (!u.admin) return error("only the admin removes mailboxes", 403);
+      return (await deleteMailbox(env, email)) ? json({ ok: true }) : error("not found", 404);
+    }
   }
 
   if (path === "/api/settings") {
-    if (method === "GET") return json({ settings: await getSettings(env) });
+    // The admin can see and set someone's forwarding (its destination is verified in the admin's Cloudflare account).
+    const who = url.searchParams.get("user");
+    let userId = u.id;
+    if (who) {
+      if (!u.admin) return error("only the admin changes someone else's settings", 403);
+      const target = await findUser(env, who);
+      if (!target) return error(`no user named ${who}`, 404);
+      userId = target.id;
+    }
+    if (method === "GET") return json({ settings: await getSettings(env, userId) });
     if (method === "PATCH") {
       const body = await readJson<Record<string, unknown>>(req);
       if (!body) return error("invalid JSON");
@@ -578,12 +653,53 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
         if (typeof body.forward_to !== "string") return error("forward_to must be a string");
         forward_to = normalizeEmail(body.forward_to);
         if (forward_to && !EMAIL_RE.test(forward_to)) return error("forward_to must be an email address");
-        // Forwarding to one of your own mailboxes would route straight back here, forever.
-        if ((await mailboxes(env)).some((mb) => mb.email === forward_to)) return error("forward_to cannot be one of your mailboxes");
+        // Forwarding to an address this worker receives would route straight back here, forever.
+        if ((await mailboxes(env, null)).some((mb) => mb.email === forward_to)) return error("forward_to cannot be a mailbox here");
       }
-      return json({ ok: true, settings: await updateSettings(env, { forward_to }) });
+      return json({ ok: true, settings: await updateSettings(env, userId, { forward_to }) });
     }
   }
 
+  return error("not found", 404);
+}
+
+/** The admin's user management: /api/users and /api/users/:name[/invite]. */
+async function users(env: Env, req: Request, url: URL): Promise<Response> {
+  const method = req.method;
+  const path = url.pathname;
+  if (path === "/api/users") {
+    if (method === "GET") return json({ users: await listUsers(env) });
+    if (method === "POST") {
+      const body = await readJson<{ name?: unknown; mailboxes?: unknown }>(req);
+      const name = typeof body?.name === "string" ? body.name.trim().toLowerCase() : "";
+      if (!validName(name)) return error("name must be 1–32 lowercase letters, digits, - or _, starting with a letter or digit");
+      const list = body?.mailboxes ?? [];
+      if (!Array.isArray(list) || list.some((e) => typeof e !== "string" || !EMAIL_RE.test(normalizeEmail(e)))) {
+        return error("mailboxes must be a list of email addresses");
+      }
+      if (await findUser(env, name)) return error(`${name} already exists; send a new invite with POST /api/users/${name}/invite`, 409);
+      for (const e of list as string[]) {
+        if (await isForwardTarget(env, e)) return error(`${normalizeEmail(e)} is a forward_to target; change forward_to first`);
+      }
+      const id = await createUser(env, name);
+      for (const e of list as string[]) await upsertMailbox(env, { email: e, userId: id });
+      const invite = await issueInvite(env, id, url.origin);
+      const user = (await listUsers(env)).find((x) => x.name === name);
+      return json({ ok: true, user, invite });
+    }
+    return error("not found", 404);
+  }
+
+  const m = path.match(/^\/api\/users\/([^/]+)(\/invite)?$/);
+  if (!m) return error("not found", 404);
+  const user = await findUser(env, safeDecode(m[1]));
+  if (!user) return error("not found", 404);
+  if (user.id === OWNER) return error("the admin signs in with the worker's API_TOKEN; rotate it with `cloudmail setup --force`");
+  if (method === "POST" && m[2]) return json({ ok: true, invite: await issueInvite(env, user.id, url.origin) });
+  if (method === "DELETE" && !m[2]) {
+    const purge = url.searchParams.get("purge") === "1";
+    await revokeUser(env, user, purge);
+    return json({ ok: true, purged: purge });
+  }
   return error("not found", 404);
 }
