@@ -19,7 +19,7 @@
 //! (HEY's CLI exposes none) it is a copy when the sender's address and the subject (ignoring
 //! Re:/Fwd:) match and the latest activity is within `DUPLICATE_WINDOW_MS`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::client::{Client, ThreadQuery};
@@ -126,28 +126,33 @@ pub fn merge_senders(mut worker: Vec<PendingSender>, accounts: Vec<PendingSender
 /// The senders of threads waiting in the Screener, one entry each, newest first.
 pub fn waiting_senders(threads: &[ThreadSummary]) -> Vec<PendingSender> {
     let mut out: Vec<PendingSender> = Vec::new();
+    let mut by_email = HashMap::<String, usize>::new();
     for t in threads {
         let Some(from) = t.from.as_ref().filter(|a| a.email.contains('@')) else {
             continue;
         };
         let email = from.email.to_ascii_lowercase();
-        match out.iter_mut().find(|s| s.email == email) {
-            Some(s) => {
+        match by_email.get(&email).copied() {
+            Some(index) => {
+                let s = &mut out[index];
                 s.thread_count += 1;
                 if t.last_at > s.last_at {
                     s.last_at = t.last_at;
                     s.last_subject = Some(t.subject.clone());
                 }
             }
-            None => out.push(PendingSender {
-                email,
-                name: from.name.clone(),
-                thread_count: 1,
-                last_subject: Some(t.subject.clone()),
-                last_at: t.last_at,
-                account: t.account.clone(),
-                id: None,
-            }),
+            None => {
+                by_email.insert(email.clone(), out.len());
+                out.push(PendingSender {
+                    email,
+                    name: from.name.clone(),
+                    thread_count: 1,
+                    last_subject: Some(t.subject.clone()),
+                    last_at: t.last_at,
+                    account: t.account.clone(),
+                    id: None,
+                });
+            }
         }
     }
     out.sort_by_key(|s| std::cmp::Reverse(s.last_at));
@@ -523,6 +528,7 @@ impl Mail {
     fn worker_message_ids(&self, threads: &[&ThreadSummary]) -> HashMap<String, Vec<String>> {
         let mut out = HashMap::new();
         let mut todo: Vec<(String, i64)> = Vec::new();
+        let mut pending = HashSet::new();
         {
             let cache = self.worker_ids.lock().unwrap();
             for t in threads {
@@ -530,7 +536,7 @@ impl Mail {
                     Some((_, ids)) => {
                         out.insert(t.id.clone(), ids.clone());
                     }
-                    None if !todo.iter().any(|(id, _)| *id == t.id) => todo.push((t.id.clone(), t.last_at)),
+                    None if pending.insert(&t.id) => todo.push((t.id.clone(), t.last_at)),
                     None => {}
                 }
             }
@@ -736,6 +742,29 @@ mod tests {
             last_at: at,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn waiting_senders_groups_case_insensitively_and_keeps_first_seen_ties() {
+        let mut first = t("one", "Ann@Example.com", "older", 10);
+        first.from.as_mut().unwrap().name = Some("First name".into());
+        first.account = Some("first-account".into());
+        let mut latest = t("two", "ANN@example.com", "newest", 30);
+        latest.from.as_mut().unwrap().name = Some("Later name".into());
+        let rows = waiting_senders(&[
+            first,
+            t("third", "bob@example.com", "same time", 30),
+            latest,
+            t("equal", "ann@example.com", "later input, same time", 30),
+            t("invalid", "no-domain", "ignored", 50),
+        ]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].email, "ann@example.com");
+        assert_eq!(rows[0].thread_count, 3);
+        assert_eq!(rows[0].last_subject.as_deref(), Some("newest"));
+        assert_eq!(rows[0].name.as_deref(), Some("First name"));
+        assert_eq!(rows[0].account.as_deref(), Some("first-account"));
+        assert_eq!(rows[1].email, "bob@example.com");
     }
 
     #[test]
