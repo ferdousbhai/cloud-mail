@@ -264,9 +264,9 @@ to your own mail, in the app and the CLI. It's opt-in: until you add an account,
 HEY goes through HEY's official [`hey` CLI](https://github.com/basecamp/hey-cli), so Cloudmail never
 sees a HEY password or token. Gmail goes through Google's
 [Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in that asks for
-Gmail and its filters only (`account add gmail` installs `gws` for you when it's missing). iCloud Mail goes through
-the sign-in that [icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every
-app on the computer, so there's no password to give Cloudmail and no IMAP.
+Gmail and its filters only (`account add gmail` installs `gws` for you when it's missing). iCloud
+Mail goes through the sign-in that [icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy)
+keeps for every app on the computer, so there's no password to give Cloudmail and no IMAP.
 
 ```sh
 cloudmail account add hey     # checks hey is installed; runs `hey auth login` if you aren't signed in
@@ -283,8 +283,12 @@ accounts button in the sidebar links them from the first screen.
 Gmail and iCloud Mail have no Screener of their own, so Cloudmail's decides for them, and keeps its
 decisions in the accounts themselves: Gmail filters and iCloud Mail rules. Every computer sees the
 same decisions, with or without a worker, and a "no" keeps that sender out of the Inbox on your
-phone too. HEY keeps its own Screener. One decision per sender, wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
-Archive and the Screener, how forwarded copies are hidden, and what happens when a sign-in expires:
+phone too. HEY keeps its own Screener. One decision per sender, wherever their mail comes. A Gmail
+account linked before this asks you to sign in again once (`cloudmail account login gmail`): the
+filters need Gmail's "basic mail settings" permission.
+
+How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox, Archive and the Screener,
+how forwarded copies are hidden, and what happens when a sign-in expires:
 [docs/linked-accounts.md](docs/linked-accounts.md).
 
 ## Limitations
@@ -339,11 +343,17 @@ What it doesn't do (yet), so you know before you move a domain:
   own. Gmail's sign-in is gws's, in Cloudmail's own gws directory: gws keeps its encryption key in a
   file there because its keyring backend shares one `gws-cli` entry with any gws of yours and still
   writes that file on Linux. A Gmail OAuth client secret of your own goes in the keyring.
+- Cloudmail writes to your Gmail and iCloud Mail only what the Screener needs: Gmail filters (each
+  marked by a hidden `Cloudmail/Blocked` or `Cloudmail/Screened in` label) and iCloud Mail rules named
+  `Cloudmail Screener: …`, which hold the senders you approved or blocked. Your own filters and rules
+  are never changed. Gmail's sign-in asks for `gmail.modify` and `gmail.settings.basic` (filters).
 - Message HTML is untrusted. The desktop app renders it with JavaScript disabled, remote loads
   blocked and links opened in your browser.
 - Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,
   for domains without a DMARC policy, DKIM or SPF aligned with the From domain (the same test DMARC
   applies). Mail from a domain with no working SPF or DKIM therefore waits in the Screener each time.
+  Gmail and iCloud Mail don't pass Cloudflare's verdict on, so their screening goes by the From
+  address alone (Gmail's and Apple's own spam filtering still applies).
 - Mail that can't be parsed or stored is never bounced: the raw message is kept in R2 under `failed/`.
 
 ## Contributing

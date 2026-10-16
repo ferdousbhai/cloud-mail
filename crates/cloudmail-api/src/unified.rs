@@ -69,8 +69,8 @@ type WorkerIds = (i64, Vec<String>);
 
 #[derive(Clone)]
 pub struct Mail {
-    /// The worker, if there is one; without it only linked accounts are shown, unscreened (HEY
-    /// keeps its own Screener).
+    /// The worker, if there is one; without it only linked accounts are shown (still screened: their
+    /// decisions live in the accounts).
     pub client: Option<Client>,
     pub accounts: Vec<Arc<dyn Provider>>,
     /// Configured accounts that couldn't be opened (unknown provider, …).

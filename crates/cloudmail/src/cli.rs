@@ -6,7 +6,7 @@ use std::path::PathBuf;
     name = "cloudmail",
     version,
     about = "Your own email on Cloudflare, from the terminal",
-    long_about = "cloudmail reads, screens and sends mail through your cloudmail worker (Cloudflare Email Service).\n\
+    long_about = "cloudmail reads, screens and sends mail through your cloudmail worker (Cloudflare Email Service) and any linked HEY, Gmail and iCloud Mail accounts.\n\
                   Output is human-readable on a terminal and a JSON envelope when piped; see `cloudmail agent-guide`.",
     disable_help_subcommand = true
 )]
@@ -62,7 +62,7 @@ pub enum Command {
 
     /// List senders waiting in the Screener, or screen them in or out
     Screener(ScreenerArgs),
-    /// List senders you have already screened
+    /// List senders your worker has screened (Gmail's and iCloud's lists live in those accounts)
     Senders(SendersArgs),
 
     /// Write and send a new message

@@ -1963,7 +1963,14 @@ fn gmail_account_add_list_remove() {
             .contains("access_denied")
     );
 
+    // An access token gws cached for an earlier sign-in, which would keep its old permissions.
+    std::fs::create_dir_all(h.gws_dir()).unwrap();
+    std::fs::write(h.gws_dir().join("token_cache.json"), "{}").unwrap();
     let o = h.run(&m, &["account", "add", "gmail", "--login"], &client);
+    assert!(
+        !h.gws_dir().join("token_cache.json").exists(),
+        "the old access token is dropped"
+    );
     assert!(
         o.status.success(),
         "{}\n{}",

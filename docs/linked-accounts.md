@@ -58,7 +58,9 @@ cloudmail account list
 cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
 ```
 
-The sign-in asks for Gmail only (read, label, archive and send; nothing else in your Google account).
+The sign-in asks for Gmail only (read, label, archive and send, and its basic settings for the
+Screener's filters; nothing else in your Google account). A Gmail account linked before Cloudmail
+used filters asks you to sign in again once.
 While Cloudmail's Google app awaits Google's verification, Google shows **"Google hasn't verified
 this app"**: choose **Advanced**, then **Go to Cloudmail**. The sign-in is kept in Cloudmail's own
 directory (`~/.config/cloudmail/gws/gmail`), apart from any `gws` you use yourself, which it never
@@ -153,3 +155,6 @@ What a decision does:
   its own mail. A no is never undone by linking.
 - The first time Cloudmail screens an account, it starts its lists with your own addresses and,
   with a worker, the decisions your worker already had (from before they lived in the accounts).
+- Gmail and iCloud Mail mail is screened by its From address alone (Cloudflare's DMARC check is
+  only for mail your worker receives). One-off bounce addresses with more than 64 characters
+  before the @ aren't put in iCloud rules (iCloud refuses them); no later mail comes from them.

@@ -87,7 +87,8 @@ Works with or without a worker; without one, `mailbox`, `user`, `settings` and `
 `not_configured` ("needs a Cloudmail worker"). The Screener works either way: HEY uses its own, and
 Gmail's and iCloud Mail's decisions live in the accounts (Gmail filters, iCloud rules named
 "Cloudmail Screener: …"), so a no also keeps that sender out of the Inbox on their phone. A Gmail
-account linked before filters were used fails with `account_unauthorized`: `cloudmail account login gmail`.
+account linked before filters were used fails with `account_unauthorized`:
+`cloudmail account login gmail`.
 
 Sign-ins open a browser or window, so from an agent either pass `--login` (opens it on the user's
 desktop) or have the user run it in their terminal. Without either, `add` fails with `not_logged_in`.

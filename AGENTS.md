@@ -12,7 +12,7 @@ CONTRIBUTING.md.
 
 | path | what |
 |---|---|
-| `crates/cloudmail-api` | library shared by CLI and app: worker `Client` (`client.rs`), config (`config.rs`), the `Provider` trait (`provider.rs`) and its HEY, Gmail and iCloud Mail implementations (`hey.rs`, `gmail.rs`, `icloud.rs`, `session.rs`), merging and screening across providers (`unified.rs`), linking (`accounts.rs`), Secret Service (`keyring.rs`) |
+| `crates/cloudmail-api` | library shared by CLI and app: worker `Client` (`client.rs`), config (`config.rs`), the `Provider` trait (`provider.rs`) and its HEY, Gmail and iCloud Mail implementations (`hey.rs`, `gmail.rs`, `icloud.rs`, `session.rs`), merging and screening across providers (`unified.rs`), the Screener's lists kept in Gmail filters and iCloud rules (`screening.rs`), linking (`accounts.rs`), Secret Service (`keyring.rs`) |
 | `crates/cloudmail` | the CLI: clap definitions (`cli.rs`), mail commands (`mail.rs`), `setup` on Cloudflare (`setup.rs`), mailboxes, settings, `user` and `connect` (`admin.rs`), JSON envelope and exit codes (`output.rs`), `agent-guide`, `commands` and the built-in skill (`docs.rs`). Tests in `tests/cli.rs` with fakes (`tests/fake-hey`, `tests/fake-gws`, `tests/support`) |
 | `crates/cloudmail-gtk` | GTK 4 + WebKitGTK 6.0 app (`src/ui/`); needs Rust 1.95 |
 | `worker/` | the Worker (TypeScript, `cf` CLI): `src/api.ts` (bearer-token JSON API under `/api/*`, plus `/health`), `src/ingest.ts` (incoming email), `src/store.ts`, `src/mailboxes.ts`, `src/users.ts` (tokens, invites; the `API_TOKEN` secret is the admin, user `owner`). D1 schema in `migrations/`; tests in `test/` (bun) |

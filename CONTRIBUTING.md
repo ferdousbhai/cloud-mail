@@ -38,13 +38,17 @@ Linked accounts live in `crates/cloudmail-api`: `provider.rs` is the `Provider` 
 through `gws gmail users … --params '<json>'`, `icloud.rs` maps the requests icloud.com's own Mail
 app sends (its doc comment says what each is and where that is established) with the session from
 `session.rs` (icloud-session's D-Bus interface), `accounts.rs` links and unlinks accounts for the CLI
-and the app, `keyring.rs` keeps secrets in the Secret Service, and `unified.rs` merges providers,
-screens Gmail and iCloud Mail with your worker's decisions, turns their failures into warnings and
-hides forwarded copies. A new provider implements `Provider`, prefixes its IDs with
+and the app, `keyring.rs` keeps secrets in the Secret Service, `screening.rs` holds the Screener's
+lists that Gmail filters and iCloud Mail rules keep, and `unified.rs` merges providers, screens Gmail
+and iCloud Mail with those lists (recording each decision in every account and the worker), turns
+their failures into warnings and hides forwarded copies. The worker is optional (`Mail.client`). A
+new provider implements `Provider`, prefixes its IDs with
 its account name and is added to `provider::open`; the config entry is `[accounts.<name>] provider =
 "…"`. Tests and headless runs never touch a real account: `CLOUDMAIL_HEY_COMMAND=crates/cloudmail/tests/fake-hey`
 and `CLOUDMAIL_GWS_COMMAND=crates/cloudmail/tests/fake-gws` answer with synthetic data
-(`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`).
+(`FAKE_HEY_MODE=logged_out|crash|garbage`, `FAKE_GWS_MODE=expired|revoked|offline|crash|garbage`,
+`FAKE_GWS_SCOPE=modify` for a sign-in without the filters scope); the fake gws keeps labels and
+filters in its config directory, and the fake iCloud keeps rules.
 The CLI tests never reach the real session bus: each that needs one starts a private `dbus-daemon`
 (the `dbus` package) with stand-ins for the Secret Service and icloud-session, and iCloud Mail's
 web services as an in-process HTTP server (`crates/cloudmail/tests/support`); every other test runs
@@ -59,9 +63,10 @@ A build or a user can use its own client instead with
 the built-in values are ever blanked out and none is given, `account add gmail` says the sign-in isn't
 configured. To make a client: a Google Cloud project with the Gmail API enabled, an OAuth consent
 screen (External, published "In production", since test-mode sign-ins expire after 7 days) with the
-`https://www.googleapis.com/auth/gmail.modify` scope, and an OAuth client of type "Desktop app".
-`gmail.modify` is a restricted scope: until Google verifies the app, users see the unverified-app
-screen and at most 100 people can sign in.
+`https://www.googleapis.com/auth/gmail.modify` and `https://www.googleapis.com/auth/gmail.settings.basic`
+scopes (the second for the Screener's filters), and an OAuth client of type "Desktop app". Both are
+restricted scopes: until Google verifies the app, users see the unverified-app screen and at most 100
+people can sign in. Adding a scope means everyone signs in again once.
 
 ## Releasing
 

@@ -42,6 +42,7 @@ HEY has its own Screener, and Cloudmail shows it as is: a sender waiting in both
 decision covers both. Gmail and iCloud Mail have no Screener, so Cloudmail gives them one and keeps
 its decisions in the accounts themselves: Gmail filters and iCloud Mail rules, so a "no" keeps that
 sender's later mail out of the Inbox on your phone too, with or without a worker. One decision per
-sender, wherever their mail comes. Linking an account screens in the people it already corresponds
+sender, wherever their mail comes. The forged-sender checks above are for mail your worker
+receives; Gmail and iCloud Mail mail is screened by its From address. Linking an account screens in the people it already corresponds
 with, without overriding a "no" you've already given. Details:
 [linked-accounts.md](linked-accounts.md#one-screener-for-gmail-and-icloud-mail).
