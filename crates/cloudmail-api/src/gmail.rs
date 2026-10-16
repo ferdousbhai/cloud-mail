@@ -8,16 +8,23 @@
 //! back to Application Default Credentials. So signing Cloudmail in to Gmail never touches a gws
 //! setup of your own, and yours never answers for Cloudmail.
 //!
-//! Sign-in: `gws auth login --scopes <gmail.modify>` with Cloudmail's built-in OAuth client (see
-//! `GOOGLE_CLIENT_ID`), so there is nothing to set up in Google Cloud: one browser sign-in.
+//! Sign-in: `gws auth login --scopes <gmail.modify>,<gmail.settings.basic>` with Cloudmail's
+//! built-in OAuth client (see `GOOGLE_CLIENT_ID`), so there is nothing to set up in Google Cloud: one
+//! browser sign-in. The second scope is for the Screener's filters; a sign-in from before it was
+//! asked for gets 403 insufficient permissions there, which says to sign in again.
 //!
 //! IDs: a thread is `gmail:<threadId>`, a message `gmail:<threadId>/<messageId>`, an attachment
 //! `gmail:<messageId>:<partId>` (Gmail's own attachment IDs change on every read).
 //!
 //! Folders: the Inbox is Gmail's INBOX label; archiving removes it (Gmail's own archive) and
 //! "move to Inbox" adds it back; the Archive lists threads with mail outside the Inbox; Sent is the
-//! SENT label; unread is the UNREAD label. Gmail has no Screener, so your worker's decides (see
-//! `unified.rs`).
+//! SENT label; unread is the UNREAD label.
+//!
+//! The Screener: Gmail has none, so Cloudmail screens it, keeping the decisions in Gmail filters
+//! (`screening.rs`): `settings filters list|create|delete` (filters can't be changed, so a changed
+//! one is created anew, then the old one deleted). Each of Cloudmail's filters adds one of two
+//! hidden labels, `Cloudmail/Screened in` (with "never Spam") or `Cloudmail/Blocked` (skipping the
+//! Inbox), which is how they are told from yours; its criteria are `from: a OR b OR …`.
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_PAD_INDIFFERENT};
@@ -33,6 +40,7 @@ use crate::client::ThreadQuery;
 use crate::config::AccountConfig;
 use crate::error::{Error, ErrorKind, Result};
 use crate::provider::{AccountStatus, PrivateDir, Provider, Run, run_command};
+use crate::screening::{self, APPROVED, BLOCKED, Lists, Pieces};
 use crate::text::{bare_email, html_to_text, split_addresses};
 use crate::types::*;
 
@@ -50,6 +58,14 @@ pub const CLIENT_SECRET_ENV: &str = "CLOUDMAIL_GOOGLE_CLIENT_SECRET";
 pub const BROWSER_ENV: &str = "CLOUDMAIL_BROWSER";
 /// Read, label, archive and send; nothing else in your Google account.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+/// For the Screener's filters.
+pub const SETTINGS_SCOPE: &str = "https://www.googleapis.com/auth/gmail.settings.basic";
+/// The hidden labels that mark Cloudmail's Screener filters.
+const SCREEN_LABELS: [(&str, &str); 2] = [(APPROVED, "Cloudmail/Screened in"), (BLOCKED, "Cloudmail/Blocked")];
+/// Each filter's `from:` list stays this short (Gmail limits a filter's criteria).
+const FILTER_CHARS: usize = 1000;
+/// How long a read of the filters is reused within one process.
+const SCREEN_TTL: Duration = Duration::from_secs(60);
 /// Google's Workspace CLI on npm; `cloudmail account add gmail` installs it when it's missing.
 pub const PACKAGE: &str = "@googleworkspace/cli";
 pub const INSTALL_HINT: &str = "install Google's Workspace CLI: `npm install -g @googleworkspace/cli` (or a release binary from https://github.com/googleworkspace/cli/releases), or pass --command <path>";
@@ -94,6 +110,16 @@ pub struct Gmail {
     client: Option<(String, String)>,
     cache: Mutex<HashMap<String, Cached>>,
     own: Mutex<Option<Vec<Address>>>,
+    /// The Screener's lists as last read from the filters.
+    screen: Mutex<Option<(Instant, Lists)>>,
+}
+
+/// The addresses in a filter's `from` criteria (`a OR b`, perhaps in braces or parentheses).
+fn from_addresses(from: &str) -> Vec<String> {
+    from.split(|c: char| c.is_whitespace() || "(){}\"".contains(c))
+        .filter(|t| t.contains('@'))
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 fn text(v: &Value) -> String {
@@ -440,7 +466,60 @@ impl Gmail {
             client: client_credentials(cfg),
             cache: Mutex::new(load_cache(&gws_dir(name))),
             own: Default::default(),
+            screen: Default::default(),
         }
+    }
+
+    /// The Screener's hidden labels by list, creating those in `create` that are missing.
+    fn screen_labels(&self, create: &[&str]) -> Result<HashMap<&'static str, String>> {
+        let data = self.call(&["labels", "list"], json!({ "userId": "me" }), None)?;
+        let mut out = HashMap::new();
+        for (kind, name) in SCREEN_LABELS {
+            let found = data["labels"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|l| l["name"] == name)
+                .map(|l| text(&l["id"]));
+            let id = match found {
+                Some(id) => id,
+                None if create.contains(&kind) => text(
+                    &self.call(
+                        &["labels", "create"],
+                        json!({ "userId": "me" }),
+                        Some(&json!({ "name": name, "labelListVisibility": "labelHide", "messageListVisibility": "hide" })),
+                    )?["id"],
+                ),
+                None => continue,
+            };
+            if !id.is_empty() {
+                out.insert(kind, id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Cloudmail's Screener filters by list: (filter id, its addresses).
+    fn screen_filters(&self, labels: &HashMap<&'static str, String>) -> Result<Pieces<String>> {
+        let mut out: Pieces<String> = HashMap::new();
+        if labels.is_empty() {
+            return Ok(out);
+        }
+        let data = self.call(&["settings", "filters", "list"], json!({ "userId": "me" }), None)?;
+        for f in data["filter"].as_array().into_iter().flatten() {
+            let adds: Vec<String> = f["action"]["addLabelIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(text)
+                .collect();
+            if let Some((kind, _)) = labels.iter().find(|(_, id)| adds.contains(id)) {
+                out.entry(kind)
+                    .or_default()
+                    .push((text(&f["id"]), from_addresses(&text(&f["criteria"]["from"]))));
+            }
+        }
+        Ok(out)
     }
 
     /// Writes the cache for the next run: the most recent threads, privately, atomically.
@@ -601,7 +680,7 @@ impl Gmail {
         })?;
         let mut cmd = self.gws();
         cmd.current_dir(&self.dir)
-            .args(["auth", "login", "--scopes", SCOPE])
+            .args(["auth", "login", "--scopes", &format!("{SCOPE},{SETTINGS_SCOPE}")])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1418,8 +1497,92 @@ impl Provider for Gmail {
             .unwrap_or_default()
     }
 
-    fn screened_by_worker(&self) -> bool {
+    fn screened_by_cloudmail(&self) -> bool {
         true
+    }
+
+    fn screen_lists(&self, fresh: bool) -> Result<Lists> {
+        if !fresh
+            && let Some((at, lists)) = self.screen.lock().unwrap().as_ref()
+            && at.elapsed() < SCREEN_TTL
+        {
+            return Ok(lists.clone());
+        }
+        let filters = self.screen_filters(&self.screen_labels(&[])?)?;
+        let lists = Lists {
+            kept: !filters.is_empty(),
+            approved: filters
+                .get(APPROVED)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, a)| a.clone())
+                .collect(),
+            blocked: filters
+                .get(BLOCKED)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, a)| a.clone())
+                .collect(),
+        };
+        *self.screen.lock().unwrap() = Some((Instant::now(), lists.clone()));
+        Ok(lists)
+    }
+
+    fn save_screen_lists(&self, lists: &Lists) -> Result<()> {
+        let needed: Vec<&str> = [APPROVED, BLOCKED]
+            .into_iter()
+            .filter(|k| !lists.list(k).is_empty())
+            .collect();
+        let labels = self.screen_labels(&needed)?;
+        let mut filters = self.screen_filters(&labels)?;
+        for kind in [APPROVED, BLOCKED] {
+            let existing = filters.remove(kind).unwrap_or_default();
+            let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
+            let want = screening::rechunk(&pieces, lists.list(kind), |p| p.join(" OR ").len() <= FILTER_CHARS);
+            let sorted = |a: &[String]| {
+                let mut a = a.to_vec();
+                a.sort();
+                a
+            };
+            let mut kept = vec![false; existing.len()];
+            // New filters first, then the old ones go: never a moment without the decision.
+            for piece in &want {
+                if let Some(i) = existing
+                    .iter()
+                    .enumerate()
+                    .position(|(i, (_, a))| !kept[i] && sorted(a) == sorted(piece))
+                {
+                    kept[i] = true;
+                    continue;
+                }
+                let skip = if kind == BLOCKED { "INBOX" } else { "SPAM" };
+                self.call(
+                    &["settings", "filters", "create"],
+                    json!({ "userId": "me" }),
+                    Some(&json!({
+                        "criteria": { "from": piece.join(" OR ") },
+                        "action": { "addLabelIds": [labels[kind]], "removeLabelIds": [skip] },
+                    })),
+                )?;
+            }
+            for ((id, _), keep) in existing.iter().zip(kept) {
+                if !keep {
+                    self.call(
+                        &["settings", "filters", "delete"],
+                        json!({ "userId": "me", "id": id }),
+                        None,
+                    )?;
+                }
+            }
+        }
+        *self.screen.lock().unwrap() = Some((
+            Instant::now(),
+            Lists {
+                kept: true,
+                ..lists.clone()
+            },
+        ));
+        Ok(())
     }
 
     fn correspondents(&self, limit: u32) -> Result<Vec<Address>> {

@@ -123,6 +123,18 @@ fn detail() -> Value {
     })
 }
 
+/// Every sender the fake Gmail and iCloud Mail accounts have.
+const APPROVED_SENDERS: &[&str] = &[
+    "ana@example.net",
+    "joe@x.com",
+    "receipts@shop.example",
+    "lee@example.org",
+    "travel@example.net",
+    "bob@example.com",
+    "news@example.org",
+    "lunch@example.com",
+];
+
 fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
     let p = req.path.as_str();
     match (req.method.as_str(), p) {
@@ -137,6 +149,12 @@ fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
             ok(json!({ "senders": all }))
         }
         ("POST", "/api/senders/batch") => ok(json!({ "ok": true, "changed": 0 })),
+        // What a linked account's lists start from: everyone the fake accounts hear from, approved.
+        ("GET", "/api/senders?status=approved") => ok(json!({ "senders": APPROVED_SENDERS
+            .iter()
+            .map(|e| json!({ "email": e, "name": "", "status": "approved", "decided_at": 1 }))
+            .collect::<Vec<_>>() })),
+        ("GET", _) if p.starts_with("/api/senders?status=") => ok(json!({ "senders": [] })),
         ("GET", "/api/counts") => ok(json!({ "screener": 1, "inbox": 2, "inbox_unread": 1 })),
         ("GET", _) if p.starts_with("/api/threads?") => {
             if p.contains("since=2000") {
@@ -164,6 +182,9 @@ fn default_handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
         ("GET", "/api/attachments/a_1") => (200, b"%PDF".to_vec(), "application/pdf"),
         ("POST", "/api/threads/t_1/move") | ("POST", "/api/threads/t_1/read") => ok(json!({ "ok": true })),
         ("POST", "/api/senders/new%40y.com") => ok(json!({ "ok": true, "moved": 2 })),
+        ("POST", _) if p.starts_with("/api/senders/") && p != "/api/senders/lookup" && p != "/api/senders/batch" => {
+            ok(json!({ "ok": true, "moved": 0 }))
+        }
         ("POST", "/api/send") => ok(json!({ "ok": true, "thread_id": "t_1", "message": null })),
         ("PUT", "/api/mailboxes/support%40x.com") => ok(
             json!({ "ok": true, "mailbox": { "email": "support@x.com", "name": "X", "screen": false, "position": 1 } }),
@@ -1182,6 +1203,7 @@ impl GmailHome {
             // A gws of your own must never stand in for cloudmail's.
             .env("GOOGLE_WORKSPACE_CLI_TOKEN", "a-token-from-your-own-shell")
             .env_remove("FAKE_GWS_MODE")
+            .env_remove("FAKE_GWS_SCOPE")
             .env_remove("FAKE_HEY_MODE")
             .env_remove("CLOUDMAIL_GOOGLE_CLIENT_ID")
             .env_remove("CLOUDMAIL_GOOGLE_CLIENT_SECRET")
@@ -1329,20 +1351,24 @@ fn linked_accounts_work_without_a_worker() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     assert!(h.sent().contains("bob@example.net"));
 
+    // The Screener lives in Gmail: a no is a filter there, which keeps their mail out of the Inbox.
+    let v = json_out(&run(&["screener", "block", "spam@bad.example"]));
+    assert_eq!(v["ok"], true, "{v}");
+    let filters = std::fs::read_to_string(h.gws_dir().join("fake-filters.json")).unwrap();
+    assert!(
+        filters.contains("spam@bad.example") && filters.contains(r#""removeLabelIds": ["INBOX"]"#),
+        "{filters}"
+    );
+
     // What only a worker has says so.
-    for args in [
-        &["mailbox", "list"][..],
-        &["screener", "approve", "bob@example.net"][..],
-    ] {
-        let v = json_out(&run(args));
-        assert_eq!(v["error"]["code"], "not_configured", "{args:?}: {v}");
-        assert!(
-            v["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("needs a Cloudmail worker")
-        );
-    }
+    let v = json_out(&run(&["mailbox", "list"]));
+    assert_eq!(v["error"]["code"], "not_configured", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs a Cloudmail worker")
+    );
     assert!(requests(&m).is_empty(), "{:?}", requests(&m));
 }
 
@@ -1378,12 +1404,11 @@ fn gmail_listings_fetch_only_changed_threads_across_runs() {
 fn gmail_screener_hides_copies_like_the_inbox() {
     // Joe is undecided; t-a2 is a copy of the worker's t_1 (same Message-ID), t-a3 isn't.
     fn handler(req: &Req) -> (u16, Vec<u8>, &'static str) {
-        if req.method == "POST" && req.path == "/api/senders/lookup" {
-            let all: Vec<Value> = req.body["emails"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|e| json!({ "email": e, "status": if e == "joe@x.com" { "pending" } else { "approved" } }))
+        if req.method == "GET" && req.path == "/api/senders?status=approved" {
+            let all: Vec<Value> = APPROVED_SENDERS
+                .iter()
+                .filter(|e| **e != "joe@x.com")
+                .map(|e| json!({ "email": e, "name": "", "status": "approved", "decided_at": 1 }))
                 .collect();
             return ok(json!({ "senders": all }));
         }
@@ -1402,6 +1427,105 @@ fn gmail_screener_hides_copies_like_the_inbox() {
         .find(|s| s["email"] == "joe@x.com")
         .expect("Joe waits");
     assert_eq!(joe["thread_count"], 1, "the copy isn't counted: {v}");
+}
+
+#[test]
+fn gmail_screener_decisions_live_in_its_filters() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("screen-filters", GMAIL, true);
+    // A filter of your own, which Cloudmail leaves alone.
+    std::fs::write(
+        h.gws_dir().join("fake-filters.json"),
+        r#"[{"id": "yours", "criteria": {"from": "boss@work.example"}, "action": {"addLabelIds": ["STARRED"]}}]"#,
+    )
+    .unwrap();
+    let filters = || -> Vec<Value> {
+        serde_json::from_str(&std::fs::read_to_string(h.gws_dir().join("fake-filters.json")).unwrap()).unwrap()
+    };
+    let labels = || -> Vec<Value> {
+        serde_json::from_str(&std::fs::read_to_string(h.gws_dir().join("fake-labels.json")).unwrap()).unwrap()
+    };
+    let label = |name: &str| -> String {
+        labels()
+            .iter()
+            .find(|l| l["name"] == name)
+            .map(|l| l["id"].as_str().unwrap().to_string())
+            .expect(name)
+    };
+    let list = |name: &str| -> Vec<String> {
+        let id = label(name);
+        filters()
+            .iter()
+            .filter(|f| {
+                f["action"]["addLabelIds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l == &json!(id))
+            })
+            .flat_map(|f| {
+                f["criteria"]["from"]
+                    .as_str()
+                    .unwrap()
+                    .split(" OR ")
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+
+    // The first listing starts the lists: your address and the worker's decisions, screened in.
+    assert_eq!(h.run(&m, &["inbox"], &[]).status.code(), Some(0));
+    assert!(list("Cloudmail/Screened in").contains(&"me@gmail.example".to_string()));
+    let hidden = labels().into_iter().find(|l| l["name"] == "Cloudmail/Blocked");
+    assert!(hidden.is_none(), "no blocked list until someone is blocked");
+
+    let v = json_out(&h.run(&m, &["screener", "block", "joe@x.com"], &[]));
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(list("Cloudmail/Blocked"), ["joe@x.com"]);
+    let blocked = filters()
+        .into_iter()
+        .find(|f| f["criteria"]["from"] == "joe@x.com")
+        .unwrap();
+    assert_eq!(
+        blocked["action"]["removeLabelIds"],
+        json!(["INBOX"]),
+        "their mail skips the Inbox"
+    );
+    let l = labels().into_iter().find(|l| l["name"] == "Cloudmail/Blocked").unwrap();
+    assert_eq!(
+        (l["labelListVisibility"].as_str(), l["messageListVisibility"].as_str()),
+        (Some("labelHide"), Some("hide"))
+    );
+    assert!(!list("Cloudmail/Screened in").contains(&"joe@x.com".to_string()));
+    let v = json_out(&h.run(&m, &["inbox"], &[]));
+    assert!(!ids(&v).contains(&"gmail:t-a3".to_string()), "Joe's mail is out: {v}");
+
+    h.run(&m, &["screener", "approve", "joe@x.com"], &[]);
+    assert!(list("Cloudmail/Blocked").is_empty());
+    assert!(list("Cloudmail/Screened in").contains(&"joe@x.com".to_string()));
+    assert!(
+        filters().iter().any(|f| f["id"] == "yours"),
+        "your own filter is untouched"
+    );
+}
+
+#[test]
+fn gmail_signed_in_before_filters_says_to_sign_in_again() {
+    let m = mock(gmail_handler);
+    let h = gmail_home("old-scope", GMAIL, true);
+    let v = json_out(&h.run(&m, &["inbox"], &[("FAKE_GWS_SCOPE", "modify")]));
+    assert!(ids(&v).iter().all(|i| !i.starts_with("gmail:")), "{v}");
+    let w = &v["meta"]["warnings"][0];
+    assert_eq!(
+        (w["account"].as_str(), w["code"].as_str()),
+        (Some("gmail"), Some("account_unauthorized")),
+        "{v}"
+    );
+    assert!(
+        w["message"].as_str().unwrap().contains("cloudmail account login gmail"),
+        "{v}"
+    );
 }
 
 #[test]
@@ -1867,11 +1991,17 @@ fn gmail_account_add_list_remove() {
         (batch.body["status"].as_str(), batch.body["only_undecided"].as_bool()),
         (Some("approved"), Some(true))
     );
+    // In Gmail itself too: a hidden label marks Cloudmail's filter, which lists them.
+    let filters = std::fs::read_to_string(h.gws_dir().join("fake-filters.json")).unwrap();
+    assert!(
+        filters.contains("ana@example.net") && filters.contains(r#""removeLabelIds": ["SPAM"]"#),
+        "{filters}"
+    );
     let calls = h.calls();
     assert!(
         calls
             .iter()
-            .any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify"),
+            .any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.settings.basic"),
         "{calls:?}"
     );
     assert!(
@@ -2491,6 +2621,16 @@ fn screening(
     move |req: &Req| {
         let p = req.path.as_str();
         match (req.method.as_str(), p) {
+            ("GET", _) if p.starts_with("/api/senders?status=") => {
+                let status = &p["/api/senders?status=".len()..];
+                let d = decisions.lock().unwrap();
+                let found: Vec<Value> = d
+                    .iter()
+                    .filter(|(_, s)| s.as_str() == status)
+                    .map(|(e, s)| json!({ "email": e, "name": "", "status": s, "decided_at": 1 }))
+                    .collect();
+                ok(json!({ "senders": found }))
+            }
             ("POST", "/api/senders/lookup") => {
                 let d = decisions.lock().unwrap();
                 let found: Vec<Value> = req.body["emails"]
@@ -2649,6 +2789,17 @@ fn icloud_links_through_icloud_session() {
         "{emails:?}"
     );
     assert_eq!(decisions.lock().unwrap()["spam@bad.example"], "blocked");
+    // The account keeps them in its own rules, starting from the worker's decisions and its own addresses.
+    let approved = h.mail.screen_list("approved");
+    for e in [
+        "ann@icloud.com",
+        "bob@example.com",
+        "news@example.org",
+        "shop@example.com",
+    ] {
+        assert!(approved.contains(&e.to_string()), "{e}: {approved:?}");
+    }
+    assert_eq!(h.mail.screen_list("blocked"), ["spam@bad.example"]);
 
     let v = h.json(&m, &["account", "list"]);
     assert_eq!(
@@ -2668,10 +2819,14 @@ fn icloud_links_through_icloud_session() {
 }
 
 #[test]
-fn icloud_mail_is_screened_by_your_worker() {
+fn icloud_mail_is_screened_from_its_own_rules() {
     let decisions = Arc::new(Mutex::new(HashMap::new()));
     let m = mock(screening(decisions.clone()));
     let h = icloud_home("screen", true, true);
+    // A rule of your own, which Cloudmail leaves alone.
+    let mine = json!({ "ruleId": "yours", "ruleName": "Receipts", "tag": "AUTOMATION", "actionTime": "DAY_30", "action": "ARCHIVE",
+        "predicate": { "type": "AND", "conditions": [{ "prefix": "FROM_EMAIL", "conditionType": "EQUALS", "body": "shop@example.com" }] } });
+    h.mail.state.lock().unwrap().rules.push(mine.clone());
     let v = h.json(&m, &["inbox"]);
     assert_eq!(
         subjects(&v),
@@ -2735,8 +2890,14 @@ fn icloud_mail_is_screened_by_your_worker() {
     let v = h.json(&m, &["archive"]);
     assert!(subjects(&v).contains(&"Your receipt".to_string()), "{v}");
 
-    // A no: decided once in the worker, and the sender's Inbox threads archived in iCloud.
+    // The first look started iCloud's rules from the worker's decisions and your own addresses.
+    assert_eq!(h.mail.screen_list("blocked"), ["spam@bad.example"]);
+    assert!(h.mail.screen_list("approved").contains(&"bob@example.com".to_string()));
+
+    // A no: a rule in iCloud (later mail is archived as it arrives, on every device), in the worker
+    // too, and the sender's Inbox threads archived now.
     h.json(&m, &["screener", "block", "news@example.org"]);
+    assert_eq!(h.mail.screen_list("blocked"), ["news@example.org", "spam@bad.example"]);
     assert_eq!(decisions.lock().unwrap()["news@example.org"], "blocked");
     let mv = h.mail.log("/thread/move");
     assert_eq!(mv.len(), 1);
@@ -2745,6 +2906,58 @@ fn icloud_mail_is_screened_by_your_worker() {
         (Some("Archive"), Some("t-news"))
     );
     assert_eq!(h.mail.folder_of("20"), "Archive");
+    let rules = h.mail.state.lock().unwrap().rules.clone();
+    let blocked = rules
+        .iter()
+        .find(|r| r["ruleName"] == "Cloudmail Screener: blocked 1")
+        .unwrap();
+    assert_eq!(
+        (
+            blocked["tag"].as_str(),
+            blocked["action"].as_str(),
+            blocked["target"].as_str()
+        ),
+        (Some("BLOCK"), Some("MOVE"), Some("Archive"))
+    );
+
+    // Changing your mind moves them between the lists; the rule is changed in place.
+    h.json(&m, &["screener", "approve", "news@example.org"]);
+    assert_eq!(h.mail.screen_list("blocked"), ["spam@bad.example"]);
+    assert!(h.mail.screen_list("approved").contains(&"news@example.org".to_string()));
+    assert!(!h.mail.log("/unified/rule").iter().any(|r| r.method == "DELETE"));
+    assert!(
+        h.mail.state.lock().unwrap().rules.contains(&mine),
+        "your own rule is untouched"
+    );
+}
+
+#[test]
+fn a_long_screener_list_spreads_over_icloud_rules() {
+    let decisions = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let mut d = decisions.lock().unwrap();
+        for i in 0..700 {
+            d.insert(format!("friend{i}@example.com"), "approved".to_string());
+        }
+    }
+    let m = mock(screening(decisions.clone()));
+    let h = icloud_home("long-list", true, true);
+    h.json(&m, &["inbox"]);
+    let names: Vec<String> = h
+        .mail
+        .state
+        .lock()
+        .unwrap()
+        .rules
+        .iter()
+        .map(|r| r["ruleName"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"Cloudmail Screener: approved 1".to_string())
+            && names.contains(&"Cloudmail Screener: approved 2".to_string()),
+        "{names:?}"
+    );
+    assert!(h.mail.screen_list("approved").len() > 700);
 }
 
 #[test]

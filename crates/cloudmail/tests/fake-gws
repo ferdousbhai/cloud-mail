@@ -8,6 +8,7 @@
 #                         (from --json's raw or an --upload file; an upload's directory and file
 #                         permissions to <file>.upload)
 #   FAKE_GWS_MODE=ok (default) | expired | revoked | offline | crash | garbage | slow
+#   FAKE_GWS_SCOPE=modify  a sign-in without gmail.settings.basic: filters answer 403
 #
 # Like gws, it keeps its sign-in in $GOOGLE_WORKSPACE_CLI_CONFIG_DIR/credentials.enc, which
 # `auth login` writes. Point cloudmail at it with CLOUDMAIL_GWS_COMMAND=/path/to/fake-gws.
@@ -34,7 +35,7 @@ case "$1" in
 esac
 
 if [[ "$1 $2" == "auth login" ]]; then
-  [[ " $* " == *" --scopes https://www.googleapis.com/auth/gmail.modify "* ]] || err 3 400 validationError "fake-gws: expected --scopes gmail.modify"
+  [[ " $* " == *" --scopes https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.settings.basic "* ]] || err 3 400 validationError "fake-gws: expected --scopes gmail.modify,gmail.settings.basic"
   if [[ -z "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" || -z "$GOOGLE_WORKSPACE_CLI_CLIENT_SECRET" ]]; then
     err 2 401 authError "No OAuth client configured."
   fi
@@ -172,5 +173,44 @@ case "$method" in
     fi
     thread_id="t-new"; [[ "$body" =~ \"threadId\":\"([^\"]*)\" ]] && thread_id="${BASH_REMATCH[1]}"
     printf '{"id":"m-sent-1","threadId":"%s","labelIds":["SENT"]}\n' "$thread_id" ;;
+  # Labels and filters live in the config directory, like the account's own would at Google.
+  # FAKE_GWS_SCOPE=modify: a sign-in from before Cloudmail asked for gmail.settings.basic.
+  "labels list"|"labels create"|"settings filters list"|"settings filters create"|"settings filters delete")
+    if [[ "$method" == settings* && "$FAKE_GWS_SCOPE" == modify ]]; then
+      err 1 403 insufficientPermissions "Request had insufficient authentication scopes."
+    fi
+    python3 -I - "$method" "$dir" "$params" "$body" <<'PY'
+import json, os, sys
+method, d, params, body = sys.argv[1:5]
+def load(name, default):
+    try:
+        with open(os.path.join(d, name)) as f: return json.load(f)
+    except FileNotFoundError: return default
+def save(name, v):
+    with open(os.path.join(d, name), "w") as f: json.dump(v, f)
+labels = load("fake-labels.json", [{"id": "INBOX", "name": "INBOX", "type": "system"}, {"id": "SPAM", "name": "SPAM", "type": "system"}])
+filters = load("fake-filters.json", [])
+counter = load("fake-counter.json", 0) + 1
+save("fake-counter.json", counter)
+if method == "labels list":
+    print(json.dumps({"labels": labels}))
+elif method == "labels create":
+    label = dict(json.loads(body), id=f"Label_{counter}", type="user")
+    labels.append(label); save("fake-labels.json", labels); print(json.dumps(label))
+elif method == "settings filters list":
+    print(json.dumps({"filter": filters} if filters else {}))
+elif method == "settings filters create":
+    f = dict(json.loads(body), id=f"filter-{counter}")
+    known = {l["id"] for l in labels}
+    if not all(i in known for i in f["action"].get("addLabelIds", [])):
+        print(json.dumps({"error": {"code": 400, "message": "Invalid label", "reason": "invalidArgument"}})); sys.exit(1)
+    filters.append(f); save("fake-filters.json", filters); print(json.dumps(f))
+else:
+    fid = json.loads(params)["id"]
+    if not any(f["id"] == fid for f in filters):
+        print(json.dumps({"error": {"code": 404, "message": "Filter not found", "reason": "notFound"}})); sys.exit(1)
+    save("fake-filters.json", [f for f in filters if f["id"] != fid])
+PY
+    ;;
   *) err 3 400 validationError "fake-gws doesn't know: gmail users $method" ;;
 esac

@@ -467,6 +467,8 @@ pub struct MailState {
     pub garbage: bool,
     /// The first answer rotates a cookie.
     pub rotate_cookie: bool,
+    /// Mail's server-side rules (`unified/rule`), as icloud.com's Mail settings keep them.
+    pub rules: Vec<Value>,
 }
 
 pub type MailShared = Arc<Mutex<MailState>>;
@@ -477,6 +479,31 @@ pub struct FakeMail {
 }
 
 impl FakeMail {
+    /// The addresses on one of Cloudmail's Screener lists (`approved`, `blocked`) in iCloud's rules.
+    pub fn screen_list(&self, kind: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .state
+            .lock()
+            .unwrap()
+            .rules
+            .iter()
+            .filter(|r| {
+                r["ruleName"]
+                    .as_str()
+                    .is_some_and(|n| n.starts_with(&format!("Cloudmail Screener: {kind} ")))
+            })
+            .flat_map(|r| {
+                r["predicate"]["conditions"][0]["bodyList"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter_map(|a| a.as_str().map(str::to_string))
+            .collect();
+        out.sort();
+        out
+    }
+
     pub fn log(&self, path: &str) -> Vec<Request> {
         self.state
             .lock()
@@ -696,6 +723,51 @@ fn answer(st: &mut MailState, r: &Request) -> (u16, Vec<u8>) {
         }
         ("GET", "/cc/mail/v1/account/1234/preference/web/all") => {
             ok(json!({ "account": st.account, "clientPreference": {}, "serverPreference": {} }))
+        }
+        ("GET", "/cc/mail/v1/account/1234/unified/rule") => ok(json!({ "dsId": "1234", "mailRules": st.rules })),
+        ("POST" | "PUT", "/cc/mail/v1/account/1234/unified/rule") => {
+            let mut rule = r.body.clone();
+            let refuse = |code: &str| {
+                (
+                    400,
+                    format!(r#"{{"errorCode":"{code}","errorDescription":"Server error. Please try again later."}}"#)
+                        .into_bytes(),
+                )
+            };
+            // What iCloud checked when we tried it: rules that act on arrival, the BLOCK tag's actions,
+            // and how many addresses a rule takes.
+            let addresses = rule["predicate"]["conditions"][0]["bodyList"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if rule["tag"] == "BLOCK" && !["MOVE", "TRSH"].contains(&rule["action"].as_str().unwrap_or("")) {
+                return refuse("ERROR_RULE_TAG_ACTION_VIOLATION");
+            }
+            if addresses.len() > 500 {
+                return refuse("RULE_BODY_MAX_LIMIT");
+            }
+            if addresses.iter().any(|a| !a.as_str().is_some_and(|a| a.contains('@'))) {
+                return refuse("ERROR_RULE_CONDITION_INVALID_EMAIL");
+            }
+            if r.method == "PUT" {
+                let Some(i) = st.rules.iter().position(|x| x["ruleId"] == rule["ruleId"]) else {
+                    return (404, br#"{"errorCode":"RULE_NOT_FOUND"}"#.to_vec());
+                };
+                st.rules[i] = rule.clone();
+            } else {
+                rule["ruleId"] = json!(format!("rule-{}", st.rules.len() + st.log.len()));
+                st.rules.push(rule.clone());
+            }
+            ok(rule)
+        }
+        ("DELETE", p) if p.starts_with("/cc/mail/v1/account/1234/unified/rule/") => {
+            let id = &p["/cc/mail/v1/account/1234/unified/rule/".len()..];
+            let before = st.rules.len();
+            st.rules.retain(|x| x["ruleId"] != id);
+            if st.rules.len() == before {
+                return (404, br#"{"errorCode":"RULE_NOT_FOUND"}"#.to_vec());
+            }
+            ok(json!({ "message": "Success" }))
         }
         _ => (
             404,

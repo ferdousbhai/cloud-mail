@@ -3,10 +3,10 @@
 Optional. Until you add an account, nothing changes. Back to the [README](../README.md).
 
 Linked accounts also work **without a Cloudmail worker**: link them on a computer where you never ran
-`cloudmail setup` or `cloudmail connect`, and Cloudmail is simply your app and CLI for them. Gmail
-and iCloud Mail then have no Screener (their whole Inbox shows; see
-[One Screener](#one-screener-for-gmail-and-icloud-mail)); HEY keeps its own. Mailboxes, users and
-forwarding are a worker's, and say so. Setting up or joining a worker later adds the Screener.
+`cloudmail setup` or `cloudmail connect`, and Cloudmail is simply your app and CLI for them, with
+the Screener (its decisions live in the accounts; see
+[One Screener](#one-screener-for-gmail-and-icloud-mail)). Mailboxes, users and forwarding are a
+worker's, and say so.
 
 ## HEY
 
@@ -125,16 +125,31 @@ mail loads as usual and one line says what's wrong. `cloudmail account login icl
 
 ## One Screener for Gmail and iCloud Mail
 
-Gmail and iCloud Mail have no Screener, so your worker's decides for them: one decision per sender,
-wherever their mail comes. (Without a worker there's no Screener for them: everything in their
-Inbox shows.)
+Gmail and iCloud Mail have no Screener, so Cloudmail gives them one, and keeps its decisions in each
+account itself, on Google's and Apple's servers. Every computer you use Cloudmail on, admin or
+invited, with a worker or without, sees the same decisions, and a "no" works on your phone too.
+
+- **Gmail:** two lists of senders in Gmail filters. Blocked: their mail skips the Inbox (Gmail
+  archives it as it arrives). Screened in: "never send to Spam". Each of Cloudmail's filters adds a
+  hidden label, `Cloudmail/Blocked` or `Cloudmail/Screened in`, which is how Cloudmail tells them
+  from yours; your own filters are never changed. Filters need one more permission than reading
+  mail (`gmail.settings.basic`), so a Gmail account linked before this asks you to sign in again
+  (`cloudmail account login gmail`).
+- **iCloud Mail:** the same two lists as rules, the kind icloud.com's Mail settings show, named
+  `Cloudmail Screener: blocked 1`, `Cloudmail Screener: approved 1`, …. Blocked: moved to Archive
+  as it arrives. Screened in: filed under the Personal category. Your own rules are never changed.
+- Long lists are spread over several filters or rules (iCloud takes up to 500 addresses in one).
+
+What a decision does:
 
 - Mail from someone with no decision yet waits in the Screener and stays out of your Inbox.
 - Yes: their mail is in your Inbox from then on, in every account.
-- No: their mail is left out of everything but Archive and Sent, and their threads in that
-  account's Inbox are archived there too, so they leave the Inbox on your phone as well. Mail they
-  send later still lands in the account's own Inbox (Gmail and iCloud decide that), but never shows
-  in Cloudmail.
+- No: their later mail skips the account's Inbox on the server, their threads in its Inbox are
+  archived now, and Cloudmail leaves them out of everything but Archive and Sent.
+- A decision goes to every account Cloudmail screens, and to your worker's Screener too (which
+  decides its own mail as it arrives).
 - Linking an account screens in the people it already corresponds with (its Inbox's senders and
-  whoever its sent mail went to), and whoever you write to through it is screened in, as your
-  worker does for its own mail. A no is never undone by linking.
+  whoever its sent mail went to), and whoever you write to is screened in, as your worker does for
+  its own mail. A no is never undone by linking.
+- The first time Cloudmail screens an account, it starts its lists with your own addresses and,
+  with a worker, the decisions your worker already had (from before they lived in the accounts).

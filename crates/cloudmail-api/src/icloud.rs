@@ -43,7 +43,15 @@
 //! listed in and its threadId), a message `icloud:t…/m…` (its mailbox and uid), an attachment
 //! `icloud:a…`.
 //!
-//! The Screener: iCloud has none, so your worker's decides (see `unified.rs`).
+//! The Screener: iCloud has none, so Cloudmail screens it, keeping the decisions in iCloud Mail's
+//! own server-side rules (`screening.rs`), as icloud.com's Mail settings manage them: `GET
+//! <mcc>/cc/mail/v1/account/<dsid>/unified/rule` → `{mailRules[{ruleId, ruleName, tag, actionTime,
+//! predicate{type: "AND", conditions[{prefix: "FROM_EMAILS", conditionType: "CONTAINS",
+//! bodyList[]}]}, action, target?}]}`; `POST unified/rule` creates one, `PUT unified/rule` (with
+//! `ruleId`) replaces one, `DELETE unified/rule/<ruleId>` removes one. Rules that act on arrival
+//! need the `BLOCK` tag (blocked: `MOVE` to `Archive`) or `RE_CATEGORIZE` (approved: the `Personal`
+//! category); a rule takes up to 500 addresses (2,000 is `RULE_BODY_MAX_LIMIT`), and iCloud checks
+//! them (`ERROR_RULE_CONDITION_INVALID_EMAIL`). Cloudmail's are named `Cloudmail Screener: …`.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -51,13 +59,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::client::ThreadQuery;
 use crate::config::AccountConfig;
 use crate::error::{Error, ErrorKind, Result};
 use crate::gmail::{address_from, addresses, format_address, normalize_message_id};
 use crate::provider::{AccountStatus, Provider};
+use crate::screening::{self, APPROVED, BLOCKED, Lists, Pieces};
 use crate::session::{self, Session};
 use crate::text::{bare_email, html_to_text, split_addresses};
 use crate::types::*;
@@ -71,6 +80,12 @@ pub const TRASH: &str = "Deleted Messages";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(600);
 /// Most threads one listing asks for.
 const LIST_LIMIT: u32 = 200;
+/// Cloudmail's own rules: `Cloudmail Screener: approved 1`, `… blocked 2`, ….
+const RULE_PREFIX: &str = "Cloudmail Screener: ";
+/// Addresses per rule (iCloud takes 500, refuses 2,000).
+const RULE_ADDRESSES: usize = 500;
+/// How long a read of the rules is reused within one process.
+const SCREEN_TTL: Duration = Duration::from_secs(60);
 
 fn mailbox_for(folder: &str) -> Option<&'static str> {
     Some(match folder {
@@ -155,6 +170,8 @@ pub struct Icloud {
     own: Mutex<Option<Vec<Address>>>,
     /// Message-IDs of each thread as last read, for spotting copies of worker mail.
     message_ids: Mutex<HashMap<String, Vec<String>>>,
+    /// The Screener's lists as last read from the rules.
+    screen: Mutex<Option<(Instant, Lists)>>,
 }
 
 impl Icloud {
@@ -164,7 +181,89 @@ impl Icloud {
             session: Session::new(),
             own: Default::default(),
             message_ids: Default::default(),
+            screen: Default::default(),
         }
+    }
+
+    /// A call to Mail's rules (`<mcc>/cc/mail/v1/account/<dsid>/<path>`).
+    fn rules_call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+        let base = self.session.webservice("mcc").map_err(|e| self.wrap(e))?;
+        let dsid = self.session.dsid().map_err(|e| self.wrap(e))?;
+        let reply = self
+            .session
+            .send(method, &format!("{base}/cc/mail/v1/account/{dsid}/{path}"), body)
+            .map_err(|e| self.wrap(e))?;
+        let parsed: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        if !(200..300).contains(&reply.status) {
+            let code = str_of(&parsed["errorCode"]);
+            let what = if code.is_empty() {
+                format!("HTTP {}", reply.status)
+            } else {
+                code
+            };
+            return Err(self.fail(
+                ErrorKind::AccountUnavailable,
+                format!("changing the Screener's rules failed ({what})"),
+            ));
+        }
+        Ok(parsed)
+    }
+
+    /// Cloudmail's rules, by list, each in its order: (rule, its addresses).
+    fn screen_rules(&self) -> Result<Pieces<Value>> {
+        let data = self.rules_call("GET", "unified/rule", None)?;
+        let rules = data["mailRules"]
+            .as_array()
+            .ok_or_else(|| self.unexpected("unified/rule"))?;
+        let mut numbered: Pieces<(u32, Value)> = HashMap::new();
+        for r in rules {
+            let Some(rest) = r["ruleName"].as_str().and_then(|n| n.strip_prefix(RULE_PREFIX)) else {
+                continue;
+            };
+            let (kind, n) = rest.split_once(' ').unwrap_or((rest, "1"));
+            let kind = match kind {
+                APPROVED => APPROVED,
+                BLOCKED => BLOCKED,
+                _ => continue,
+            };
+            let addresses = r["predicate"]["conditions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|c| c["prefix"] == "FROM_EMAILS")
+                .flat_map(|c| strings(&c["bodyList"]))
+                .map(|e| e.to_ascii_lowercase())
+                .collect();
+            numbered
+                .entry(kind)
+                .or_default()
+                .push(((n.parse().unwrap_or(0), r.clone()), addresses));
+        }
+        Ok(numbered
+            .into_iter()
+            .map(|(k, mut v)| {
+                v.sort_by_key(|((n, _), _)| *n);
+                (k, v.into_iter().map(|((_, r), a)| (r, a)).collect())
+            })
+            .collect())
+    }
+
+    /// A Screener rule as icloud.com's Mail settings write one.
+    fn screen_rule(kind: &str, n: usize, addresses: &[String]) -> Value {
+        let mut rule = json!({
+            "ruleName": format!("{RULE_PREFIX}{kind} {n}"),
+            "actionTime": "ON_ARRIVAL",
+            "predicate": { "type": "AND", "conditions": [{ "prefix": "FROM_EMAILS", "conditionType": "CONTAINS", "bodyList": addresses }] },
+        });
+        let (tag, action, target) = if kind == BLOCKED {
+            ("BLOCK", "MOVE", "Archive")
+        } else {
+            ("RE_CATEGORIZE", "RE_CATEGORIZE", "Personal")
+        };
+        rule["tag"] = json!(tag);
+        rule["action"] = json!(action);
+        rule["target"] = json!(target);
+        rule
     }
 
     pub fn session(&self) -> &Session {
@@ -537,8 +636,69 @@ impl Provider for Icloud {
         matches!(folder, "inbox" | "archive" | "sent" | "all")
     }
 
-    fn screened_by_worker(&self) -> bool {
+    fn screened_by_cloudmail(&self) -> bool {
         true
+    }
+
+    fn screen_lists(&self, fresh: bool) -> Result<Lists> {
+        if !fresh
+            && let Some((at, lists)) = self.screen.lock().unwrap().as_ref()
+            && at.elapsed() < SCREEN_TTL
+        {
+            return Ok(lists.clone());
+        }
+        let rules = self.screen_rules()?;
+        let lists = Lists {
+            kept: !rules.is_empty(),
+            approved: rules
+                .get(APPROVED)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, a)| a.clone())
+                .collect(),
+            blocked: rules
+                .get(BLOCKED)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, a)| a.clone())
+                .collect(),
+        };
+        *self.screen.lock().unwrap() = Some((Instant::now(), lists.clone()));
+        Ok(lists)
+    }
+
+    fn save_screen_lists(&self, lists: &Lists) -> Result<()> {
+        let mut rules = self.screen_rules()?;
+        for kind in [APPROVED, BLOCKED] {
+            let existing = rules.remove(kind).unwrap_or_default();
+            let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
+            let want = screening::rechunk(&pieces, lists.list(kind), |p| p.len() <= RULE_ADDRESSES);
+            for (i, piece) in want.iter().enumerate() {
+                let mut rule = Self::screen_rule(kind, i + 1, piece);
+                match existing.get(i) {
+                    Some((old, addresses)) if addresses == piece && old["ruleName"] == rule["ruleName"] => {}
+                    Some((old, _)) => {
+                        rule["ruleId"] = old["ruleId"].clone();
+                        self.rules_call("PUT", "unified/rule", Some(&rule))?;
+                    }
+                    None => {
+                        self.rules_call("POST", "unified/rule", Some(&rule))?;
+                    }
+                }
+            }
+            for (old, _) in existing.iter().skip(want.len()) {
+                let id = str_of(&old["ruleId"]);
+                self.rules_call("DELETE", &format!("unified/rule/{}", urlencoding::encode(&id)), None)?;
+            }
+        }
+        *self.screen.lock().unwrap() = Some((
+            Instant::now(),
+            Lists {
+                kept: true,
+                ..lists.clone()
+            },
+        ));
+        Ok(())
     }
 
     fn sign_in(&self) -> Result<()> {

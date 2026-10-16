@@ -92,7 +92,7 @@ pub fn status(ctx: &Ctx) -> CliResult {
             "accounts": statuses,
         });
         let human = format!(
-            "Worker:      none (linked accounts only; no Screener for Gmail or iCloud Mail)\nConfig:      {}{human}",
+            "Worker:      none (linked accounts only)\nConfig:      {}{human}",
             config::path().display()
         );
         return Ok(Response::new(data, "Linked accounts only, no Cloudmail worker")
@@ -103,7 +103,7 @@ pub fn status(ctx: &Ctx) -> CliResult {
                 crumb(
                     "setup",
                     "cloudmail setup you@yourdomain.com",
-                    "Deploy your own, with the Screener",
+                    "Mail on your own domains",
                 ),
             ]));
     };

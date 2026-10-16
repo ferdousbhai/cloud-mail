@@ -79,8 +79,8 @@ pub struct Linked {
     pub gws_dir: Option<PathBuf>,
     pub replaced: bool,
     pub config_path: PathBuf,
-    /// For an account your worker screens: how many of its correspondents were screened in, or
-    /// why they couldn't be.
+    /// For an account Cloudmail screens: how many of its correspondents were screened in, or why
+    /// they couldn't be.
     pub screened_in: Option<std::result::Result<i64, String>>,
 }
 
@@ -182,10 +182,15 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     let replaced = file.accounts.insert(name.clone(), cfg.clone()).is_some();
     let config_path = config::save(&file)?;
 
-    let screened_in = match mail {
+    // The first account on a computer without a worker: there was no mail to screen with until now.
+    let fresh = match mail {
+        Some(_) => None,
+        None => config::load().ok().map(|c| crate::unified::Mail::from_config(&c)),
+    };
+    let screened_in = match mail.or(fresh.as_ref()) {
         Some(mail) => {
             let p = provider::open(&name, &account_config(&name)?.unwrap_or(cfg))?;
-            p.screened_by_worker()
+            p.screened_by_cloudmail()
                 .then(|| mail.screen_in_correspondents(p.as_ref()).map_err(|e| e.message))
         }
         None => None,

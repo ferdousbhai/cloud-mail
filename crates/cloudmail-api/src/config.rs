@@ -40,7 +40,7 @@ pub struct AccountConfig {
 
 impl Config {
     /// Whether there's a Cloudmail worker (deployed with `setup`, or joined with `connect`). Without
-    /// one, Cloudmail shows linked accounts only: no Screener for Gmail and iCloud Mail, no mailboxes.
+    /// one, Cloudmail shows linked accounts only (their Screener still works; it lives in them): no mailboxes.
     pub fn has_worker(&self) -> bool {
         !self.api_url.is_empty()
     }

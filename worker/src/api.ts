@@ -518,8 +518,8 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
     return json({ senders: rows.results });
   }
 
-  // Decisions for linked accounts' senders (Gmail, iCloud Mail), which your Screener decides:
-  // their mail isn't stored here, so these only read and record decisions.
+  // Decisions for many senders at once: clients record here what they decide for linked accounts
+  // (Gmail, iCloud Mail, which keep those decisions themselves), so this Screener agrees for its own mail.
   if (method === "POST" && path === "/api/senders/lookup") {
     const body = await readJson<{ emails?: unknown }>(req);
     if (!Array.isArray(body?.emails) || body.emails.length > 1000) return error("emails must be a list of at most 1000 addresses");

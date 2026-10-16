@@ -264,7 +264,7 @@ to your own mail, in the app and the CLI. It's opt-in: until you add an account,
 HEY goes through HEY's official [`hey` CLI](https://github.com/basecamp/hey-cli), so Cloudmail never
 sees a HEY password or token. Gmail goes through Google's
 [Workspace CLI `gws`](https://github.com/googleworkspace/cli), with one browser sign-in that asks for
-Gmail only (`account add gmail` installs `gws` for you when it's missing). iCloud Mail goes through
+Gmail and its filters only (`account add gmail` installs `gws` for you when it's missing). iCloud Mail goes through
 the sign-in that [icloud-session](https://github.com/ferdousbhai/icloud-for-omarchy) keeps for every
 app on the computer, so there's no password to give Cloudmail and no IMAP.
 
@@ -277,12 +277,13 @@ cloudmail account remove hey  # unlink (HEY itself is untouched)
 ```
 
 **No worker needed.** On a computer that never ran `setup` or `connect`, linked accounts are all
-Cloudmail shows: the app and CLI work the same, but Gmail and iCloud Mail have no Screener (their
-whole Inbox shows) and there are no mailboxes of your own. HEY keeps its Screener. In the app, the
+Cloudmail shows, Screener included; there are just no mailboxes of your own. In the app, the
 accounts button in the sidebar links them from the first screen.
 
-With a worker, Gmail and iCloud Mail have no Screener of their own, so yours decides for them too:
-one decision per sender, wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
+Gmail and iCloud Mail have no Screener of their own, so Cloudmail's decides for them, and keeps its
+decisions in the accounts themselves: Gmail filters and iCloud Mail rules. Every computer sees the
+same decisions, with or without a worker, and a "no" keeps that sender out of the Inbox on your
+phone too. HEY keeps its own Screener. One decision per sender, wherever their mail comes. How HEY's boxes, Gmail's labels and iCloud's mailboxes map onto Inbox,
 Archive and the Screener, how forwarded copies are hidden, and what happens when a sign-in expires:
 [docs/linked-accounts.md](docs/linked-accounts.md).
 

@@ -417,8 +417,8 @@ account_unavailable, error.
 - The Screener lists senders (by email) waiting for a decision. Approving moves their threads to the
   Inbox; blocking hides them. Anyone you send mail to is approved automatically.
 - No worker: with only linked accounts (Gmail, iCloud Mail, HEY), every mail command works on them;
-  `status` has `api_url: null`. Gmail and iCloud Mail are then unscreened (HEY keeps its Screener),
-  and worker-only commands (`mailbox`, `user`, `settings`, `watch`, `senders`) fail with
+  `status` has `api_url: null`. The Screener still works (Gmail's and iCloud's decisions live in
+  the accounts), and worker-only commands (`mailbox`, `user`, `settings`, `watch`, `senders`) fail with
   `not_configured`.
 - Users: each person's token sees only their own mailboxes, threads, Screener and settings.
   `cloudmail status --json` shows `data.user` (`{name, role}`, role `admin` or `user`). Only the admin
@@ -521,9 +521,10 @@ HEY's Paper Trail + Gmail threads out of the Inbox + iCloud's Archive mailbox (a
 moves it to Paper Trail, a Gmail thread loses its Inbox label, an iCloud thread moves to Archive;
 unarchive undoes each); `sent` = yours + Gmail's + iCloud's; `screener` = yours + HEY's + Gmail's and
 iCloud's waiting mail (a sender waiting in several places shows once). Gmail and iCloud Mail have no
-Screener, so your worker's decides for them: a new sender's thread waits in `screener` and stays out of
-`inbox` until approved; a blocked sender's is left out of everything but `archive`/`sent`, and blocking
-archives that sender's Inbox threads in the account too. Linking one screens in the people it already
+Screener, so Cloudmail's decides for them and keeps the decisions in the accounts (Gmail filters,
+iCloud Mail rules; worker or not): a new sender's thread waits in `screener` and stays out of `inbox`
+until approved; a blocked sender's is left out of everything but `archive`/`sent`, blocking archives
+their Inbox threads in the account, and their later mail skips its Inbox on the server. Linking one screens in the people it already
 corresponds with; people you write to through it are screened in. `blocked` is yours only. HEY's other boxes are extra folders: `threads list --folder
 feed|paper-trail|set-aside|reply-later`. Search covers all of them (Gmail reads its own search syntax).
 

@@ -126,10 +126,20 @@ pub trait Provider: Send + Sync {
     fn message_ids(&self, _thread_id: &str) -> Vec<String> {
         Vec::new()
     }
-    /// Whether your worker's Screener decides this account's senders (it has no Screener of its
-    /// own). Its threads then wait in the Screener until their sender is approved.
-    fn screened_by_worker(&self) -> bool {
+    /// Whether Cloudmail screens this account's senders (it has no Screener of its own). Its
+    /// threads then wait in the Screener until their sender is approved, and the decisions live in
+    /// the account itself (`screen_lists`; see `screening`).
+    fn screened_by_cloudmail(&self) -> bool {
         false
+    }
+    /// The Screener's decisions kept in this account (Gmail filters, iCloud Mail rules); `fresh`
+    /// reads them again rather than from what this process read lately.
+    fn screen_lists(&self, _fresh: bool) -> Result<crate::screening::Lists> {
+        Ok(Default::default())
+    }
+    /// Saves the decisions back, changing only Cloudmail's own filters or rules.
+    fn save_screen_lists(&self, _lists: &crate::screening::Lists) -> Result<()> {
+        Ok(())
     }
     /// The people this account already corresponds with (Inbox senders, recipients of sent mail,
     /// about `limit` conversations of each), screened in when the account is linked.

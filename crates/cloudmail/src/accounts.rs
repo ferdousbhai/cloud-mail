@@ -200,14 +200,11 @@ fn add(ctx: &Ctx, link: Link) -> CliResult {
     );
     match &linked.screened_in {
         Some(Ok(n)) => summary.push_str(&format!(
-            ". Your Screener decides its new senders; {n} people it already corresponds with were screened in"
+            ". Your Screener decides its new senders, keeping its decisions in the account itself; {n} people it already corresponds with were screened in"
         )),
         Some(Err(why)) => summary.push_str(&format!(
             ". Its correspondents couldn't be screened in ({why}), so they wait in the Screener"
         )),
-        None if linked.provider != "hey" => {
-            summary.push_str(". Your Screener decides its new senders once your worker is set up")
-        }
         None => {}
     }
     if let Some(f) = &forwarding {
