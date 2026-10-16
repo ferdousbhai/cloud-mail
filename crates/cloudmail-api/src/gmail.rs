@@ -1519,13 +1519,19 @@ impl Provider for Gmail {
         })
     }
 
-    fn save_screen_lists(&self, lists: &Lists) -> Result<()> {
+    fn update_screen_lists(&self, change: &mut dyn FnMut(&mut Lists) -> Result<usize>) -> Result<usize> {
+        let mut filters = self.screen_filters(&self.screen_labels(&[])?)?;
+        let mut lists = Lists::from_pieces(&filters);
+        let n = change(&mut lists)?;
+        if n == 0 {
+            self.screen.put(&lists);
+            return Ok(0);
+        }
         let needed: Vec<&str> = [APPROVED, BLOCKED]
             .into_iter()
             .filter(|k| !lists.list(k).is_empty())
             .collect();
         let labels = self.screen_labels(&needed)?;
-        let mut filters = self.screen_filters(&labels)?;
         for kind in [APPROVED, BLOCKED] {
             let existing = filters.remove(kind).unwrap_or_default();
             let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
@@ -1561,11 +1567,9 @@ impl Provider for Gmail {
                 }
             }
         }
-        self.screen.put(&Lists {
-            kept: true,
-            ..lists.clone()
-        });
-        Ok(())
+        lists.kept = true;
+        self.screen.put(&lists);
+        Ok(n)
     }
 
     fn correspondents(&self, limit: u32) -> Result<Vec<Address>> {

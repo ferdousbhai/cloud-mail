@@ -428,7 +428,7 @@ impl Mail {
     fn screen_decisions(&self) -> Decisions {
         let mut decisions: HashMap<String, &'static str> = HashMap::new();
         let mut failed = HashMap::new();
-        let read = self.each_account(|p| p.screened_by_cloudmail().then(|| self.lists_of(p, false)).transpose());
+        let read = self.each_account(|p| p.screened_by_cloudmail().then(|| self.lists_of(p)).transpose());
         for (name, r) in read {
             match r {
                 Ok(lists) => {
@@ -446,51 +446,50 @@ impl Mail {
         (decisions, failed)
     }
 
-    /// An account's lists, started the first time: its own addresses screened in, and with a
-    /// worker, its decisions carried over (they decided for the account before it kept its own;
-    /// anyone undecided there is waiting in the Screener and stays so). Without one there were
-    /// none, so the people the account already corresponds with are screened in, as linking does.
-    fn lists_of(&self, p: &dyn Provider, fresh: bool) -> Result<Lists> {
-        let mut lists = p.screen_lists(fresh)?;
-        if !lists.kept && !fresh {
-            lists = p.screen_lists(true)?;
-        }
+    /// An account's lists, started the first time (see `seed`).
+    fn lists_of(&self, p: &dyn Provider) -> Result<Lists> {
+        let lists = p.screen_lists(false)?;
         if lists.kept {
             return Ok(lists);
         }
+        p.update_screen_lists(&mut |lists| self.seed(p, lists))?;
+        p.screen_lists(false)
+    }
+
+    /// Starts lists that aren't kept yet: the account's own addresses screened in, and with a
+    /// worker, its decisions carried over (they decided for the account before it kept its own;
+    /// anyone undecided there is waiting in the Screener and stays so). Without one there were
+    /// none, so the people the account already corresponds with are screened in, as linking does.
+    /// How many changed (at least one, so a start is always written).
+    fn seed(&self, p: &dyn Provider, lists: &mut Lists) -> Result<usize> {
+        if lists.kept {
+            return Ok(0);
+        }
         let own = p.identities()?;
-        lists.decide(own.iter().map(|a| a.email.as_str()), APPROVED, false);
+        let mut n = lists.decide(own.iter().map(|a| a.email.as_str()), APPROVED, false);
         match &self.client {
             Some(c) => {
-                for status in [BLOCKED, APPROVED] {
-                    let senders = c.senders(status)?;
-                    lists.decide(senders.iter().map(|s| s.email.as_str()), status, true);
+                for (status, s) in worker_decisions(c)? {
+                    n += lists.decide([s.email.as_str()], status, true);
                 }
             }
             None => {
                 if let Ok(people) = p.correspondents(100) {
-                    lists.decide(people.iter().map(|a| a.email.as_str()), APPROVED, true);
+                    n += lists.decide(people.iter().map(|a| a.email.as_str()), APPROVED, true);
                 }
             }
         }
-        p.save_screen_lists(&lists)?;
-        lists.kept = true;
-        Ok(lists)
+        Ok(n.max(1))
     }
 
-    /// Records a decision for these senders in one account Cloudmail screens; nothing is read
-    /// again or written when its lists (as last read) say so already. How many changed.
+    /// Records a decision for these senders in one account Cloudmail screens, in one read and at
+    /// most one write; nothing at all when its lists (as last read) say so already. How many changed.
     fn decide_in(&self, p: &dyn Provider, senders: &[String], status: &str, only_undecided: bool) -> Result<usize> {
         let emails = || senders.iter().map(String::as_str);
         if p.screen_lists(false)?.settled(emails(), status, only_undecided) {
             return Ok(0);
         }
-        let mut lists = self.lists_of(p, true)?;
-        let n = lists.decide(emails(), status, only_undecided);
-        if n > 0 {
-            p.save_screen_lists(&lists)?;
-        }
-        Ok(n)
+        p.update_screen_lists(&mut |lists| Ok(self.seed(p, lists)? + lists.decide(emails(), status, only_undecided)))
     }
 
     /// `decide_in` every account Cloudmail screens: the most that changed in one, and the failures.
@@ -519,14 +518,7 @@ impl Mail {
     /// fails this. Accounts with a Screener of their own (HEY) keep their decisions to themselves.
     pub fn decided_senders(&self) -> Result<(Vec<Decided>, Vec<String>, Vec<AccountWarning>)> {
         let (worker, read) = std::thread::scope(|s| {
-            let worker = s.spawn(|| -> Result<Vec<(&'static str, Sender)>> {
-                let Some(c) = &self.client else { return Ok(Vec::new()) };
-                let mut out = Vec::new();
-                for status in [BLOCKED, APPROVED] {
-                    out.extend(c.senders(status)?.into_iter().map(|s| (status, s)));
-                }
-                Ok(out)
-            });
+            let worker = s.spawn(|| self.client.as_ref().map_or(Ok(Vec::new()), worker_decisions));
             // Each account's lists, and its own addresses: they sit on the lists so your mail is
             // never screened, and aren't decisions about anyone.
             let read = self.each_account(|p| {
@@ -922,29 +914,23 @@ impl Mail {
         let mut sent = sender.send(req)?;
         if self.has_accounts() {
             // People you write to are screened in everywhere, as the worker does for its own mail.
-            let to: Vec<String> = req
+            let people: Vec<Address> = req
                 .to
                 .iter()
                 .chain(&req.cc)
                 .chain(&req.bcc)
                 .flat_map(|r| crate::text::split_addresses(r))
-                .map(|a| crate::gmail::address_from(&a).email.to_ascii_lowercase())
-                .filter(|e| e.contains('@'))
+                .map(|a| crate::gmail::address_from(&a))
+                .filter(|a| a.email.contains('@'))
                 .collect();
+            let to: Vec<String> = people.iter().map(|a| a.email.to_ascii_lowercase()).collect();
             let (_, mut warnings) = self.decide_everywhere(&to, APPROVED, false);
             // The worker screens in whom it sends to itself; mail sent through an account is told to it.
             let by_account = self.accounts.iter().any(|p| std::ptr::addr_eq(p.as_ref(), sender));
-            if let Some(c) = self.client.as_ref().filter(|_| by_account) {
-                let people: Vec<Address> = to
-                    .iter()
-                    .map(|e| Address {
-                        name: None,
-                        email: e.clone(),
-                    })
-                    .collect();
-                if let Err(e) = c.decide_senders(&people, APPROVED, false) {
-                    warnings.push(AccountWarning::new("worker", &e));
-                }
+            if let Some(c) = self.client.as_ref().filter(|_| by_account)
+                && let Err(e) = c.decide_senders(&people, APPROVED, false)
+            {
+                warnings.push(AccountWarning::new("worker", &e));
             }
             if let Some(w) = warnings.first() {
                 sent.warning = Some(format!(
@@ -971,6 +957,15 @@ impl Mail {
         }
         Ok(n as i64)
     }
+}
+
+/// The worker's decisions, blocked first.
+fn worker_decisions(c: &Client) -> Result<Vec<(&'static str, Sender)>> {
+    let mut out = Vec::new();
+    for status in [BLOCKED, APPROVED] {
+        out.extend(c.senders(status)?.into_iter().map(|s| (status, s)));
+    }
+    Ok(out)
 }
 
 /// What a worker-only action says without a worker.

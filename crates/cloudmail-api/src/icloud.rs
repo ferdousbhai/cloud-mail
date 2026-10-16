@@ -636,8 +636,14 @@ impl Provider for Icloud {
         self.screen.get(fresh, || Ok(Lists::from_pieces(&self.screen_rules()?)))
     }
 
-    fn save_screen_lists(&self, lists: &Lists) -> Result<()> {
+    fn update_screen_lists(&self, change: &mut dyn FnMut(&mut Lists) -> Result<usize>) -> Result<usize> {
         let mut rules = self.screen_rules()?;
+        let mut lists = Lists::from_pieces(&rules);
+        let n = change(&mut lists)?;
+        if n == 0 {
+            self.screen.put(&lists);
+            return Ok(0);
+        }
         for kind in [APPROVED, BLOCKED] {
             let existing = rules.remove(kind).unwrap_or_default();
             let pieces: Vec<Vec<String>> = existing.iter().map(|(_, a)| a.clone()).collect();
@@ -660,11 +666,9 @@ impl Provider for Icloud {
                 self.rules_call("DELETE", &format!("unified/rule/{}", urlencoding::encode(&id)), None)?;
             }
         }
-        self.screen.put(&Lists {
-            kept: true,
-            ..lists.clone()
-        });
-        Ok(())
+        lists.kept = true;
+        self.screen.put(&lists);
+        Ok(n)
     }
 
     fn sign_in(&self) -> Result<()> {

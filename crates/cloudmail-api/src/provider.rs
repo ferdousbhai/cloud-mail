@@ -137,9 +137,14 @@ pub trait Provider: Send + Sync {
     fn screen_lists(&self, _fresh: bool) -> Result<crate::screening::Lists> {
         Ok(Default::default())
     }
-    /// Saves the decisions back, changing only Cloudmail's own filters or rules.
-    fn save_screen_lists(&self, _lists: &crate::screening::Lists) -> Result<()> {
-        Ok(())
+    /// Changes the decisions kept in this account: reads them once, lets `change` alter them (it
+    /// returns how many changed), and writes back only Cloudmail's own filters or rules, and only
+    /// when something changed.
+    fn update_screen_lists(
+        &self,
+        _change: &mut dyn FnMut(&mut crate::screening::Lists) -> Result<usize>,
+    ) -> Result<usize> {
+        Ok(0)
     }
     /// The people this account already corresponds with (Inbox senders, recipients of sent mail,
     /// about `limit` conversations of each), screened in when the account is linked.
