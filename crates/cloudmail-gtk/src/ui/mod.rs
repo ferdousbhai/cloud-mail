@@ -3,6 +3,7 @@ pub mod compose;
 #[cfg(debug_assertions)]
 mod devscript;
 mod html;
+mod people;
 mod rows;
 mod shortcuts;
 
@@ -293,6 +294,19 @@ impl Ui {
             .tooltip_text("Linked accounts: HEY, Gmail, iCloud Mail")
             .build();
         accounts_btn.add_css_class("flat");
+        // Shown once the worker says you're its admin.
+        let people_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        people_box.append(&gtk::Label::new(Some("\u{f0c0}")));
+        let people_label = gtk::Label::builder().label("People").xalign(0.0).build();
+        people_box.append(&people_label);
+        let people_btn = gtk::Button::builder()
+            .child(&people_box)
+            .tooltip_text("Who else reads their mail on your worker; invite someone")
+            .visible(false)
+            .build();
+        people_btn.add_css_class("flat");
+        sidebar.append(&people_btn);
+        wide_only.push(people_label.upcast());
         sidebar.append(&accounts_btn);
         wide_only.push(accounts_label.upcast());
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
@@ -625,6 +639,17 @@ impl Ui {
             ui,
             move |_| accounts::show(&ui)
         ));
+        people_btn.connect_clicked(clone!(
+            #[weak]
+            ui,
+            move |_| people::show(&ui)
+        ));
+        if let Some(client) = ui.client.clone() {
+            util::run(
+                move || client.me().map_err(|e| e.to_string()),
+                move |me: Result<crate::api::Me, String>| people_btn.set_visible(me.is_ok_and(|m| m.role == "admin")),
+            );
+        }
 
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);

@@ -1,6 +1,6 @@
 //! Debug-build-only automation for smoke tests: CLOUDMAIL_SCRIPT="j;shot:/tmp/a.png;quit"
 //! Steps run 1.5s apart. A step is a single key, `enter`, `esc`, `shot:<png>` (main window),
-//! `shotcompose:<png>`, `send` (activates the open compose window's Send), `drop:<file>` (drops
+//! `shotcompose:<png>`, `people` (opens the People window), `shotpeople:<png>`, `send` (activates the open compose window's Send), `drop:<file>` (drops
 //! the file on the open compose window, as dragging it there would), `unattach:<n>` (clicks the
 //! nth chip's remove button), `closecompose` (closes it the way the title bar's close button
 //! does, and reports whether it stayed open), or `quit`.
@@ -59,6 +59,12 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                     super::compose::open_state()
                 );
             }
+            "people" => super::people::show(&ui_rc),
+            s if let Some(path) = s.strip_prefix("shotpeople:") => {
+                if let Some(w) = window_titled("People") {
+                    shot(w.upcast_ref(), path);
+                }
+            }
             "closecompose" => {
                 if let Some(w) = compose_window() {
                     eprintln!("script: compose before close: {:?}", super::compose::open_state());
@@ -81,6 +87,13 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
         }
         run(ui, steps, i + 1);
     });
+}
+
+fn window_titled(title: &str) -> Option<gtk::Window> {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        .find(|w| w.title().as_deref() == Some(title) && w.is_visible())
 }
 
 fn compose_window() -> Option<gtk::Window> {

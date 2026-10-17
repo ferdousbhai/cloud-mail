@@ -237,6 +237,11 @@ you: re-running `cloudmail setup` updates the worker for everyone.
   their addresses' routing).
 - They should know that, as the Cloudflare account's owner, you can read their mail in D1 and R2.
 
+In the app, **People** in the sidebar (shown only to you, the admin) does the same: lists who's on
+your worker and whether they've connected, invites someone and copies their link or `connect`
+command, makes a new link, adds an address, sets their copy-to address, and signs them out or
+removes them. Routing an address still takes `cloudmail mailbox add … --route`.
+
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
