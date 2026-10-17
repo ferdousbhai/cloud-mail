@@ -85,8 +85,25 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/** Where a URL found in text ends: not at the punctuation, quote or unmatched bracket closing the sentence around it. */
+function urlEnd(url: string): number {
+  let end = url.length;
+  for (;;) {
+    const c = url[end - 1];
+    const open = { ")": "(", "]": "[", "}": "{" }[c];
+    const unmatched = open && url.slice(0, end).split(c).length > url.slice(0, end).split(open).length;
+    if (!".,;:!?'*".includes(c) && !unmatched) return end;
+    end--;
+  }
+}
+
 export function textToHtml(text: string): string {
-  const linked = escapeHtml(text).replace(/https?:\/\/[^\s<]+/g, (url) => `<a href="${url}">${url}</a>`);
+  // Matched in escaped text, so a URL also stops at an escaped quote or angle bracket.
+  const linked = escapeHtml(text).replace(/https?:\/\/[^\s<]+/g, (match) => {
+    const raw = match.split(/&quot;|&gt;|&lt;/)[0];
+    const url = raw.slice(0, urlEnd(raw));
+    return `<a href="${url}">${url}</a>${match.slice(url.length)}`;
+  });
   return `<div style="font-family: sans-serif; white-space: pre-wrap;">${linked}</div>`;
 }
 

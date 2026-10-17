@@ -316,17 +316,38 @@ fn linkify(escaped: &str) -> String {
         };
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
-        let mut end = tail
-            .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
-            .unwrap_or(tail.len());
-        if let Some(amp) = tail[..end].find("&gt;") {
-            end = amp;
+        let mut end = tail.find(|c: char| c.is_whitespace() || c == '<').unwrap_or(tail.len());
+        // The text is escaped, so a quote or angle bracket after the URL is an entity.
+        if let Some(entity) = ["&quot;", "&gt;", "&lt;"]
+            .iter()
+            .filter_map(|e| tail[..end].find(e))
+            .min()
+        {
+            end = entity;
         }
-        let url = tail[..end].trim_end_matches(['.', ',', ')', ';', ':', '!', '?']);
+        let url = trim_url(&tail[..end]);
         out.push_str(&format!(r#"<a href="{url}">{url}</a>"#));
         rest = &tail[url.len()..];
     }
     out
+}
+
+/// A URL without the punctuation, quote or unmatched closing bracket of the sentence around it.
+fn trim_url(mut url: &str) -> &str {
+    while let Some(c) = url.chars().last() {
+        let open = match c {
+            ')' => Some('('),
+            ']' => Some('['),
+            '}' => Some('{'),
+            _ => None,
+        };
+        let unmatched = open.is_some_and(|o| url.matches(c).count() > url.matches(o).count());
+        if !".,;:!?'*".contains(c) && !unmatched {
+            break;
+        }
+        url = &url[..url.len() - 1];
+    }
+    url
 }
 
 #[cfg(test)]
@@ -502,6 +523,14 @@ mod tests {
         assert_eq!(
             linkify("see https://x.io/a?b=1&amp;c=2."),
             r#"see <a href="https://x.io/a?b=1&amp;c=2">https://x.io/a?b=1&amp;c=2</a>."#
+        );
+        assert_eq!(
+            linkify("connect 'https://x.dev/invite/inv_1'"),
+            r#"connect '<a href="https://x.dev/invite/inv_1">https://x.dev/invite/inv_1</a>'"#
+        );
+        assert_eq!(
+            linkify("(&quot;https://x.dev/Mail_(protocol)&quot;)"),
+            r#"(&quot;<a href="https://x.dev/Mail_(protocol)">https://x.dev/Mail_(protocol)</a>&quot;)"#
         );
     }
 

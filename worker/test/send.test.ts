@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, expect, test } from "bun:test";
 import { encodedSize } from "../src/api";
+import { textToHtml } from "../src/util";
 import { d1, migrate, r2, request } from "./support";
 
 let db: Database;
@@ -180,4 +181,13 @@ test("linked accounts' senders: looked up and decided in bulk, a no kept when sc
   r = await api("POST", "/api/senders/batch", { senders: [{ email: "ann@x.com" }], status: "approved" });
   expect(await r.json()).toEqual({ ok: true, changed: 1 });
   expect((await api("POST", "/api/senders/batch", { senders: [], status: "maybe" })).status).toBe(400);
+});
+
+test("links in plain text leave the quote, bracket or punctuation around them out", () => {
+  const link = (text: string) => textToHtml(text).match(/href="([^"]*)"/)?.[1];
+  expect(link("cloudmail connect 'https://x.dev/invite/inv_1'")).toBe("https://x.dev/invite/inv_1");
+  expect(link('see "https://x.dev/a".')).toBe("https://x.dev/a");
+  expect(link("(at https://x.dev/a?b=1&c=2)")).toBe("https://x.dev/a?b=1&amp;c=2");
+  expect(link("https://en.wikipedia.org/wiki/Mail_(protocol), then")).toBe("https://en.wikipedia.org/wiki/Mail_(protocol)");
+  expect(textToHtml("go to https://x.dev/a!")).toContain('<a href="https://x.dev/a">https://x.dev/a</a>!');
 });
