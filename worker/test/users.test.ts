@@ -168,6 +168,11 @@ test("forwarding is per user", async () => {
   expect(forwarded).toEqual([{ to: "sara@gmail.example", envelope: SARA }]);
   expect((await api<{ settings: { forward_to: string } }>(OWNER_TOKEN, "GET", "/api/settings?user=sara")).body.settings.forward_to).toBe("sara@gmail.example");
   expect((await api(sara, "GET", "/api/settings?user=owner")).status).toBe(403);
+  const listed = (await api<{ users: { name: string; forward_to: string }[] }>(OWNER_TOKEN, "GET", "/api/users")).body.users;
+  expect(listed.map(({ name, forward_to }) => ({ name, forward_to }))).toEqual([
+    { name: "owner", forward_to: "" },
+    { name: "sara", forward_to: "sara@gmail.example" },
+  ]);
 });
 
 test("only the admin manages users and adds or gives away mailboxes", async () => {

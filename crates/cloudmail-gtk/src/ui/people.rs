@@ -2,12 +2,13 @@
 //! else reads their mail on it, inviting someone, a fresh link, adding an address, their copy of
 //! every message, and signing them out or removing them. What it does is `cloudmail user`'s.
 
-use gtk::{gdk, gio, glib, glib::clone, prelude::*};
+use gtk::{gdk, glib, glib::clone, pango, prelude::*};
 use std::rc::Rc;
 
-use super::Ui;
+use super::{Ui, clear, confirm, keep_until_closed, text, tool_window};
+use crate::api::text::shell_arg;
 use crate::api::{Client, Invite, MailboxUpdate, User};
-use crate::util;
+use crate::util::{self, long_time, split_addresses};
 
 struct People {
     client: Client,
@@ -20,26 +21,16 @@ struct People {
 
 pub fn show(ui: &Rc<Ui>) {
     let Some(client) = ui.client.clone() else { return };
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.add_css_class("accounts");
-    root.set_margin_top(18);
-    root.set_margin_bottom(18);
-    root.set_margin_start(18);
-    root.set_margin_end(18);
-    let heading = gtk::Label::builder().label("People on your worker").xalign(0.0).build();
-    heading.add_css_class("column-title");
-    root.append(&heading);
-    let sub = gtk::Label::builder()
-        .label("Each sees only the mail of their own addresses, and needs no Cloudflare account.")
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    sub.add_css_class("column-sub");
-    root.append(&sub);
+    let (window, root) = tool_window(ui, "People", "people", "People on your worker", 620);
+    root.append(&text(
+        "Each sees only the mail of their own addresses, and needs no Cloudflare account.",
+        "column-sub",
+    ));
     // Lined up with the headings' padding.
     let list = gtk::Box::new(gtk::Orientation::Vertical, 14);
     list.set_margin_start(14);
     list.set_margin_end(14);
+    list.append(&text("Loading…", "column-sub"));
     let scroller = gtk::ScrolledWindow::builder()
         .child(&list)
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -49,9 +40,7 @@ pub fn show(ui: &Rc<Ui>) {
         .build();
     root.append(&scroller);
 
-    let invite_heading = gtk::Label::builder().label("Invite someone").xalign(0.0).build();
-    invite_heading.add_css_class("column-title");
-    root.append(&invite_heading);
+    root.append(&text("Invite someone", "column-title"));
     let form = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     form.set_margin_start(14);
     form.set_margin_end(14);
@@ -69,89 +58,67 @@ pub fn show(ui: &Rc<Ui>) {
     form.append(&addresses);
     form.append(&invite_btn);
     root.append(&form);
-    let note = gtk::Label::builder()
-        .label("Their addresses' Email Routing must point at your worker: `cloudmail mailbox add <address> --route`.")
-        .xalign(0.0)
-        .wrap(true)
-        .build();
-    note.add_css_class("column-sub");
-    root.append(&note);
+    root.append(&text(
+        "Their addresses' Email Routing must point at your worker: `cloudmail mailbox add <address> --route`.",
+        "column-sub",
+    ));
 
-    let latest = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    latest.set_visible(false);
-    latest.set_margin_start(14);
-    latest.set_margin_end(14);
-    root.append(&latest);
-    let status = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).build();
-    status.add_css_class("column-sub");
+    let invite_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    invite_box.set_visible(false);
+    invite_box.set_margin_start(14);
+    invite_box.set_margin_end(14);
+    root.append(&invite_box);
+    let status = text("", "column-sub");
+    status.set_selectable(true);
     root.append(&status);
 
-    let window = gtk::Window::builder()
-        .title("People")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(620)
-        .child(&root)
-        .build();
-    window.add_css_class("cloudmail");
     let p = Rc::new(People {
         client,
         window,
         list,
         status,
-        invite: latest,
+        invite: invite_box,
     });
-    // Every handler holds `p` weakly, so the window keeps it until it closes.
-    let keep = std::cell::RefCell::new(Some(p.clone()));
-    p.window.connect_destroy(move |_| drop(keep.take()));
+    // Every handler holds `p` weakly.
+    keep_until_closed(&p.window, &p);
 
-    let submit = clone!(
-        #[weak]
-        p,
-        #[weak]
-        name,
-        #[weak]
-        addresses,
-        move || {
-            let who = name.text().trim().to_lowercase();
-            if who.is_empty() {
-                say(&p, "Give them a name first: it's how you refer to them, like sam.");
-                return;
+    on_submit(
+        &addresses,
+        &invite_btn,
+        clone!(
+            #[weak]
+            p,
+            #[weak]
+            name,
+            #[weak]
+            addresses,
+            move || {
+                let who = name.text().trim().to_lowercase();
+                if who.is_empty() {
+                    say(&p, "Give them a name first: it's how you refer to them, like sam.");
+                    return;
+                }
+                let boxes = split_addresses(&addresses.text());
+                name.set_text("");
+                addresses.set_text("");
+                invite(&p, who, boxes);
             }
-            let boxes = split_addresses(&addresses.text());
-            name.set_text("");
-            addresses.set_text("");
-            invite(&p, who, boxes);
-        }
+        ),
     );
-    invite_btn.connect_clicked(clone!(
-        #[strong]
-        submit,
-        move |_| submit()
-    ));
-    addresses.connect_activate(move |_| submit());
 
     refresh(&p);
     p.window.present();
 }
 
-fn split_addresses(text: &str) -> Vec<String> {
-    text.split([',', ' ', ';'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect()
+/// Runs `f` from the button, or Enter in the entry.
+fn on_submit(entry: &gtk::Entry, button: &gtk::Button, f: impl Fn() + Clone + 'static) {
+    let g = f.clone();
+    button.connect_clicked(move |_| g());
+    entry.connect_activate(move |_| f());
 }
 
 fn say(p: &People, text: &str) {
     p.status.set_label(text);
-}
-
-fn when(ms: i64) -> String {
-    glib::DateTime::from_unix_local(ms / 1000)
-        .and_then(|d| d.format("%b %e, %H:%M"))
-        .map(|s| s.to_string())
-        .unwrap_or_default()
 }
 
 fn copy(p: &People, text: &str) {
@@ -161,110 +128,79 @@ fn copy(p: &People, text: &str) {
     say(p, "Copied.");
 }
 
-/// Everyone but the admin, each with their copy-of-every-message setting, off the main loop.
+/// Everyone but the admin, off the main loop; the rows shown stay until the new ones are in.
 fn refresh(p: &Rc<People>) {
-    while let Some(child) = p.list.first_child() {
-        p.list.remove(&child);
-    }
-    p.list
-        .append(&gtk::Label::builder().label("Loading…").xalign(0.0).build());
     let client = p.client.clone();
     util::run(
-        move || -> Result<Vec<(User, Option<String>)>, String> {
-            let users = client.users().map_err(|e| e.to_string())?;
-            Ok(users
-                .into_iter()
-                .filter(|u| u.role != "admin")
-                .map(|u| {
-                    let forward = client.settings(Some(&u.name)).ok().map(|s| s.forward_to);
-                    (u, forward)
-                })
-                .collect())
-        },
+        move || client.users().map_err(|e| e.to_string()),
         clone!(
             #[weak]
             p,
-            move |r: Result<Vec<(User, Option<String>)>, String>| {
-                while let Some(child) = p.list.first_child() {
-                    p.list.remove(&child);
+            move |r: Result<Vec<User>, String>| {
+                let users = match r {
+                    Ok(users) => users,
+                    Err(e) => return say(&p, &e),
+                };
+                clear(&p.list);
+                let others: Vec<User> = users.into_iter().filter(|u| !u.is_admin()).collect();
+                if others.is_empty() {
+                    p.list
+                        .append(&text("Only you so far: invite someone below.", "column-sub"));
                 }
-                match r {
-                    Ok(users) if users.is_empty() => p.list.append(
-                        &gtk::Label::builder()
-                            .label("Only you so far: invite someone below.")
-                            .xalign(0.0)
-                            .build(),
-                    ),
-                    Ok(users) => {
-                        for (u, forward) in users {
-                            p.list.append(&row(&p, u, forward));
-                        }
-                    }
-                    Err(e) => say(&p, &e),
+                for u in others {
+                    p.list.append(&row(&p, u));
                 }
             }
         ),
     );
 }
 
-fn state(u: &User) -> String {
-    if u.revoked {
-        "signed out".into()
-    } else if u.connected {
-        "connected".into()
-    } else if let Some(t) = u.invite_expires_at {
-        format!("invited, link valid until {}", when(t))
-    } else {
-        "not connected, no valid link".into()
-    }
+/// A button that runs `f` for this user.
+fn action(p: &Rc<People>, label: &str, tooltip: &str, name: &str, f: fn(&Rc<People>, String)) -> gtk::Button {
+    let b = gtk::Button::with_label(label);
+    b.set_tooltip_text(Some(tooltip));
+    let name = name.to_string();
+    b.connect_clicked(clone!(
+        #[weak]
+        p,
+        move |_| f(&p, name.clone())
+    ));
+    b
 }
 
-fn row(p: &Rc<People>, u: User, forward: Option<String>) -> gtk::Box {
+fn row(p: &Rc<People>, u: User) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let title = gtk::Label::builder()
-        .label(format!("{} ({})", u.name, state(&u)))
+        .label(format!("{} · {}", u.name, u.state()))
         .xalign(0.0)
         .hexpand(true)
         .build();
     top.append(&title);
-    let name = u.name.clone();
-
-    let link = gtk::Button::with_label(if u.connected { "New link" } else { "New invite link" });
-    link.set_tooltip_text(Some(
+    top.append(&action(
+        p,
+        if u.connected { "New link" } else { "New invite link" },
         "A one-time link for another computer; using it signs out the computer they use now",
+        &u.name,
+        |p, name| invite(p, name, Vec::new()),
     ));
-    link.connect_clicked(clone!(
-        #[weak]
-        p,
-        #[strong]
-        name,
-        move |_| invite(&p, name.clone(), Vec::new())
-    ));
-    top.append(&link);
     if u.connected {
-        let out = gtk::Button::with_label("Sign out");
-        out.set_tooltip_text(Some(
-            "Signs them out everywhere; their mail stays, and a new link lets them back in",
-        ));
-        out.connect_clicked(clone!(
-            #[weak]
+        top.append(&action(
             p,
-            #[strong]
-            name,
-            move |_| revoke(&p, name.clone(), false)
+            "Sign out",
+            "Signs them out everywhere; their mail stays, and a new link lets them back in",
+            &u.name,
+            |p, name| revoke(p, name, false),
         ));
-        top.append(&out);
     }
-    let remove = gtk::Button::with_label("Remove…");
-    remove.add_css_class("error");
-    remove.connect_clicked(clone!(
-        #[weak]
+    let remove = action(
         p,
-        #[strong]
-        name,
-        move |_| revoke(&p, name.clone(), true)
-    ));
+        "Remove…",
+        "Deletes them and all their mail from your worker",
+        &u.name,
+        |p, name| revoke(p, name, true),
+    );
+    remove.add_css_class("error");
     top.append(&remove);
     row.append(&top);
 
@@ -273,13 +209,8 @@ fn row(p: &Rc<People>, u: User, forward: Option<String>) -> gtk::Box {
     } else {
         u.mailboxes.join(", ")
     };
-    let detail = gtk::Label::builder()
-        .label(&boxes)
-        .xalign(0.0)
-        .wrap(true)
-        .selectable(true)
-        .build();
-    detail.add_css_class("column-sub");
+    let detail = text(&boxes, "column-sub");
+    detail.set_selectable(true);
     row.append(&detail);
 
     let edits = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -288,107 +219,98 @@ fn row(p: &Rc<People>, u: User, forward: Option<String>) -> gtk::Box {
         .hexpand(true)
         .build();
     let add = gtk::Button::with_label("Add");
-    let add_address = clone!(
-        #[weak]
-        p,
-        #[weak]
-        address,
-        #[strong]
-        name,
-        move || {
-            let email = address.text().trim().to_string();
-            if email.is_empty() {
-                return;
-            }
-            let client = p.client.clone();
-            let user = name.clone();
-            util::run(
-                move || {
-                    let update = MailboxUpdate {
-                        user: Some(user),
-                        screen: Some(true),
-                        ..Default::default()
-                    };
-                    client.put_mailbox(&email, &update).map_err(|e| e.to_string())
-                },
-                clone!(
-                    #[weak]
-                    p,
-                    move |r: Result<crate::api::Mailbox, String>| match r {
-                        Ok(m) => {
-                            say(&p, &format!("{} is {}'s now.", m.email, m.user));
-                            refresh(&p);
-                        }
-                        Err(e) => say(&p, &e),
-                    }
-                ),
-            );
-        }
+    let name = u.name.clone();
+    on_submit(
+        &address,
+        &add,
+        clone!(
+            #[weak]
+            p,
+            #[weak]
+            address,
+            #[strong]
+            name,
+            move || add_mailbox(&p, name.clone(), address.text().trim().to_string())
+        ),
     );
-    add.connect_clicked(clone!(
-        #[strong]
-        add_address,
-        move |_| add_address()
-    ));
-    address.connect_activate(move |_| add_address());
     edits.append(&address);
     edits.append(&add);
     row.append(&edits);
 
     // A copy of every message elsewhere (often their old inbox, while they move over).
-    if let Some(forward) = forward {
-        let fwd = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let entry = gtk::Entry::builder()
-            .text(&forward)
-            .placeholder_text("nobody")
-            .tooltip_text("A verified Email Routing destination address; empty for none")
-            .hexpand(true)
-            .build();
-        let save = gtk::Button::with_label("Save");
-        let set = clone!(
+    let fwd = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let entry = gtk::Entry::builder()
+        .text(&u.forward_to)
+        .placeholder_text("nobody")
+        .tooltip_text("A verified Email Routing destination address; empty for none")
+        .hexpand(true)
+        .build();
+    let save = gtk::Button::with_label("Save");
+    on_submit(
+        &entry,
+        &save,
+        clone!(
             #[weak]
             p,
             #[weak]
             entry,
-            #[strong]
-            name,
-            move || {
-                let to = entry.text().trim().to_string();
-                let client = p.client.clone();
-                let user = name.clone();
-                util::run(
-                    move || {
-                        client
-                            .update_settings(Some(&user), &serde_json::json!({ "forward_to": to }))
-                            .map_err(|e| e.to_string())
-                    },
-                    clone!(
-                        #[weak]
-                        p,
-                        #[strong]
-                        name,
-                        move |r: Result<crate::api::Settings, String>| match r {
-                            Ok(s) if s.forward_to.is_empty() =>
-                                say(&p, &format!("{name}'s mail is no longer copied anywhere.")),
-                            Ok(s) => say(&p, &format!("A copy of {name}'s mail goes to {}.", s.forward_to)),
-                            Err(e) => say(&p, &e),
-                        }
-                    ),
-                );
-            }
-        );
-        save.connect_clicked(clone!(
-            #[strong]
-            set,
-            move |_| set()
-        ));
-        entry.connect_activate(move |_| set());
-        fwd.append(&gtk::Label::new(Some("Copy of every message to")));
-        fwd.append(&entry);
-        fwd.append(&save);
-        row.append(&fwd);
-    }
+            move || set_forward(&p, name.clone(), entry.text().trim().to_string())
+        ),
+    );
+    fwd.append(&gtk::Label::new(Some("Copy of every message to")));
+    fwd.append(&entry);
+    fwd.append(&save);
+    row.append(&fwd);
     row
+}
+
+/// Gives them an address; the worker decides whether new senders to it are screened.
+fn add_mailbox(p: &Rc<People>, name: String, email: String) {
+    if email.is_empty() {
+        return;
+    }
+    let client = p.client.clone();
+    util::run(
+        move || {
+            let update = MailboxUpdate {
+                user: Some(name),
+                ..Default::default()
+            };
+            client.put_mailbox(&email, &update).map_err(|e| e.to_string())
+        },
+        clone!(
+            #[weak]
+            p,
+            move |r: Result<crate::api::Mailbox, String>| match r {
+                Ok(m) => {
+                    say(&p, &format!("{} is {}'s now.", m.email, m.user));
+                    refresh(&p);
+                }
+                Err(e) => say(&p, &e),
+            }
+        ),
+    );
+}
+
+fn set_forward(p: &Rc<People>, name: String, to: String) {
+    let client = p.client.clone();
+    let user = name.clone();
+    util::run(
+        move || {
+            client
+                .update_settings(Some(&user), &serde_json::json!({ "forward_to": to }))
+                .map_err(|e| e.to_string())
+        },
+        clone!(
+            #[weak]
+            p,
+            move |r: Result<crate::api::Settings, String>| match r {
+                Ok(s) if s.forward_to.is_empty() => say(&p, &format!("{name}'s mail is no longer copied anywhere.")),
+                Ok(s) => say(&p, &format!("A copy of {name}'s mail goes to {}.", s.forward_to)),
+                Err(e) => say(&p, &e),
+            }
+        ),
+    );
 }
 
 /// Invites someone new, or gives someone a fresh link (and any new addresses).
@@ -412,40 +334,29 @@ fn invite(p: &Rc<People>, name: String, mailboxes: Vec<String>) {
 }
 
 fn show_invite(p: &Rc<People>, name: &str, invite: &Invite) {
-    while let Some(child) = p.invite.first_child() {
-        p.invite.remove(&child);
-    }
-    let text = format!(
-        "{name}'s link works once, until {}. Send it privately (anyone who uses it first reads their mail). On their computer, with Cloudmail installed:",
-        when(invite.expires_at)
-    );
-    p.invite
-        .append(&gtk::Label::builder().label(&text).xalign(0.0).wrap(true).build());
-    let command = format!("cloudmail connect '{}'", invite.url);
-    let shown = gtk::Label::builder()
-        .label(&command)
-        .xalign(0.0)
-        .wrap(true)
-        .wrap_mode(gtk::pango::WrapMode::Char)
-        .selectable(true)
-        .build();
+    clear(&p.invite);
+    p.invite.append(&text(
+        &format!(
+            "{name}'s link works once, until {}. Send it privately (anyone who uses it first reads their mail). On their computer, with Cloudmail installed:",
+            long_time(invite.expires_at)
+        ),
+        "column-sub",
+    ));
+    let command = format!("cloudmail connect {}", shell_arg(&invite.url));
+    let shown = text(&command, "");
+    shown.set_wrap_mode(pango::WrapMode::Char);
+    shown.set_selectable(true);
     p.invite.append(&shown);
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let copy_command = gtk::Button::with_label("Copy command");
-    copy_command.connect_clicked(clone!(
-        #[weak]
-        p,
-        move |_| copy(&p, &command)
-    ));
-    let copy_link = gtk::Button::with_label("Copy link");
-    let url = invite.url.clone();
-    copy_link.connect_clicked(clone!(
-        #[weak]
-        p,
-        move |_| copy(&p, &url)
-    ));
-    buttons.append(&copy_command);
-    buttons.append(&copy_link);
+    for (label, value) in [("Copy command", command), ("Copy link", invite.url.clone())] {
+        let b = gtk::Button::with_label(label);
+        b.connect_clicked(clone!(
+            #[weak]
+            p,
+            move |_| copy(&p, &value)
+        ));
+        buttons.append(&b);
+    }
     p.invite.append(&buttons);
     p.invite.set_visible(true);
     say(p, "");
@@ -466,24 +377,15 @@ fn revoke(p: &Rc<People>, name: String, purge: bool) {
             "Sign out",
         )
     };
-    let dialog = gtk::AlertDialog::builder()
-        .message(message)
-        .detail(detail)
-        .buttons(["Cancel", action])
-        .cancel_button(0)
-        .default_button(0)
-        .modal(true)
-        .build();
-    dialog.choose(
-        Some(&p.window),
-        gio::Cancellable::NONE,
+    confirm(
+        &p.window,
+        &message,
+        detail,
+        ["Cancel", action],
         clone!(
             #[weak]
             p,
-            move |res| {
-                if res != Ok(1) {
-                    return;
-                }
+            move || {
                 let client = p.client.clone();
                 let who = name.clone();
                 util::run(

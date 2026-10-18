@@ -107,23 +107,32 @@ class ReleaseTests(unittest.TestCase):
             executable(binary / 'gh', '''
 echo "gh $*" >> "$CALL_LOG"
 case "$1 $2" in
+  'api '*/artifacts) [[ "$*" == *cloudmail-aarch64* ]] && echo 2 || echo 1 ;;
   'api '*) echo "$COMMIT" ;;
+  'auth token') echo token ;;
   'run list') echo 123 ;;
   'run watch') [[ $FAILURE != ci ]] ;;
   'run view') printf '%s\\tpush\\tsuccess\\tNative packages\\n' "$COMMIT" ;;
-  'run download')
-    arch=x86_64
-    [[ "$*" != *cloudmail-aarch64* ]] || arch=aarch64
-    dest=${!#}; mkdir -p "$dest/meta"
-    provenance=$COMMIT
-    [[ $FAILURE != source || $arch != aarch64 ]] || provenance=wrong
-    echo "$provenance" > "$dest/source-commit.txt"
-    metadata_arch=$arch
-    [[ $FAILURE != architecture || $arch != aarch64 ]] || metadata_arch=x86_64
-    printf 'pkgname = cloudmail\\npkgver = 0.4.2-1\\narch = %s\\n' "$metadata_arch" > "$dest/meta/.PKGINFO"
-    tar -C "$dest/meta" -czf "$dest/cloudmail-0.4.2-1-$arch.pkg.tar.zst" .PKGINFO ;;
   'release view') echo true ;;
 esac
+''')
+            # The artifact API redirects to a download; artifact 1 is x86_64's, 2 aarch64's.
+            executable(binary / 'curl', '''
+url=${!#}
+if [[ "$*" == *redirect_url* ]]; then id=${url%/zip}; echo "https://download.example/${id##*/}"; exit; fi
+while [[ $1 != -o ]]; do shift; done; zip=$2
+arch=x86_64
+[[ ${url##*/} != 2 ]] || arch=aarch64
+dest=$(mktemp -d); mkdir "$dest/meta"
+provenance=$COMMIT
+[[ $FAILURE != source || $arch != aarch64 ]] || provenance=wrong
+echo "$provenance" > "$dest/source-commit.txt"
+metadata_arch=$arch
+[[ $FAILURE != architecture || $arch != aarch64 ]] || metadata_arch=x86_64
+printf 'pkgname = cloudmail\\npkgver = 0.4.2-1\\narch = %s\\n' "$metadata_arch" > "$dest/meta/.PKGINFO"
+tar -C "$dest/meta" -czf "$dest/cloudmail-0.4.2-1-$arch.pkg.tar.zst" .PKGINFO
+rm -r "$dest/meta"
+(cd "$dest" && python3 -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w"); [z.write(f) for f in sys.argv[2:]]' "$zip" *)
 ''')
             executable(binary / 'bsdtar', 'exec tar "$@"\n')
             executable(binary / 'gpg', '''

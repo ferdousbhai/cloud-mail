@@ -847,7 +847,7 @@ pub fn run(args: &SetupArgs, interactive: bool) -> CliResult {
 fn refuse_invited_user() -> CliResult<()> {
     let Ok(cfg) = config::load() else { return Ok(()) };
     match Client::new(&cfg).me() {
-        Ok(me) if me.role != "admin" => Err(CliError::usage(format!(
+        Ok(me) if !me.is_admin() => Err(CliError::usage(format!(
             "setup is for the admin of {}; you're connected to it as {}",
             cfg.api_url, me.name
         ))

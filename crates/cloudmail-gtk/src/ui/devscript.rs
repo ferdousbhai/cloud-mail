@@ -1,9 +1,10 @@
 //! Debug-build-only automation for smoke tests: CLOUDMAIL_SCRIPT="j;shot:/tmp/a.png;quit"
 //! Steps run 1.5s apart. A step is a single key, `enter`, `esc`, `shot:<png>` (main window),
-//! `shotcompose:<png>`, `people` (opens the People window), `shotpeople:<png>`, `send` (activates the open compose window's Send), `drop:<file>` (drops
-//! the file on the open compose window, as dragging it there would), `unattach:<n>` (clicks the
-//! nth chip's remove button), `closecompose` (closes it the way the title bar's close button
-//! does, and reports whether it stayed open), or `quit`.
+//! `shotcompose:<png>`, `people` (opens the People window), `shotpeople:<png>`, `send` (activates
+//! the open compose window's Send), `drop:<file>` (drops the file on the open compose window, as
+//! dragging it there would), `unattach:<n>` (clicks the nth chip's remove button), `closecompose`
+//! (closes it the way the title bar's close button does, and reports whether it stayed open), or
+//! `quit`.
 
 use gtk::{gdk, glib, prelude::*};
 use std::rc::Rc;
@@ -42,7 +43,7 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                 ui_rc.on_key(gdk::Key::Escape, gdk::ModifierType::empty());
             }
             "send" => {
-                if let Some(b) = compose_window()
+                if let Some(b) = open_window("compose")
                     .and_then(|w| w.default_widget())
                     .and_downcast::<gtk::Button>()
                 {
@@ -61,12 +62,12 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
             }
             "people" => super::people::show(&ui_rc),
             s if let Some(path) = s.strip_prefix("shotpeople:") => {
-                if let Some(w) = window_titled("People") {
+                if let Some(w) = open_window("people") {
                     shot(w.upcast_ref(), path);
                 }
             }
             "closecompose" => {
-                if let Some(w) = compose_window() {
+                if let Some(w) = open_window("compose") {
                     eprintln!("script: compose before close: {:?}", super::compose::open_state());
                     w.close();
                     eprintln!("script: compose still open after close: {}", w.is_visible());
@@ -74,7 +75,7 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
             }
             s if let Some(path) = s.strip_prefix("shot:") => shot(ui_rc.window.upcast_ref(), path),
             s if let Some(path) = s.strip_prefix("shotcompose:") => {
-                if let Some(w) = compose_window() {
+                if let Some(w) = open_window("compose") {
                     shot(w.upcast_ref(), path);
                 }
             }
@@ -89,18 +90,12 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
     });
 }
 
-fn window_titled(title: &str) -> Option<gtk::Window> {
+/// The open window with this CSS class (`compose`, `people`).
+fn open_window(class: &str) -> Option<gtk::Window> {
     gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Window>().ok())
-        .find(|w| w.title().as_deref() == Some(title) && w.is_visible())
-}
-
-fn compose_window() -> Option<gtk::Window> {
-    gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|w| w.downcast::<gtk::Window>().ok())
-        .find(|w| w.has_css_class("compose") && w.is_visible())
+        .find(|w| w.has_css_class(class) && w.is_visible())
 }
 
 fn shot(widget: &gtk::Widget, path: &str) {

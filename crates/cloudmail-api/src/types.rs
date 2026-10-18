@@ -223,6 +223,12 @@ pub struct Me {
     pub role: String,
 }
 
+impl Me {
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+}
+
 /// Someone who reads their mail on this worker (`cloudmail user list`).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -236,6 +242,27 @@ pub struct User {
     pub invite_expires_at: Option<i64>,
     pub revoked: bool,
     pub created_at: i64,
+    /// Where a copy of every message goes (their `forward_to` setting); empty when off.
+    pub forward_to: String,
+}
+
+impl User {
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+
+    /// Where they stand, as `cloudmail user list` and the app's People window say it.
+    pub fn state(&self) -> String {
+        if self.revoked {
+            "revoked".into()
+        } else if let Some(t) = self.invite_expires_at {
+            format!("invited (until {})", crate::text::long_time(t))
+        } else if self.connected {
+            "connected".into()
+        } else {
+            "not connected".into()
+        }
+    }
 }
 
 /// A one-time invite: `cloudmail connect <url>` on the invitee's machine.

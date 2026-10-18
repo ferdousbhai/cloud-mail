@@ -35,13 +35,10 @@ run_info=$(gh run view "$run" --repo "$gh_repo" --json headSha,event,conclusion,
   --jq '[.headSha,.event,.conclusion,.workflowName] | @tsv')
 [[ $run_info == "$source_commit"$'\tpush\tsuccess\tNative packages' ]] \
   || { echo 'CI must be a successful Native packages push run for the exact release commit.' >&2; exit 1; }
-# An artifact of the run, unzipped into a directory. gh's own downloader (`gh run download`) can
-# stall for good partway through on some connections; then curl takes over, resuming where a
-# stalled try stopped.
+# An artifact of the run, unzipped into a directory. With curl, not `gh run download`: that can
+# stall for good partway through on some connections and never exit; curl gives up on a stall
+# and resumes where it stopped.
 download() { # name dir
-  gh run download "$run" --repo "$gh_repo" --name "$1" --dir "$2" && return
-  echo "gh couldn't download $1; trying curl" >&2
-  rm -rf "$2"
   local id url
   id=$(gh api "repos/$gh_repo/actions/runs/$run/artifacts" --jq ".artifacts[] | select(.name == \"$1\") | .id")
   [[ -n $id ]] || { echo "No artifact $1 in run $run." >&2; return 1; }

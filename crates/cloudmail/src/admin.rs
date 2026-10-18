@@ -308,15 +308,7 @@ pub fn user(ctx: &Ctx, cmd: UserCommand) -> CliResult {
             let human = list
                 .iter()
                 .map(|u| {
-                    let state = if u.revoked {
-                        "revoked".to_string()
-                    } else if let Some(t) = u.invite_expires_at {
-                        format!("invited (until {})", long_time(t))
-                    } else if u.connected {
-                        "connected".to_string()
-                    } else {
-                        "not connected".to_string()
-                    };
+                    let state = u.state();
                     format!(
                         "{}  {}  {}  {}",
                         render::pad(&render::clean_line(&u.name), w),

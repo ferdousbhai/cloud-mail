@@ -201,6 +201,82 @@ fn icon_button(glyph: &str, tooltip: &str) -> gtk::Button {
     b
 }
 
+/// A sidebar button with an icon and a label; the label is hidden when the window is narrow.
+fn sidebar_button(glyph: &str, text: &str, tooltip: &str, wide_only: &mut Vec<gtk::Widget>) -> gtk::Button {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    content.append(&gtk::Label::new(Some(glyph)));
+    let label = gtk::Label::builder().label(text).xalign(0.0).build();
+    content.append(&label);
+    wide_only.push(label.upcast());
+    let b = gtk::Button::builder().child(&content).tooltip_text(tooltip).build();
+    b.add_css_class("flat");
+    b
+}
+
+pub(super) fn clear(b: &gtk::Box) {
+    while let Some(child) = b.first_child() {
+        b.remove(&child);
+    }
+}
+
+/// A left-aligned, wrapping label in one of the theme's text classes (`column-title`, `column-sub`).
+pub(super) fn text(label: &str, class: &str) -> gtk::Label {
+    let l = gtk::Label::builder().label(label).xalign(0.0).wrap(true).build();
+    l.add_css_class(class);
+    l
+}
+
+/// Asks before doing something that can't be taken back; `yes` runs only on `action`.
+pub(super) fn confirm(
+    parent: &impl IsA<gtk::Window>,
+    message: &str,
+    detail: &str,
+    [cancel, action]: [&str; 2],
+    yes: impl FnOnce() + 'static,
+) {
+    let dialog = gtk::AlertDialog::builder()
+        .message(message)
+        .detail(detail)
+        .buttons([cancel, action])
+        .cancel_button(0)
+        .default_button(0)
+        .modal(true)
+        .build();
+    dialog.choose(Some(parent), gio::Cancellable::NONE, move |res| {
+        if res == Ok(1) {
+            yes()
+        }
+    });
+}
+
+/// A window over the main one for managing something (Accounts, People): the window, with a
+/// `class` for scripts to find it by, and its root box, headed by `heading`.
+pub(super) fn tool_window(ui: &Ui, title: &str, class: &str, heading: &str, width: i32) -> (gtk::Window, gtk::Box) {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    root.add_css_class("accounts");
+    root.set_margin_top(18);
+    root.set_margin_bottom(18);
+    root.set_margin_start(18);
+    root.set_margin_end(18);
+    root.append(&text(heading, "column-title"));
+    let window = gtk::Window::builder()
+        .title(title)
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(width)
+        .child(&root)
+        .build();
+    window.add_css_class("cloudmail");
+    window.add_css_class(class);
+    (window, root)
+}
+
+/// Keeps a window's state alive until the window closes, so its handlers can hold it weakly.
+pub(super) fn keep_until_closed<T: 'static>(window: &gtk::Window, state: &Rc<T>) {
+    let keep = RefCell::new(Some(state.clone()));
+    window.connect_destroy(move |_| drop(keep.take()));
+}
+
 impl Ui {
     pub fn new(app: &gtk::Application, config: Result<Config, String>) -> Rc<Self> {
         let palette = theme::load();
@@ -285,30 +361,22 @@ impl Ui {
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
-        let accounts_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        accounts_box.append(&gtk::Label::new(Some("\u{f2c0}")));
-        let accounts_label = gtk::Label::builder().label("Accounts").xalign(0.0).build();
-        accounts_box.append(&accounts_label);
-        let accounts_btn = gtk::Button::builder()
-            .child(&accounts_box)
-            .tooltip_text("Linked accounts: HEY, Gmail, iCloud Mail")
-            .build();
-        accounts_btn.add_css_class("flat");
         // Shown once the worker says you're its admin.
-        let people_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        people_box.append(&gtk::Label::new(Some("\u{f0c0}")));
-        let people_label = gtk::Label::builder().label("People").xalign(0.0).build();
-        people_box.append(&people_label);
-        let people_btn = gtk::Button::builder()
-            .child(&people_box)
-            .tooltip_text("Who else reads their mail on your worker; invite someone")
-            .visible(false)
-            .build();
-        people_btn.add_css_class("flat");
+        let people_btn = sidebar_button(
+            "\u{f0c0}",
+            "People",
+            "Who else reads their mail on your worker; invite someone",
+            &mut wide_only,
+        );
+        people_btn.set_visible(false);
         sidebar.append(&people_btn);
-        wide_only.push(people_label.upcast());
+        let accounts_btn = sidebar_button(
+            "\u{f2c0}",
+            "Accounts",
+            "Linked accounts: HEY, Gmail, iCloud Mail",
+            &mut wide_only,
+        );
         sidebar.append(&accounts_btn);
-        wide_only.push(accounts_label.upcast());
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
         sidebar.append(&hint);
@@ -647,7 +715,7 @@ impl Ui {
         if let Some(client) = ui.client.clone() {
             util::run(
                 move || client.me().map_err(|e| e.to_string()),
-                move |me: Result<crate::api::Me, String>| people_btn.set_visible(me.is_ok_and(|m| m.role == "admin")),
+                move |me: Result<crate::api::Me, String>| people_btn.set_visible(me.is_ok_and(|m| m.is_admin())),
             );
         }
 
@@ -1036,9 +1104,7 @@ impl Ui {
         self.warning.set_label(&text);
         self.warning.set_tooltip_text(Some(&details));
         self.warning.set_visible(!text.is_empty());
-        while let Some(child) = self.sign_in.first_child() {
-            self.sign_in.remove(&child);
-        }
+        clear(&self.sign_in);
         let expired: Vec<&AccountWarning> = warnings.iter().filter(|w| signed_out(w)).collect();
         for w in &expired {
             let name = w.account.clone();
@@ -1564,26 +1630,17 @@ impl Ui {
             self.finish_delete(id);
             return;
         }
-        let dialog = gtk::AlertDialog::builder()
-            .message("Delete this conversation?")
-            .detail("It's deleted for good, with its attachments. Archive it to keep it out of the way instead.")
-            .buttons(["Cancel", "Delete"])
-            .cancel_button(0)
-            .default_button(0)
-            .modal(true)
-            .build();
-        dialog.choose(
-            Some(&self.window),
-            gio::Cancellable::NONE,
-            clone!(
-                #[weak(rename_to = ui)]
-                self,
-                move |res| {
-                    if res == Ok(1) {
-                        ui.finish_delete(id.clone());
-                    }
+        let ui = Rc::downgrade(self);
+        confirm(
+            &self.window,
+            "Delete this conversation?",
+            "It's deleted for good, with its attachments. Archive it to keep it out of the way instead.",
+            ["Cancel", "Delete"],
+            move || {
+                if let Some(ui) = ui.upgrade() {
+                    ui.finish_delete(id);
                 }
-            ),
+            },
         );
     }
 

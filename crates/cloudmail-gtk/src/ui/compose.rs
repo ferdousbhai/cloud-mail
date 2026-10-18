@@ -557,24 +557,19 @@ fn close(c: &Rc<Compose>) {
         c.window.destroy();
         return;
     }
-    let dialog = gtk::AlertDialog::builder()
-        .message(if c.attachments.borrow().is_empty() {
-            "Discard this draft?"
-        } else {
-            "Discard this draft and its attachments?"
-        })
-        .detail("Drafts aren't saved.")
-        .buttons(["Keep editing", "Discard"])
-        .cancel_button(0)
-        .default_button(0)
-        .modal(true)
-        .build();
+    let message = if c.attachments.borrow().is_empty() {
+        "Discard this draft?"
+    } else {
+        "Discard this draft and its attachments?"
+    };
     let window = c.window.clone();
-    dialog.choose(Some(&c.window), gio::Cancellable::NONE, move |res| {
-        if res == Ok(1) {
-            window.destroy();
-        }
-    });
+    super::confirm(
+        &c.window,
+        message,
+        "Drafts aren't saved.",
+        ["Keep editing", "Discard"],
+        move || window.destroy(),
+    );
 }
 
 #[cfg(test)]

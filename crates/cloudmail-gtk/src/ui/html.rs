@@ -333,6 +333,7 @@ fn linkify(escaped: &str) -> String {
 }
 
 /// A URL without the punctuation, quote or unmatched closing bracket of the sentence around it.
+/// The worker's `trimUrl` (worker/src/util.ts) does the same for plain-text mail it sends.
 fn trim_url(mut url: &str) -> &str {
     while let Some(c) = url.chars().last() {
         let open = match c {

@@ -1,5 +1,6 @@
 //! Response envelope, output modes and exit codes.
 
+pub use cloudmail_api::text::shell_arg;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::io::{IsTerminal, Write};
@@ -239,18 +240,6 @@ pub fn terminal_safe(s: &str) -> String {
         rest = &rest[c.len_utf8()..];
     }
     out
-}
-
-/// A value quoted for a shell command line. Breadcrumbs are meant to be run, and some values
-/// come from senders (an address like `"x;rm -rf ~"@evil.example` is valid), so anything beyond
-/// plain id/address characters is single-quoted.
-pub fn shell_arg(s: &str) -> String {
-    let plain = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "@._+-%/:=,".contains(c));
-    if plain {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
 }
 
 pub fn pretty(v: &Value) -> String {

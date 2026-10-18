@@ -2,10 +2,10 @@
 //! signing one in again, unlinking it, and linking another. What it does is `cloudmail account`'s
 //! (both call `cloudmail_api::accounts`); a change shows once Cloudmail restarts.
 
-use gtk::{gio, glib, glib::clone, prelude::*};
+use gtk::{glib, glib::clone, prelude::*};
 use std::rc::Rc;
 
-use super::Ui;
+use super::{Ui, clear, confirm, keep_until_closed, text, tool_window};
 use crate::api::accounts::{self, Link};
 use crate::api::{AccountStatus, config};
 use crate::util;
@@ -19,15 +19,7 @@ struct Accounts {
 }
 
 pub fn show(ui: &Rc<Ui>) {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.add_css_class("accounts");
-    root.set_margin_top(18);
-    root.set_margin_bottom(18);
-    root.set_margin_start(18);
-    root.set_margin_end(18);
-    let heading = gtk::Label::builder().label("Linked accounts").xalign(0.0).build();
-    heading.add_css_class("column-title");
-    root.append(&heading);
+    let (window, root) = tool_window(ui, "Accounts", "accounts-window", "Linked accounts", 560);
     let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.append(&list);
 
@@ -43,22 +35,13 @@ pub fn show(ui: &Rc<Ui>) {
     }
     root.append(&add_row);
 
-    let status = gtk::Label::builder().xalign(0.0).wrap(true).build();
-    status.add_css_class("column-sub");
+    let status = text("", "column-sub");
     root.append(&status);
     let restart = gtk::Button::with_label("Restart Cloudmail");
     restart.add_css_class("suggested");
     restart.set_visible(false);
     root.append(&restart);
 
-    let window = gtk::Window::builder()
-        .title("Accounts")
-        .transient_for(&ui.window)
-        .modal(true)
-        .default_width(560)
-        .child(&root)
-        .build();
-    window.add_css_class("cloudmail");
     let a = Rc::new(Accounts {
         ui: ui.clone(),
         window,
@@ -66,9 +49,8 @@ pub fn show(ui: &Rc<Ui>) {
         status,
         restart,
     });
-    // Every handler holds `a` weakly, so the window keeps it until it closes.
-    let keep = std::cell::RefCell::new(Some(a.clone()));
-    a.window.connect_destroy(move |_| drop(keep.take()));
+    // Every handler holds `a` weakly.
+    keep_until_closed(&a.window, &a);
 
     for (provider, button) in buttons {
         button.connect_clicked(clone!(
@@ -104,9 +86,7 @@ fn changed(a: &Rc<Accounts>, text: &str) {
 
 /// Reads each linked account's status, off the main loop.
 fn refresh(a: &Rc<Accounts>) {
-    while let Some(child) = a.list.first_child() {
-        a.list.remove(&child);
-    }
+    clear(&a.list);
     let loading = gtk::Label::builder()
         .label("Checking your accounts…")
         .xalign(0.0)
@@ -135,9 +115,7 @@ fn refresh(a: &Rc<Accounts>) {
             #[weak]
             a,
             move |result: Result<Vec<AccountStatus>, String>| {
-                while let Some(child) = a.list.first_child() {
-                    a.list.remove(&child);
-                }
+                clear(&a.list);
                 match result {
                     Ok(list) if list.is_empty() => a.list.append(
                         &gtk::Label::builder()
@@ -159,20 +137,18 @@ fn refresh(a: &Rc<Accounts>) {
 
 fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    text.set_hexpand(true);
+    let text_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text_box.set_hexpand(true);
     let state = if s.ok { "signed in" } else { "needs attention" };
     let title = format!("{} ({}, {state})", s.label, s.name);
-    text.append(&gtk::Label::builder().label(&title).xalign(0.0).build());
+    text_box.append(&gtk::Label::builder().label(&title).xalign(0.0).build());
     let detail = if s.addresses.is_empty() {
         s.detail.clone()
     } else {
         format!("{}\n{}", s.addresses.join(", "), s.detail)
     };
-    let detail = gtk::Label::builder().label(&detail).xalign(0.0).wrap(true).build();
-    detail.add_css_class("column-sub");
-    text.append(&detail);
-    row.append(&text);
+    text_box.append(&text(&detail, "column-sub"));
+    row.append(&text_box);
     if !s.ok {
         let sign_in = gtk::Button::with_label("Sign in");
         let name = s.name.clone();
@@ -207,26 +183,16 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
         #[weak]
         a,
         move |_| {
-            let dialog = gtk::AlertDialog::builder()
-                .message(format!("Unlink {label}?"))
-                .detail("Its mail stops showing here; nothing changes in the account itself.")
-                .buttons(["Cancel", "Unlink"])
-                .cancel_button(0)
-                .default_button(0)
-                .modal(true)
-                .build();
             let name = name.clone();
-            dialog.choose(
-                Some(&a.window),
-                gio::Cancellable::NONE,
+            confirm(
+                &a.window,
+                &format!("Unlink {label}?"),
+                "Its mail stops showing here; nothing changes in the account itself.",
+                ["Cancel", "Unlink"],
                 clone!(
                     #[weak]
                     a,
-                    move |res| {
-                        if res != Ok(1) {
-                            return;
-                        }
-                        let name = name.clone();
+                    move || {
                         util::run(
                             move || accounts::unlink(&name).map(|_| name).map_err(|e| e.message),
                             clone!(

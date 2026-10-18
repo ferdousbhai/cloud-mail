@@ -85,23 +85,24 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Where a URL found in text ends: not at the punctuation, quote or unmatched bracket closing the sentence around it. */
-function urlEnd(url: string): number {
-  let end = url.length;
+/**
+ * A URL found in text, without the punctuation, quote or unmatched closing bracket of the sentence
+ * around it. The app's `trim_url` (crates/cloudmail-gtk/src/ui/html.rs) does the same for mail it shows.
+ */
+function trimUrl(url: string): string {
   for (;;) {
-    const c = url[end - 1];
+    const c = url[url.length - 1];
     const open = { ")": "(", "]": "[", "}": "{" }[c];
-    const unmatched = open && url.slice(0, end).split(c).length > url.slice(0, end).split(open).length;
-    if (!".,;:!?'*".includes(c) && !unmatched) return end;
-    end--;
+    const unmatched = open && url.split(c).length > url.split(open).length;
+    if (!".,;:!?'*".includes(c) && !unmatched) return url;
+    url = url.slice(0, -1);
   }
 }
 
 export function textToHtml(text: string): string {
   // Matched in escaped text, so a URL also stops at an escaped quote or angle bracket.
   const linked = escapeHtml(text).replace(/https?:\/\/[^\s<]+/g, (match) => {
-    const raw = match.split(/&quot;|&gt;|&lt;/)[0];
-    const url = raw.slice(0, urlEnd(raw));
+    const url = trimUrl(match.split(/&quot;|&gt;|&lt;/)[0]);
     return `<a href="${url}">${url}</a>${match.slice(url.length)}`;
   });
   return `<div style="font-family: sans-serif; white-space: pre-wrap;">${linked}</div>`;
