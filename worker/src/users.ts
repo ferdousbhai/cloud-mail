@@ -87,9 +87,13 @@ export async function redeemInvite(env: Env, code: string): Promise<{ token: str
 }
 
 export async function listUsers(env: Env) {
-  const rows = await env.DB.prepare("SELECT * FROM users ORDER BY created_at, name").all<UserRow>();
-  const boxes = await mailboxes(env, null);
-  const forwards = await env.DB.prepare("SELECT user_id, value FROM settings WHERE key = 'forward_to'").all<{ user_id: string; value: string }>();
+  const [rows, boxes] = await Promise.all([
+    env.DB.prepare(
+      `SELECT u.*, COALESCE(s.value, '') AS forward_to FROM users u
+       LEFT JOIN settings s ON s.user_id = u.id AND s.key = 'forward_to' ORDER BY u.created_at, u.name`,
+    ).all<UserRow & { forward_to: string }>(),
+    mailboxes(env, null),
+  ]);
   const now = Date.now();
   return rows.results.map((u) => ({
     name: u.name,
@@ -100,7 +104,7 @@ export async function listUsers(env: Env) {
     invite_expires_at: u.invite_hash && (u.invite_expires_at ?? 0) > now ? u.invite_expires_at : null,
     revoked: !!u.revoked_at,
     created_at: u.created_at,
-    forward_to: forwards.results.find((f) => f.user_id === u.id)?.value ?? "",
+    forward_to: u.forward_to,
   }));
 }
 

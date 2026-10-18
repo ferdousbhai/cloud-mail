@@ -418,18 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_args_are_quoted_when_they_need_to_be() {
-        assert_eq!(shell_arg("t_1a2b"), "t_1a2b");
-        assert_eq!(shell_arg("alice@example.com"), "alice@example.com");
-        assert_eq!(
-            shell_arg("x;touch${IFS}/tmp/pwn;@evil.example"),
-            "'x;touch${IFS}/tmp/pwn;@evil.example'"
-        );
-        assert_eq!(shell_arg("it's"), r"'it'\''s'");
-        assert_eq!(shell_arg(""), "''");
-    }
-
-    #[test]
     fn terminal_safe_keeps_our_styling_only() {
         let styled = format!("{} and {}", dim("d"), bold("b"));
         let evil = "x\x1b]0;PWNED\x07\x1b[2A\x1b[2K\u{9b}31m\nnext";

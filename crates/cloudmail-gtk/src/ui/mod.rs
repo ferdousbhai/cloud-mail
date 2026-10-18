@@ -219,10 +219,13 @@ pub(super) fn clear(b: &gtk::Box) {
     }
 }
 
-/// A left-aligned, wrapping label in one of the theme's text classes (`column-title`, `column-sub`).
+/// A left-aligned, wrapping label, in one of the theme's text classes (`column-title`,
+/// `column-sub`) or none ("").
 pub(super) fn text(label: &str, class: &str) -> gtk::Label {
     let l = gtk::Label::builder().label(label).xalign(0.0).wrap(true).build();
-    l.add_css_class(class);
+    if !class.is_empty() {
+        l.add_css_class(class);
+    }
     l
 }
 
@@ -431,8 +434,7 @@ impl Ui {
         list_stack.add_named(&scroller, Some("list"));
         list_stack.add_named(&empty, Some("empty"));
         middle.append(&list_stack);
-        let toast = gtk::Label::builder().xalign(0.0).wrap(true).build();
-        toast.add_css_class("column-sub");
+        let toast = text("", "column-sub");
         toast.set_margin_top(6);
         toast.set_visible(false);
         middle.append(&toast);

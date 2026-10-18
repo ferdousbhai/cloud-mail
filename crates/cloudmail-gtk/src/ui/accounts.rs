@@ -87,11 +87,7 @@ fn changed(a: &Rc<Accounts>, text: &str) {
 /// Reads each linked account's status, off the main loop.
 fn refresh(a: &Rc<Accounts>) {
     clear(&a.list);
-    let loading = gtk::Label::builder()
-        .label("Checking your accounts…")
-        .xalign(0.0)
-        .build();
-    a.list.append(&loading);
+    a.list.append(&text("Checking your accounts…", "column-sub"));
     util::run(
         || -> Result<Vec<AccountStatus>, String> {
             let file = config::read_file(&config::path())?.unwrap_or_default();
@@ -117,12 +113,7 @@ fn refresh(a: &Rc<Accounts>) {
             move |result: Result<Vec<AccountStatus>, String>| {
                 clear(&a.list);
                 match result {
-                    Ok(list) if list.is_empty() => a.list.append(
-                        &gtk::Label::builder()
-                            .label("None yet: link one below.")
-                            .xalign(0.0)
-                            .build(),
-                    ),
+                    Ok(list) if list.is_empty() => a.list.append(&text("None yet: link one below.", "column-sub")),
                     Ok(list) => {
                         for s in list {
                             a.list.append(&row(&a, s));
