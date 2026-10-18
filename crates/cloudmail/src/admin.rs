@@ -48,7 +48,7 @@ pub fn orientation() -> Response {
         ),
     };
     let mut human = format!(
-        "{} {}\nYour own email on Cloudflare, with Gmail, iCloud Mail and HEY alongside: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
+        "{} {}\nEmail on your own domains, with Gmail, iCloud Mail and HEY alongside: read, screen and send mail from the terminal.\n\n{status_line}\n\n{}\n",
         bold("cloudmail"),
         env!("CARGO_PKG_VERSION"),
         bold("Common commands:")

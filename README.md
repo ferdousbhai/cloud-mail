@@ -1,8 +1,8 @@
 # Cloudmail
 
-Email on your own domains that runs entirely in your own Cloudflare account. It has a
-HEY-style **Screener**, a fast native Linux app, and a CLI that AI agents can drive without
-any special setup.
+Email for people and organizations on their own domains, run entirely from their own Cloudflare
+account, with Gmail, iCloud Mail and HEY in the same app. It has a HEY-style **Screener**, a fast
+native Linux app, and a CLI that AI agents can drive without any special setup.
 
 **Screened email · native Linux app · agent-friendly CLI · no mail server.**
 

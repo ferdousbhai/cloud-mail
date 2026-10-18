@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "cloudmail",
     version,
-    about = "Your own email on Cloudflare, from the terminal",
+    about = "Email on your own domains, plus Gmail, iCloud Mail and HEY, from the terminal",
     long_about = "cloudmail reads, screens and sends mail through your cloudmail worker (Cloudflare Email Service) and any linked HEY, Gmail and iCloud Mail accounts.\n\
                   Output is human-readable on a terminal and a JSON envelope when piped; see `cloudmail agent-guide`.",
     disable_help_subcommand = true

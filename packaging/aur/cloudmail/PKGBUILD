@@ -2,7 +2,7 @@
 pkgname=cloudmail
 pkgver=0.7.2
 pkgrel=1
-pkgdesc="Screened email on your own domains, running in your Cloudflare account (CLI + GTK app)"
+pkgdesc="Email for people and organizations on their own domains, run from their own Cloudflare account, plus Gmail, iCloud Mail and HEY (CLI + GTK app)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/ferdousbhai/cloud-mail"
 license=('MIT')

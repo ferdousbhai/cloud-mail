@@ -1,5 +1,5 @@
 pkgbase = cloudmail
-	pkgdesc = Screened email on your own domains, running in your Cloudflare account (CLI + GTK app)
+	pkgdesc = Email for people and organizations on their own domains, run from their own Cloudflare account, plus Gmail, iCloud Mail and HEY (CLI + GTK app)
 	pkgver = 0.5.0
 	pkgrel = 1
 	url = https://github.com/ferdousbhai/cloud-mail
