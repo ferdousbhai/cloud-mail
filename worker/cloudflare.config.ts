@@ -26,7 +26,11 @@ export default defineConfig({
 		name,
 		compatibilityDate: "2026-09-01",
 		entrypoint: "src/index.ts",
-		observability: { enabled: true },
+		// This API uses workers.dev as its primary endpoint, but old versions must not remain public.
+		workersDev: true,
+		previewUrls: false,
+		// Invitation credentials occur in paths, including metadata attached to error logs.
+		observability: { enabled: false, redactQueryString: true, logs: { enabled: false, invocationLogs: false }, traces: { enabled: false } },
 		env: {
 			// Migrations live in migrations/; setup applies them with `cf d1 migrations apply <id>`.
 			DB: bindings.d1(database),
