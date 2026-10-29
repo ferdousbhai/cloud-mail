@@ -1,6 +1,6 @@
 pkgbase = cloudmail
 	pkgdesc = Email for people and organizations on their own domains, run from their own Cloudflare account, plus Gmail, iCloud Mail and HEY (CLI + GTK app)
-	pkgver = 0.5.0
+	pkgver = 0.7.3
 	pkgrel = 1
 	url = https://github.com/ferdousbhai/cloud-mail
 	arch = x86_64
@@ -19,7 +19,7 @@ pkgbase = cloudmail
 	optdepends = icloud-session: an opt-in iCloud Mail account (from icloud-for-omarchy)
 	options = !debug
 	options = !lto
-	source = cloudmail-0.5.0.tar.gz::https://github.com/ferdousbhai/cloud-mail/archive/refs/tags/v0.5.0.tar.gz
+	source = cloudmail-0.7.3.tar.gz::https://github.com/ferdousbhai/cloud-mail/archive/refs/tags/v0.7.3.tar.gz
 	sha256sums = SKIP
 
 pkgname = cloudmail
