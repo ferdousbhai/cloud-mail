@@ -3,6 +3,7 @@ mod admin;
 mod agent_skill;
 mod cli;
 mod docs;
+mod init;
 mod mail;
 mod output;
 mod render;
@@ -159,6 +160,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Config(c) => admin::config_cmd(c),
         Command::Account(a) => accounts::account(ctx, a),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),
+        Command::Init(a) => init::run(ctx, &a),
         Command::Commands => Ok(admin::commands()),
         Command::AgentGuide => {
             let guide = docs::agent_guide();

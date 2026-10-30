@@ -268,8 +268,16 @@ impl Hey {
         }
         // hey's exit statuses: 1 usage/conflict, 2 not found, 3 auth, 4 forbidden, 5 rate
         // limited, 6 network, 7 API/server, 8 ambiguous.
-        let envelope: Value = serde_json::from_slice(&stdout).unwrap_or(Value::Null);
+        // Some failures (e.g. reading the keyring) print the envelope on stderr instead.
+        let envelope: Value = serde_json::from_slice(&stdout)
+            .or_else(|_| serde_json::from_str(&stderr))
+            .unwrap_or(Value::Null);
         let mut message = text(&envelope["error"]);
+        if message.contains("system keyring") {
+            message.push_str(
+                "; unlock your keyring (or repair it), or set HEY_NO_KEYRING=1 to keep HEY's sign-in in a file",
+            );
+        }
         if message.is_empty() {
             message = stderr.lines().last().unwrap_or("").to_string();
         }

@@ -383,6 +383,56 @@ fn link_icloud(
     Ok(ic.identities()?.into_iter().map(|a| a.email).collect())
 }
 
+/// Whether a provider could be linked on this computer now, for offering it during `init`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Readiness {
+    pub provider: &'static str,
+    pub label: &'static str,
+    /// Its tool is installed, or (Gmail) `account add` can install it.
+    pub ready: bool,
+    /// Its tool is already signed in, so linking needs no sign-in.
+    pub signed_in: bool,
+    /// What to do first when it isn't ready.
+    pub hint: Option<String>,
+}
+
+/// Checks each provider's tool without signing in or changing anything.
+pub fn readiness() -> Vec<Readiness> {
+    let cfg = AccountConfig::default();
+    let hey = Hey::new("hey", &cfg);
+    let hey_installed = hey.version().is_ok();
+    let gmail = Gmail::new("gmail", &cfg);
+    let (gws_missing, npm) = (gmail.is_missing(), on_path("npm"));
+    let icloud = Icloud::new("icloud", &cfg).session().status();
+    vec![
+        Readiness {
+            provider: "hey",
+            label: "HEY",
+            ready: hey_installed,
+            signed_in: hey_installed && hey.signed_in().unwrap_or(false),
+            hint: (!hey_installed).then(|| HEY_INSTALL.to_string()),
+        },
+        Readiness {
+            provider: "gmail",
+            label: "Gmail",
+            ready: !gws_missing || npm,
+            signed_in: !gws_missing && gmail.signed_in(),
+            hint: (gws_missing && !npm).then(|| "install npm (Arch: `sudo pacman -S npm`)".to_string()),
+        },
+        Readiness {
+            provider: "icloud",
+            label: "iCloud Mail",
+            ready: icloud.is_ok(),
+            signed_in: icloud.as_ref().is_ok_and(|s| s.signed_in),
+            hint: icloud.is_err().then(|| ICLOUD_SESSION_INSTALL.to_string()),
+        },
+    ]
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
+}
+
 /// Signs a linked account in again (its own browser sign-in, or icloud-session's window) and
 /// checks it answers.
 pub fn sign_in(name: &str) -> std::result::Result<AccountStatus, LinkError> {

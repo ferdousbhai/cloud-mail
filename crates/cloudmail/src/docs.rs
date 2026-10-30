@@ -10,6 +10,17 @@ pub const SKILL: &str = include_str!("../../../skills/cloudmail/SKILL.md");
 
 /// Examples per command path. A test checks that every command has one and every key is real.
 pub const EXAMPLES: &[(&str, &[&str])] = &[
+    (
+        "init",
+        &[
+            "cloudmail init",
+            "cloudmail init --json",
+            "cloudmail init --link all",
+            "cloudmail init --link gmail,hey --json",
+            "cloudmail init --connect https://cloudmail.example.workers.dev/invite/inv_…",
+            "cloudmail init hi@example.com support@example.com:direct --link icloud --yes --json",
+        ],
+    ),
     ("status", &["cloudmail status", "cloudmail status --json"]),
     (
         "inbox",

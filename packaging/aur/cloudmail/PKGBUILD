@@ -1,6 +1,6 @@
 # Maintainer: Ferdous Bhai <23114244+ferdousbhai@users.noreply.github.com>
 pkgname=cloudmail
-pkgver=0.7.3
+pkgver=0.7.4
 pkgrel=1
 pkgdesc="Email for people and organizations on their own domains, run from their own Cloudflare account, plus Gmail, iCloud Mail and HEY (CLI + GTK app)"
 arch=('x86_64' 'aarch64')

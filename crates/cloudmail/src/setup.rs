@@ -162,14 +162,72 @@ pub fn parse_r2_buckets(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// The zone ID for `domain` in `cf zones list --name <domain>`.
-pub fn zone_id(output: &str, domain: &str) -> Option<String> {
+/// What setup needs of a Cloudflare zone: whether its nameservers point at Cloudflare yet, and
+/// what to tell the person when they don't.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Zone {
+    pub id: String,
+    pub status: String,
+    pub name_servers: Vec<String>,
+    pub original_name_servers: Vec<String>,
+    pub registrar: Option<String>,
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str().map(|s| s.to_ascii_lowercase()))
+        .collect()
+}
+
+fn parse_zone(z: &Value) -> Option<Zone> {
+    Some(Zone {
+        id: z["id"].as_str()?.to_string(),
+        status: z["status"].as_str().unwrap_or("active").to_string(),
+        name_servers: strings(&z["name_servers"]),
+        original_name_servers: strings(&z["original_name_servers"]),
+        // "namecheap, inc. (id: 1068)" reads better without the IANA ID.
+        registrar: z["original_registrar"]
+            .as_str()
+            .map(|r| r.split(" (id:").next().unwrap_or(r).trim().to_string())
+            .filter(|r| !r.is_empty()),
+    })
+}
+
+/// The zone for `domain` in `cf zones list --name <domain>`.
+pub fn zone_info(output: &str, domain: &str) -> Option<Zone> {
     first_json(output)?
         .as_array()?
         .iter()
-        .find(|z| z["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(domain)))?["id"]
-        .as_str()
-        .map(String::from)
+        .find(|z| z["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(domain)))
+        .and_then(parse_zone)
+}
+
+/// The zone `cf zones create` or `cf zones get` printed.
+pub fn parse_zone_output(output: &str) -> Option<Zone> {
+    parse_zone(&first_json(output)?)
+}
+
+/// What to do at the registrar to move `domain`'s DNS to Cloudflare.
+pub fn nameserver_instructions(domain: &str, zone: &Zone) -> String {
+    let at = zone
+        .registrar
+        .as_deref()
+        .map_or_else(|| "where you registered it".to_string(), |r| format!("at {r}"));
+    let from = if zone.original_name_servers.is_empty() {
+        String::new()
+    } else {
+        format!(" (now {})", zone.original_name_servers.join(", "))
+    };
+    let to = if zone.name_servers.is_empty() {
+        "the two Cloudflare nameservers on your Cloudflare dashboard".to_string()
+    } else {
+        zone.name_servers.join(" and ")
+    };
+    format!(
+        "set {domain}'s nameservers {at}{from} to {to}. Its DNS records were copied to Cloudflare, so its website and current mail keep working through the switch"
+    )
 }
 
 /// Whether `cf email-routing settings get` says Email Routing is on.
@@ -613,6 +671,92 @@ fn blocked(w: &mut Cf, address: &str, detail: String) -> RouteOutcome {
     }
 }
 
+const ZONE_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const ZONE_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Puts a domain that isn't active on Cloudflare yet there: adds it to the account (copying its
+/// DNS records, so nothing it serves stops) unless it's already added, says which nameservers to
+/// set at the registrar, and with someone at the terminal waits for the switch. The zone's ID once
+/// active (the domain itself during --dry-run, so the plan goes on), else None.
+fn on_cloudflare(w: &mut Cf, domain: &str, existing: Option<Zone>) -> CliResult<Option<String>> {
+    let step = format!("switch {domain}'s nameservers");
+    // Another address on the same domain: it was added (or planned) and waited for already.
+    if let Some(earlier) = w.steps.iter().find(|s| s.step == step) {
+        return Ok((earlier.status == "planned").then(|| domain.to_string()));
+    }
+    let zone = match existing {
+        Some(z) => z,
+        None => {
+            let mut args = vec!["zones", "create", "--name", domain, "--type", "full"];
+            let account = w.account.clone();
+            if let Some(id) = &account {
+                args.extend(["--account-id", id]);
+            }
+            let out = w.mutate(&format!("add {domain} to Cloudflare"), &args, None)?;
+            if w.dry_run {
+                w.record(
+                    &format!("copy {domain}'s DNS records to Cloudflare"),
+                    "planned",
+                    Some(w.render(&["dns", "records", "scan", "-z", domain])),
+                    None,
+                );
+                w.record(
+                    &step,
+                    "planned",
+                    None,
+                    Some("at your registrar, to the two Cloudflare nameservers setup shows; setup waits for it".into()),
+                );
+                return Ok(Some(domain.to_string()));
+            }
+            let zone = parse_zone_output(&out)
+                .ok_or_else(|| CliError::generic(format!("added {domain} to Cloudflare but couldn't read its zone")))?;
+            // Without its records, switching nameservers would take the domain's website and
+            // current mail offline. A failed scan is worth saying, not stopping for.
+            let scan = ["dns", "records", "scan", "-z", zone.id.as_str()];
+            let step = format!("copy {domain}'s DNS records to Cloudflare");
+            match w.query(&scan) {
+                Ok(_) => w.record(&step, "done", Some(w.render(&scan)), None),
+                Err(_) => w.record(
+                    &step,
+                    "skipped",
+                    Some(w.render(&scan)),
+                    Some(format!(
+                        "check {domain}'s records on the Cloudflare dashboard before switching its nameservers"
+                    )),
+                ),
+            }
+            zone
+        }
+    };
+    let todo = nameserver_instructions(domain, &zone);
+    if !w.interactive || w.dry_run {
+        w.record(&step, "pending", None, Some(format!("{todo}; then run setup again")));
+        return Ok(None);
+    }
+    eprintln!("\n{domain} isn't on Cloudflare yet. To finish moving it, {todo}.");
+    eprintln!(
+        "Waiting for the switch: most registrars take a few minutes, a few up to a day. Ctrl-C stops waiting; running setup again picks up here."
+    );
+    let id = zone.id.as_str();
+    // Asks Cloudflare to look now rather than on its own schedule; it's rate limited, so once.
+    let _ = w.query(&["zones", "activation-check", "activate", "-z", id]);
+    let start = std::time::Instant::now();
+    while start.elapsed() < ZONE_WAIT {
+        let active = w
+            .query(&["zones", "get", "-z", id])
+            .ok()
+            .and_then(|o| parse_zone_output(&o))
+            .is_some_and(|z| z.status == "active");
+        if active {
+            w.record(&step, "done", None, None);
+            return Ok(Some(id.to_string()));
+        }
+        std::thread::sleep(ZONE_POLL);
+    }
+    w.record(&step, "pending", None, Some(format!("{todo}; then run setup again")));
+    Ok(None)
+}
+
 /// Makes sure the address's domain receives mail through Email Routing and can send, and that the
 /// address's routing rule points at the worker. Anything that would take mail away from somewhere
 /// else needs `yes` or a yes at the terminal.
@@ -629,11 +773,25 @@ pub fn route_address(
         .to_string();
     // cf resolves `-z <name>` from the first page of zones only (20), so an account with more
     // domains gets "Zone not found" for the rest; the zone's ID always works.
-    let zone = w
-        .query(&["zones", "list", "--name", &domain])
-        .ok()
-        .and_then(|o| zone_id(&o, &domain))
-        .unwrap_or_else(|| domain.clone());
+    let zone = match w.query(&["zones", "list", "--name", &domain]) {
+        Ok(listed) => match zone_info(&listed, &domain) {
+            Some(z) if z.status == "active" => z.id,
+            found => match on_cloudflare(w, &domain, found)? {
+                Some(id) => id,
+                None => {
+                    return Ok(RouteOutcome {
+                        address: address.into(),
+                        status: "pending".into(),
+                        detail: format!(
+                            "waiting for {domain}'s nameservers to point at Cloudflare; run setup again once they do"
+                        ),
+                    });
+                }
+            },
+        },
+        // A listing that failed says nothing about the zone; the commands below say what's wrong.
+        Err(_) => domain.clone(),
+    };
 
     let routing_on = |w: &Cf| {
         w.query(&["email-routing", "settings", "get", "-z", &zone])
@@ -1214,11 +1372,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zone_id_matches_the_domain() {
+    fn zone_matches_the_domain() {
         let out = r#"[{"id":"z1","name":"other.com"},{"id":"z2","name":"Example.com"}]"#;
-        assert_eq!(zone_id(out, "example.com").as_deref(), Some("z2"));
-        assert_eq!(zone_id("[]", "example.com"), None);
-        assert_eq!(zone_id("Zone not found", "example.com"), None);
+        let zone = zone_info(out, "example.com").unwrap();
+        assert_eq!((zone.id.as_str(), zone.status.as_str()), ("z2", "active"));
+        assert_eq!(zone_info("[]", "example.com"), None);
+        assert_eq!(zone_info("Zone not found", "example.com"), None);
     }
 
     #[test]
@@ -1522,6 +1681,67 @@ mod tests {
         );
         assert!(!dir.join(INSTALL_FILE).exists());
         assert_eq!(resp.data["dry_run"], true);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reads_zones_and_says_where_to_switch_nameservers() {
+        let listed = r#"[{"id":"z1","name":"example.com","status":"pending","name_servers":["ada.ns.cloudflare.com","bob.ns.cloudflare.com"],"original_name_servers":["dns1.registrar-servers.com"],"original_registrar":"namecheap, inc. (id: 1068)"}]"#;
+        let zone = zone_info(listed, "Example.com").unwrap();
+        assert_eq!(zone.id, "z1");
+        assert_eq!(zone.status, "pending");
+        assert_eq!(zone.registrar.as_deref(), Some("namecheap, inc."));
+        assert!(zone_info(listed, "other.com").is_none());
+        let todo = nameserver_instructions("example.com", &zone);
+        assert!(
+            todo.contains(
+                "at namecheap, inc. (now dns1.registrar-servers.com) to ada.ns.cloudflare.com and bob.ns.cloudflare.com"
+            ),
+            "{todo}"
+        );
+        let bare = parse_zone_output(r#"{"id":"z2","status":"pending","name_servers":[]}"#).unwrap();
+        let todo = nameserver_instructions("example.com", &bare);
+        assert!(
+            todo.contains("where you registered it") && todo.contains("Cloudflare dashboard"),
+            "{todo}"
+        );
+    }
+
+    #[test]
+    fn dry_run_plans_moving_a_domain_onto_cloudflare() {
+        let dir = worker_dir("setup-new-zone");
+        // A cf that knows no zones and fails everything else.
+        let cf = dir.join("fake-cf");
+        std::fs::write(
+            &cf,
+            "#!/bin/sh\n[ \"$1 $2\" = \"zones list\" ] && { echo '[]'; exit 0; }\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cf, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut args = dry_run_args(&dir, true);
+        args.cf = cf.display().to_string();
+        let resp = run_with_config(&args, false, None).unwrap();
+        let steps = resp.data["steps"].as_array().unwrap();
+        let step = |name: &str| steps.iter().filter(|s| s["step"] == name).count();
+        assert_eq!(
+            step("add example.com to Cloudflare"),
+            1,
+            "once for both addresses: {steps:?}"
+        );
+        assert_eq!(step("copy example.com's DNS records to Cloudflare"), 1);
+        assert_eq!(step("switch example.com's nameservers"), 1);
+        let add = steps
+            .iter()
+            .find(|s| s["step"] == "add example.com to Cloudflare")
+            .unwrap();
+        assert!(
+            add["command"]
+                .as_str()
+                .unwrap()
+                .ends_with("zones create --name example.com --type full")
+        );
+        // The plan goes on to routing, as it would once the domain is active.
+        assert!(steps.iter().any(|s| s["step"] == "route hi@example.com"));
         std::fs::remove_dir_all(dir).ok();
     }
 

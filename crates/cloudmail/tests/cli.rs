@@ -1071,6 +1071,78 @@ fn a_failing_hey_never_breaks_your_own_mail() {
 }
 
 #[test]
+fn init_reports_then_links_what_it_is_asked_to() {
+    let m = mock(default_handler);
+    let h = hey_home("init");
+    let cfg = h.home.join("config/cloudmail/config.toml");
+    std::fs::write(&cfg, "poll_seconds = 30\n").unwrap();
+
+    // Piped with no flags: nothing changes, it says what's there and what's next.
+    let v = json_out(&h.run(&m, &["init"], &[]));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["steps"], json!([]));
+    let hey = v["data"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["provider"] == "hey")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (hey["ready"].clone(), hey["signed_in"].clone(), hey["linked"].clone()),
+        (json!(true), json!(true), json!(false))
+    );
+    let icloud = v["data"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["provider"] == "icloud")
+        .unwrap()
+        .clone();
+    assert_eq!(icloud["ready"], false, "no icloud-session on the test bus");
+    assert!(icloud["hint"].as_str().unwrap().contains("icloud-for-omarchy"));
+    let link = v["breadcrumbs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["action"] == "link")
+        .unwrap()
+        .clone();
+    assert!(link["command"].as_str().unwrap().contains("hey"), "{link}");
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
+
+    // `--link all` skips what isn't ready here; a named one that isn't ready says why.
+    let v = json_out(&h.run(
+        &m,
+        &["init", "--link", "all", "--json"],
+        &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")],
+    ));
+    let steps = v["data"]["steps"].as_array().unwrap();
+    assert!(
+        steps.iter().any(|s| s["step"] == "link hey" && s["ok"] == true),
+        "{steps:?}"
+    );
+    assert!(!steps.iter().any(|s| s["step"] == "link icloud"), "{steps:?}");
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("[accounts.hey]"));
+    assert!(v["summary"].as_str().unwrap().contains("HEY"), "{}", v["summary"]);
+
+    let v = json_out(&h.run(&m, &["init", "--link", "hey,icloud"], &[]));
+    let steps = v["data"]["steps"].as_array().unwrap();
+    assert!(
+        !steps.iter().any(|s| s["step"] == "link hey"),
+        "already linked: {steps:?}"
+    );
+    let icloud = steps.iter().find(|s| s["step"] == "link icloud").unwrap();
+    assert_eq!(icloud["ok"], false);
+    assert_eq!(icloud["error"]["code"], "not_installed");
+    assert!(
+        v["summary"].as_str().unwrap().contains("1 step failed"),
+        "{}",
+        v["summary"]
+    );
+}
+
+#[test]
 fn account_add_list_remove() {
     let m = mock(default_handler);
     let h = hey_home("accounts");
@@ -1091,6 +1163,13 @@ fn account_add_list_remove() {
     );
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(json_out(&o)["error"]["code"], "not_installed");
+
+    // hey's error envelope on stderr comes through whole, not as its last line ("}").
+    let o = h.run(&m, &["account", "add", "hey"], &[("FAKE_HEY_MODE", "keyring")]);
+    assert!(!o.status.success());
+    let message = json_out(&o)["error"]["message"].as_str().unwrap().to_string();
+    assert!(message.contains("read credentials from system keyring"), "{message}");
+    assert!(message.contains("HEY_NO_KEYRING"), "{message}");
 
     let o = h.run(&m, &["account", "add", "hey"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));

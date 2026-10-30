@@ -39,6 +39,8 @@ pub struct GlobalArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Get started: connect with an invite, set up your own domains, link Gmail, iCloud Mail and HEY (asks at a terminal; agents pass flags)
+    Init(InitArgs),
     /// Show configuration, worker health and mailbox counts
     Status,
 
@@ -559,6 +561,28 @@ pub enum ConfigKey {
     ApiUrl,
     ApiToken,
     PollSeconds,
+}
+
+#[derive(Args, Debug)]
+pub struct InitArgs {
+    /// Your own addresses to set up on Cloudflare, as `setup` takes them (a domain not on Cloudflare yet is added)
+    #[arg(value_name = "ADDRESS[:direct]")]
+    pub mailboxes: Vec<String>,
+    /// Connect to someone's worker with the invite link they sent you
+    #[arg(long, value_name = "INVITE LINK", conflicts_with = "mailboxes")]
+    pub connect: Option<String>,
+    /// Link these accounts: hey, gmail, icloud, comma-separated, or `all` (every one ready here); a sign-in opens on this desktop when needed
+    #[arg(long, value_delimiter = ',', value_name = "PROVIDER")]
+    pub link: Vec<String>,
+    /// Setup: move domains that receive mail elsewhere and take over existing routing rules without asking
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Setup: also forward a copy of everything here
+    #[arg(long, value_name = "ADDRESS")]
+    pub forward_to: Option<String>,
+    /// Setup: the Cloudflare account ID, when your login has more than one
+    #[arg(long, env = "CLOUDFLARE_ACCOUNT_ID", value_name = "ID")]
+    pub account: Option<String>,
 }
 
 #[derive(Args, Debug)]

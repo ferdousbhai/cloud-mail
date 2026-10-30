@@ -177,7 +177,7 @@ fn list() -> CliResult {
     )
 }
 
-fn add(ctx: &Ctx, link: Link) -> CliResult {
+pub fn add(ctx: &Ctx, link: Link) -> CliResult {
     // Your worker's Screener decides for Gmail and iCloud Mail, so linking one screens in the
     // people it already corresponds with when the worker is set up.
     let mail = ctx.mail().ok();
