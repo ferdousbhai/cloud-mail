@@ -122,14 +122,43 @@ else
   $sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
 fi
 
-cat <<EOT
+# Get started right away when someone is at a terminal: `cloudmail init` asks for an invite link,
+# your own domains, then Gmail, iCloud Mail and HEY. It runs as you, not root, in your desktop
+# session, so sign-ins open in your browser and tokens land in your keyring. Run by an agent (no
+# terminal) it's skipped: the agent runs `cloudmail init --json` itself. CLOUDMAIL_NO_INIT=1 skips it.
+run_init() {
+  [[ -z ${CLOUDMAIL_NO_INIT:-} && -t 1 ]] || return 1
+  # `curl … | sudo bash` reads this script from the pipe, so answers come from the terminal itself.
+  { : </dev/tty; } 2>/dev/null || return 1
+  local user="${SUDO_USER:-${USER:-$(id -un)}}" uid runtime wayland
+  if (( EUID != 0 )); then
+    cloudmail init </dev/tty
+    return 0
+  fi
+  [[ $user != root ]] || return 1
+  uid="$(id -u "$user")"
+  runtime="/run/user/$uid"
+  wayland="${WAYLAND_DISPLAY:-}"
+  [[ -n $wayland ]] || wayland="$(cd "$runtime" 2>/dev/null && ls -d wayland-[0-9] 2>/dev/null | head -n1)"
+  # A login shell, for the PATH where your hey, npm and browser live.
+  sudo -u "$user" -i env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+    ${wayland:+WAYLAND_DISPLAY="$wayland"} ${DISPLAY:+DISPLAY="$DISPLAY"} cloudmail init </dev/tty
+  return 0
+}
 
-Done. Launch "Cloudmail" from the app launcher (Super + Space), or run: cloudmail
-Invited to someone's Cloudmail? Connect with the link they sent you:
-  cloudmail connect <invite link>
-To deploy your own mail worker to your Cloudflare account instead:
-  cloudmail setup you@yourdomain.com
-Or just read your Gmail, iCloud Mail or HEY here:
-  cloudmail account add gmail     # or: icloud, hey
+echo
+if run_init; then
+  echo
+  echo "Run \`cloudmail init\` again any time to add more. Updates arrive with the rest of the system: omarchy update (or pacman -Syu elsewhere)"
+else
+  cat <<EOT
+Done. Get started (asks for an invite link, your own domains, then Gmail, iCloud Mail and HEY):
+  cloudmail init
+Or straight to one:
+  cloudmail connect <invite link>             # someone invited you
+  cloudmail setup you@yourdomain.com          # your own domains, on your Cloudflare account
+  cloudmail account add gmail                 # or: icloud, hey
+AI agents: \`cloudmail init --json\` says what's set up and what to run next.
 Updates arrive with the rest of the system: omarchy update (or pacman -Syu elsewhere)
 EOT
+fi

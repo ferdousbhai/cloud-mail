@@ -446,6 +446,16 @@ account_unavailable, error.
 
 ## Workflows
 
+Get started (one command for every path; piped, it never prompts):
+
+    cloudmail init --json                       # what's set up, what each provider needs, what to run next
+    cloudmail init --link all --json            # link Gmail, iCloud Mail and HEY, where ready here
+    cloudmail init --connect '<invite link>'    # or: cloudmail init you@example.com --yes (your own domains)
+
+`data.accounts[]` is `{provider, ready, signed_in, linked, hint}`: a provider that isn't `ready`
+needs its `hint` done first. Linking opens its sign-in on the user's desktop unless `signed_in`.
+`data.steps[]` reports each thing init did (`ok`, `summary` or `error`); one failing doesn't stop the rest.
+
 Connect with an invite (someone else runs the worker; no Cloudflare account needed):
 
     cloudmail connect 'https://cloudmail.example.workers.dev/invite/inv_…'
@@ -458,8 +468,10 @@ Set up your own instance (admin only; one command; safe to re-run, and re-runnin
 
     CLOUDFLARE_API_TOKEN=... cloudmail setup you@example.com support@example.com:direct --yes
 
-It needs the domain's DNS on Cloudflare and the Cloudflare CLI logged in (`npx cf auth login`) or
-CLOUDFLARE_API_TOKEN set. Without `--yes`, a domain that already receives mail elsewhere is left
+It needs the Cloudflare CLI logged in (`npx cf auth login`) or CLOUDFLARE_API_TOKEN set. A domain
+not on that Cloudflare account yet is added, with its DNS records copied so its website and mail keep
+working; its route reports `pending` with the nameservers to set at the registrar (named in the
+step's detail), and running setup again after the switch finishes it. Without `--yes`, a domain that already receives mail elsewhere is left
 alone and its step reports `blocked`; `--yes` moves it (replaces its MX records). With several
 Cloudflare accounts, pass `--account <id>`. Check `data.routes[].status` in the result.
 

@@ -20,8 +20,8 @@ or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to
 
 ## Who it's for
 
-- You own a domain whose DNS is on Cloudflare, and you want its mail out of Google Workspace,
-  Fastmail and the like, without running Postfix on a server.
+- You own a domain and want its mail out of Google Workspace, Fastmail and the like, without
+  running Postfix on a server. Its DNS doesn't have to be on Cloudflare yet: setup moves it.
 - You're on Omarchy or another Arch Linux desktop and want a keyboard-first mail app that
   follows your theme. The CLI runs on other Linux systems too.
 - You want an inbox your scripts or your local AI agent can read and answer through a plain
@@ -69,8 +69,9 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 
 To run it (the admin):
 
-- A domain whose DNS is on Cloudflare.
-- A Cloudflare account. Receiving works on the free plan. To send to anyone you need the Workers
+- A domain. If its DNS isn't on Cloudflare yet, setup adds it to your account and tells you the two
+  nameservers to set where you registered it.
+- A Cloudflare account (setup's browser login offers to create one). Receiving works on the free plan. To send to anyone you need the Workers
   Paid plan (about $5/month, with 3,000 emails/month included).
 - For the desktop app: Omarchy or another Arch Linux desktop (x86_64 and aarch64 packages), or
   GTK 4.16+ and WebKitGTK 6.0 if you build it yourself.
@@ -93,7 +94,8 @@ Only want your Gmail, iCloud Mail or HEY? The app (or CLI) and a keyring, then
 curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash
 ```
 
-This trusts Cloudmail's package-signing key (checked against the pinned fingerprint
+Run from a terminal, it ends by starting `cloudmail init` (as you, not root), which asks
+[what to set up](#get-started). This trusts Cloudmail's package-signing key (checked against the pinned fingerprint
 `52130299581DAD685226900CA89CA1A6A1E74251`), adds the signed pacman repository for your
 architecture (`[cloudmail]` on x86_64, `[cloudmail-aarch64]` on ARM), and installs `cloudmail` and
 `npm`. On Omarchy it also adds a hook so the repository survives `omarchy refresh pacman`. Updates
@@ -144,6 +146,32 @@ git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
 # CLOUDMAIL_NO_GTK=1 ./install.sh   # CLI only
 ```
 
+## Get started
+
+```sh
+cloudmail init
+```
+
+One command for every way in, asking in turn (Enter skips any of them):
+
+1. **Invited?** Paste the link someone sent you ([more](#share-it-with-someone)).
+2. **Your own domain?** Type the addresses to receive mail at, and it runs [setup](#set-it-up).
+3. **Gmail, iCloud Mail, HEY?** Yes to each one you have, and it opens that sign-in once
+   ([more](#your-hey-gmail-and-icloud-mail-too-optional)).
+
+Both installers start it for you when run from a terminal (`CLOUDMAIL_NO_INIT=1` skips that). Run it
+again any time to add more.
+
+**For agents and scripts**, it never prompts when piped. With no flags it changes nothing and reports
+what's set up and what each provider needs; flags do the rest in one go:
+
+```sh
+cloudmail init --json                                  # state, plus the next commands as breadcrumbs
+cloudmail init --link all                              # every one of Gmail, iCloud Mail and HEY that's ready here
+cloudmail init --connect '<invite link>' --link gmail
+cloudmail init you@yourdomain.com --yes --link hey     # your own domains (as setup), then HEY
+```
+
 ## Set it up
 
 Setup is for the admin: the person whose Cloudflare account holds the domains. If someone invited
@@ -162,6 +190,10 @@ Open **Cloudmail** from the app launcher.
 
 - Several addresses and domains: `cloudmail setup you@a.com support@a.com:direct hello@b.com`.
   `:direct` skips the Screener (good for `support@`, `legal@`, …).
+- A domain that isn't on your Cloudflare account yet is added, with its existing DNS records copied
+  over so its website and current mail keep working. Setup then names the two nameservers to set
+  where you registered it (and who that is), and at a terminal waits for the switch, usually a few
+  minutes. Stop waiting with Ctrl-C if it's slow; running setup again picks up where it left off.
 - If a domain already receives mail somewhere else (Google Workspace, Fastmail, …), setup tells you
   where and asks before moving it, because that replaces the domain's MX records.
 - `--forward-to me@gmail.com` keeps a copy of everything going to your old inbox while you switch.
@@ -184,7 +216,9 @@ CLOUDFLARE_API_TOKEN=… cloudmail setup you@yourdomain.com --yes
 Create the token under *My Profile › API Tokens* with these permissions:
 **Account**: Workers Scripts, D1, Workers R2 Storage, Email Routing Addresses and Email Sending (all
 Edit), Account Settings (Read); **Zone** (your mail domains): Email Routing Rules, Zone Settings and
-DNS (Edit), Zone (Read). If setup can't tell which account to use, add `--account <id>` (the Account
+DNS (Edit), Zone (Read). To let setup add a domain that isn't on Cloudflare yet, the token also needs
+**Zone: Zone (Edit)** for all zones in the account. Piped, setup doesn't wait for the nameserver
+switch: that route reports `pending` with the nameservers, and running setup again finishes it. If setup can't tell which account to use, add `--account <id>` (the Account
 ID on your Cloudflare dashboard's home page).
 
 ## Use it

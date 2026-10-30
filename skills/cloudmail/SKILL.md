@@ -19,7 +19,9 @@ see only their own mail. When piped, every command prints one JSON envelope
 
 Start with `cloudmail status --json`: `data.healthy` means it's ready, so skip to **Use**
 (`data.user.role` is `admin` or `user`; `data.api_url == null` means linked accounts only, no worker).
-`error.code == "not_configured"` (or no `cloudmail`): ask what they want. Invited (an invite link
+`error.code == "not_configured"` (or no `cloudmail`): run `cloudmail init --json`, which changes
+nothing and lists each provider (`data.accounts[]`: `ready`, `signed_in`, `linked`, `hint`), then ask
+what they want. Invited (an invite link
 `https://…/invite/inv_…`) → **Connect**. Their own domains in their own Cloudflare account →
 **Set up**. Only Gmail, iCloud Mail or HEY → **Link other mail**, no worker needed. Never run `setup`
 for an invited user: it is the admin's, and refuses to run for anyone else.
@@ -32,6 +34,8 @@ installs the CLI/app; if sudo needs a password, the user runs it in their termin
 Installing does not authorize deploying mail infrastructure or changing DNS.
 Arch/Omarchy: `curl -fsSL https://ferdousbhai.com/cloudmail/install.sh | sudo bash`;
 elsewhere clone github.com/ferdousbhai/cloud-mail and run `./install.sh` (needs Rust; Node.js only to set up).
+Run by the user in a terminal, either installer ends in `cloudmail init`, which asks for an invite
+link, their domains and Gmail/iCloud/HEY; run by you (no terminal) it skips that: use `init --json`.
 
 ## Connect (invited users)
 
@@ -51,8 +55,10 @@ Setup drives the Cloudflare CLI as `npx cf`; for other Cloudflare work, find com
    `npx cf accounts subscriptions get | jq -r '.[].rate_plan.id'` lists `workers_paid` when it's there.
 2. **Find their domains.** `npx cf zones list --status active --per-page 100 | jq -r '.[].name'` (results
    are paged, 20 by default; each zone is ~60 lines of JSON, so keep the names only). Show them and ask which addresses to create on each, and which should skip the Screener (`:direct`, for
-   support@, billing@, …). A domain not on Cloudflare yet: `npx cf zones create` (see its `--help`),
-   then the user switches nameservers at their registrar; continue once the zone is `active`.
+   support@, billing@, …). A domain not on Cloudflare yet needs nothing first: setup adds it, copies
+   its DNS records (website and current mail keep working) and its route comes back `pending`, with
+   the two nameservers and the registrar in the `switch <domain>'s nameservers` step. Tell the user to
+   set those at their registrar; after the switch (minutes, sometimes hours), run the same setup again.
 3. **Preview.** `cloudmail setup you@a.com support@a.com:direct hi@b.com --dry-run --json`
    Add `--forward-to old@inbox.com` if they want copies at their old inbox while switching. It is
    silent while it works: with many domains it can take several minutes, so wait for it.
@@ -92,6 +98,9 @@ account linked before filters were used fails with `account_unauthorized`:
 
 Sign-ins open a browser or window, so from an agent either pass `--login` (opens it on the user's
 desktop) or have the user run it in their terminal. Without either, `add` fails with `not_logged_in`.
+
+`cloudmail init --link all --json` links every provider that's `ready` in one go (`--link gmail,hey`
+for some); at a terminal, plain `cloudmail init` asks about each.
 
 | Provider | Needs | Command |
 |---|---|---|

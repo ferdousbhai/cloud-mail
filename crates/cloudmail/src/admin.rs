@@ -43,7 +43,7 @@ pub fn orientation() -> Response {
             path.display()
         ),
         Err(_) => format!(
-            "Not configured yet: run `cloudmail connect <invite link>` if someone invited you, or `cloudmail setup` to deploy your own (config: {})",
+            "Not configured yet: run `cloudmail init` to get started (an invite link, your own domains, Gmail, iCloud Mail, HEY), or straight to `cloudmail connect <invite link>` or `cloudmail setup` (config: {})",
             path.display()
         ),
     };
@@ -72,7 +72,7 @@ pub fn orientation() -> Response {
         if configured {
             "cloudmail is configured"
         } else {
-            "cloudmail is not configured; run `cloudmail connect <invite link>` (invited), `cloudmail setup` (your own), or `cloudmail account add gmail|icloud|hey` (linked accounts only)"
+            "cloudmail is not configured; run `cloudmail init --json` (what's ready, what to run next), `cloudmail connect <invite link>` (invited), `cloudmail setup` (your own), or `cloudmail account add gmail|icloud|hey` (linked accounts only)"
         },
     )
     .human(human.trim_end())
