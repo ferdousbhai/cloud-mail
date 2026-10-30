@@ -122,9 +122,27 @@ else
   $sudo pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
 fi
 
+# A build from a checkout (./install.sh) installs into ~/.local, which comes before /usr on PATH and
+# in the app launcher, so it would hide this package. Say so; nothing in the home folder is removed.
+warn_earlier_install() {
+  local user="${SUDO_USER:-${USER:-$(id -un)}}" home path found=()
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n $home ]] || return 0
+  for path in .local/bin/cloudmail .local/bin/cloudmail-gtk .local/bin/cmail \
+    .local/share/applications/com.ferdousbhai.Cloudmail.desktop; do
+    [[ -e $home/$path || -L $home/$path ]] && found+=("$home/$path")
+  done
+  (( ${#found[@]} )) || return 0
+  echo
+  echo "An earlier Cloudmail in your home folder comes first and hides this package. Remove it with:"
+  printf '  rm'; printf ' %q' "${found[@]}"; echo
+}
+warn_earlier_install
+
 # Get started right away when someone is at a terminal: `cloudmail init` asks for an invite link,
 # your own domains, then Gmail, iCloud Mail and HEY. It runs as you, not root, in your desktop
-# session, so sign-ins open in your browser and tokens land in your keyring. Run by an agent (no
+# session, so sign-ins open in your browser and tokens land in your keyring; it is the package's
+# /usr/bin/cloudmail, not an earlier copy on PATH. Run by an agent (no
 # terminal) it's skipped: the agent runs `cloudmail init --json` itself. CLOUDMAIL_NO_INIT=1 skips it.
 run_init() {
   [[ -z ${CLOUDMAIL_NO_INIT:-} && -t 1 ]] || return 1
@@ -132,7 +150,7 @@ run_init() {
   { : </dev/tty; } 2>/dev/null || return 1
   local user="${SUDO_USER:-${USER:-$(id -un)}}" uid runtime wayland
   if (( EUID != 0 )); then
-    cloudmail init </dev/tty
+    /usr/bin/cloudmail init </dev/tty
     return 0
   fi
   [[ $user != root ]] || return 1
@@ -142,7 +160,7 @@ run_init() {
   [[ -n $wayland ]] || wayland="$(cd "$runtime" 2>/dev/null && ls -d wayland-[0-9] 2>/dev/null | head -n1)"
   # A login shell, for the PATH where your hey, npm and browser live.
   sudo -u "$user" -i env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
-    ${wayland:+WAYLAND_DISPLAY="$wayland"} ${DISPLAY:+DISPLAY="$DISPLAY"} cloudmail init </dev/tty
+    ${wayland:+WAYLAND_DISPLAY="$wayland"} ${DISPLAY:+DISPLAY="$DISPLAY"} /usr/bin/cloudmail init </dev/tty
   return 0
 }
 

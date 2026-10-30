@@ -19,7 +19,7 @@ def executable(path, content):
 
 
 class InstallerTests(unittest.TestCase):
-    def run_installer(self, arch):
+    def run_installer(self, arch, earlier=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / 'bin'
@@ -32,6 +32,10 @@ class InstallerTests(unittest.TestCase):
             hook = home / '.config/omarchy/hooks/pre-refresh-pacman.d'
             hook.mkdir(parents=True)
             (hook / 'cloudmail').write_text('old hook')
+            if earlier:
+                (home / '.local/bin').mkdir(parents=True)
+                (home / '.local/bin/cloudmail').write_text('an earlier build')
+                (home / '.local/bin/cmail').symlink_to('cloudmail')
             executable(binary / 'sudo', 'exec "$@"\n')
             executable(binary / 'chown', 'exit 0\n')
             executable(binary / 'install', 'while [[ $# -gt 0 ]]; do case "$1" in -d) shift;; -o|-g) shift 2;; *) mkdir -p "$1"; shift;; esac; done\n')
@@ -59,6 +63,11 @@ class InstallerTests(unittest.TestCase):
             self.assertIn(f'[{repo}]', (etc / f'pacman.d/{repo}.conf').read_text())
             self.assertIn('cloudmail npm', log.read_text())
             self.assertTrue((hook / repo).exists())
+            if earlier:
+                self.assertIn(f"rm {home}/.local/bin/cloudmail {home}/.local/bin/cmail\n", result.stdout)
+                self.assertTrue((home / '.local/bin/cloudmail').exists())
+            else:
+                self.assertNotIn('earlier Cloudmail', result.stdout)
             if arch == 'aarch64':
                 self.assertFalse((hook / 'cloudmail').exists())
                 self.assertFalse((etc / 'pacman.d/cloudmail.conf').exists())
@@ -67,6 +76,7 @@ class InstallerTests(unittest.TestCase):
     def test_x86(self): self.run_installer('x86_64')
     def test_arm_migration(self): self.run_installer('aarch64')
     def test_unsupported(self): self.run_installer('riscv64')
+    def test_earlier_install_is_named_not_removed(self): self.run_installer('x86_64', earlier=True)
 
 
 class VerificationTests(unittest.TestCase):
