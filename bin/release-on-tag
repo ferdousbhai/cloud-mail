@@ -11,10 +11,11 @@
 # Everything it prints goes to ~/.local/state/cloudmail/release-<version>.log.
 #
 #   bin/release-on-tag <version> [--dry-run]    # --dry-run checks and logs, changes nothing
+#   bin/release-on-tag <version> --omarchy-pkgs # only the omarchy-pkgs step, after a release finished by hand
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-version="${1:?usage: bin/release-on-tag <version> [--dry-run]}"
+version="${1:?usage: bin/release-on-tag <version> [--dry-run|--omarchy-pkgs]}"
 dry_run=$([[ ${2:-} == --dry-run ]] && echo 1 || echo 0)
 tag="v$version"
 gh_repo=ferdousbhai/cloud-mail
@@ -95,6 +96,13 @@ bump_omarchy_pkgs() {
   git -C "$pkgs" update-ref -d "$base"
   return $status
 }
+
+if [[ ${2:-} == --omarchy-pkgs ]]; then
+  step "Updating the omarchy-pkgs pull request"
+  bump_omarchy_pkgs || fail "the omarchy-pkgs bump failed"
+  echo "omarchy-pkgs is on $version"
+  exit 0
+fi
 
 if ((dry_run)); then
   step "Dry run: would run bin/release $version"

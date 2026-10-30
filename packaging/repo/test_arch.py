@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise routing/migration and release provenance without touching system config or keys."""
+import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -123,7 +124,12 @@ case "$1 $2" in
   'run list') echo 123 ;;
   'run watch') [[ $FAILURE != ci ]] ;;
   'run view') printf '%s\\tpush\\tsuccess\\tNative packages\\n' "$COMMIT" ;;
-  'release view') echo true ;;
+  'release upload') for f in "${@:5}"; do
+      sum=$(sha256sum "$f" | cut -d' ' -f1)
+      [[ $FAILURE != mixed || $f != ./cloudmail.db ]] || sum=0000
+      printf 'sha256:%s  %s\\n' "$sum" "${f#./}" >> "$UPLOADED"
+    done ;;
+  'release view') if [[ "$*" == *assets* ]]; then cat "$UPLOADED"; else echo true; fi ;;
 esac
 ''')
             # The artifact API redirects to a download; artifact 1 is x86_64's, 2 aarch64's.
@@ -162,12 +168,27 @@ for suffix in db db.sig files files.sig; do
   ln -s "$repo.$target" "$repo.$suffix"
 done
 ''')
-            env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}', CALL_LOG=str(log), COMMIT=commit, FAILURE=failure)
+            env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}', CALL_LOG=str(log), COMMIT=commit, FAILURE=failure, UPLOADED=str(root / 'uploaded'))
+            if failure == 'locked':
+                # Another run holds the lock for as long as this one tries.
+                (root / 'target').mkdir()
+                with open(root / 'target/release.lock', 'w') as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    result = subprocess.run(['bash', 'bin/release', '0.4.2'], cwd=root, env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Another bin/release is running', result.stderr)
+                self.assertFalse(log.exists())
+                return
             result = subprocess.run(['bash', 'bin/release', '0.4.2'], cwd=root, env=env, capture_output=True, text=True)
             calls = log.read_text()
             if failure:
                 self.assertNotEqual(result.returncode, 0)
-                self.assertNotIn('gh release upload', calls)
+                if failure == 'mixed':
+                    self.assertIn('gh release upload', calls)
+                    self.assertIn('cloudmail.db on the v0.4.2 release is not the one signed here', result.stderr)
+                else:
+                    self.assertNotIn('gh release upload', calls)
+                self.assertNotIn('gh release edit', calls)
                 if failure in ('source', 'architecture', 'ci'):
                     self.assertNotIn('--detach-sign', calls)
             else:
@@ -185,6 +206,8 @@ done
     def test_wrong_architecture(self): self.run_release('architecture')
     def test_ci_failure(self): self.run_release('ci')
     def test_signing_failure(self): self.run_release('signing')
+    def test_mixed_upload_is_not_published(self): self.run_release('mixed')
+    def test_one_release_at_a_time(self): self.run_release('locked')
 
 
 if __name__ == '__main__':
