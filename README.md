@@ -88,6 +88,14 @@ Only want your Gmail, iCloud Mail or HEY? The app (or CLI) and a keyring, then
 
 ## Install
 
+Coming from a Mac? One command installs this together with the other iCloud apps (Mail, Calendar, Contacts, Reminders, Notes, Photos and Find My) and signs you in to iCloud once for all of them ([what it does](https://ferdousbhai.com/icloud)):
+
+```sh
+curl -fsSL https://ferdousbhai.com/icloud/install.sh | sudo bash
+```
+
+To install only this app:
+
 **Omarchy or any Arch Linux (x86_64 and aarch64):**
 
 ```sh
