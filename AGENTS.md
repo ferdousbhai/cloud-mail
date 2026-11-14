@@ -65,7 +65,6 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
   committed; `worker/cloudflare.config.ts` reads it.
 - Inbound mail that can't be parsed or stored is never bounced; it's kept in R2 under `failed/`.
 - Editing `skills/cloudmail/SKILL.md` changes the CLI's output; rebuild and check `cloudmail skill`.
-- Don't deploy, tag or push from an agent session: pushing a version tag is the release.
 
 ## Cloudflare CLI
 
