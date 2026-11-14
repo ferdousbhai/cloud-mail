@@ -95,7 +95,7 @@ pub enum Command {
     /// View or change the local config file
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Link other mail accounts (HEY, Gmail, iCloud Mail) so their mail shows next to yours; opt-in
+    /// Link other mail accounts (HEY, Gmail, iCloud Mail) so their mail shows next to yours
     #[command(subcommand)]
     Account(AccountCommand),
 

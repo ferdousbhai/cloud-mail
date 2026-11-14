@@ -1636,7 +1636,7 @@ impl Ui {
         confirm(
             &self.window,
             "Delete this conversation?",
-            "It's deleted for good, with its attachments. Archive it to keep it out of the way instead.",
+            "It's deleted for good, with its attachments.",
             ["Cancel", "Delete"],
             move || {
                 if let Some(ui) = ui.upgrade() {
