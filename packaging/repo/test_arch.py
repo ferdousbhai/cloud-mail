@@ -42,7 +42,7 @@ class InstallerTests(unittest.TestCase):
             executable(binary / 'install', 'while [[ $# -gt 0 ]]; do case "$1" in -d) shift;; -o|-g) shift 2;; *) mkdir -p "$1"; shift;; esac; done\n')
             executable(binary / 'uname', f'echo {arch}\n')
             executable(binary / 'curl', 'while [[ $1 != -o ]]; do shift; done; echo public-key > "$2"\n')
-            executable(binary / 'gpg', "echo 'fpr:::::::::52130299581DAD685226900CA89CA1A6A1E74251:'\n")
+            executable(binary / 'gpg', "printf 'pub:u:4096:1:A89CA1A6A1E74251:1:::u:::scESC:\\nfpr:::::::::52130299581DAD685226900CA89CA1A6A1E74251:\\n'\n")
             executable(binary / 'getent', f"echo 'root:x:0:0::{home}:/bin/bash'\n")
             for command in ('pacman-key', 'pacman', 'omarchy-pkg-add'):
                 executable(binary / command, 'echo "$0 $*" >> "$CALL_LOG"\n')
