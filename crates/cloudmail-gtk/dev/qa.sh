@@ -35,14 +35,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 run() {
-  local script=$1
+  local script=$1 index=$2
   root=$(mktemp -d /tmp/cloudmail-qa.XXXXXX)
   mkdir -p "$root"/{home,config,state,data,cache,runtime}
   chmod 700 "$root/runtime"
 
-  # A display number and input port from this script's PID, so that two runs at once do not share one. broadwayd
-  # listens on that port on 127.0.0.1 alone, where omui sends key presses as broadway's web page would.
-  local display=$(( 100 + $$ % 800 ))
+  # A display number and input port from this script's PID and the script's place, so that neither two runs at once
+  # nor two scripts one after the other share one. broadwayd listens on that port on 127.0.0.1 alone, where omui sends
+  # key presses as broadway's web page would.
+  local display=$(( 100 + ($$ * 8 + index) % 800 ))
   local port=$(( 8080 + display ))
   XDG_RUNTIME_DIR=$root/runtime gtk4-broadwayd --address 127.0.0.1 --port "$port" ":$display" \
     >"$root/broadwayd.log" 2>&1 &
@@ -78,6 +79,8 @@ run() {
   app_pid=$!
   wait "$app_pid" || status=$?
   app_pid=""
+  # The display going away ends the app with no answer; what it said is why.
+  kill -0 "$broadway_pid" 2>/dev/null || { echo "qa: broadwayd exited:" >&2; cat "$root/broadwayd.log" >&2; }
 
   # Each command beside its answer; `quit`'s answer, or the failure that ended the run, comes last.
   echo "qa: $script"
@@ -88,9 +91,11 @@ run() {
 }
 
 failed=0
+index=0
 for script in "$@"; do
   status=0
-  run "$(realpath -- "$script")" || status=$?
+  run "$(realpath -- "$script")" "$index" || status=$?
+  index=$(( index + 1 ))
   stop
   if (( status == 0 )); then echo "qa: passed"; else echo "qa: failed with status $status"; failed=1; fi
 done
