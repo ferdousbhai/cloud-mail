@@ -66,7 +66,7 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         .build();
     let field = |row: i32, name: &str, widget: &gtk::Widget| {
         let label = gtk::Label::builder().label(name).xalign(1.0).build();
-        label.add_css_class("field-label");
+        label.add_css_class("dim-label");
         grid.attach(&label, 0, row, 1, 1);
         widget.set_hexpand(true);
         grid.attach(widget, 1, row, 1, 1);
@@ -105,7 +105,8 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         .vexpand(true)
         .hexpand(true)
         .build();
-    grid.attach(&scroller, 0, 5, 2, 1);
+    // In a frame the body is a field like the ones above it.
+    grid.attach(&gtk::Frame::builder().child(&scroller).build(), 0, 5, 2, 1);
 
     let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let attach = gtk::Button::with_label("Attach…");
@@ -113,9 +114,9 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
     let error = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
     error.add_css_class("error");
     let hint = gtk::Label::new(Some("Ctrl+Enter to send · Esc to close"));
-    hint.add_css_class("dim");
+    hint.add_css_class("dim-label");
     let send = gtk::Button::with_label("Send");
-    send.add_css_class("suggested");
+    send.add_css_class("suggested-action");
     bottom.append(&attach);
     bottom.append(&error);
     bottom.append(&hint);
@@ -364,8 +365,8 @@ fn send_message(c: &Rc<Compose>, ui: &Rc<Ui>) {
                 Ok(resp) => {
                     c.window.destroy();
                     match &resp.warning {
-                        Some(w) => ui.toast(&format!("Sent, but {w}")),
-                        None => ui.toast("Sent"),
+                        Some(w) => ui.shell.toast(&format!("Sent, but {w}")),
+                        None => ui.shell.toast("Sent"),
                     }
                     ui.after_send(resp.thread_id.as_deref());
                 }
@@ -485,11 +486,9 @@ fn render_chips(c: &Rc<Compose>) {
                 .build(),
         );
         let size = gtk::Label::new(Some(&size));
-        size.add_css_class("dim");
+        size.add_css_class("dim-label");
         chip.append(&size);
-        let remove = gtk::Button::with_label("×");
-        remove.add_css_class("flat");
-        remove.set_tooltip_text(Some(&format!("Remove {name}")));
+        let remove = omui::icon_button(omui::icons::name::CLOSE, &format!("Remove {name}"));
         remove.connect_clicked(clone!(
             #[weak]
             c,
@@ -562,14 +561,22 @@ fn close(c: &Rc<Compose>) {
     } else {
         "Discard this draft and its attachments?"
     };
-    let window = c.window.clone();
-    super::confirm(
-        &c.window,
-        message,
-        "Drafts aren't saved.",
-        ["Keep editing", "Discard"],
-        move || window.destroy(),
-    );
+    // `omui::confirm` with the first button named for what it does here.
+    let dialog = omui::Dialog::new(Some(message), Some("Drafts aren't saved."));
+    dialog.add_response("keep", "Keep editing");
+    dialog.add_response("discard", "Discard");
+    dialog.set_response_appearance("discard", omui::Appearance::Destructive);
+    dialog.set_default_response("keep");
+    dialog.set_close_response("keep");
+    let window = c.window.downgrade();
+    dialog.connect_response(move |_, id| {
+        if id == "discard"
+            && let Some(window) = window.upgrade()
+        {
+            window.destroy();
+        }
+    });
+    dialog.present(&c.window);
 }
 
 #[cfg(test)]

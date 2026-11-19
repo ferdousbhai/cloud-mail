@@ -27,7 +27,8 @@ pub fn show(parent: &gtk::Window) {
     grid.add_css_class("shortcuts");
     for (i, (key, what)) in KEYS.iter().enumerate() {
         let k = gtk::Label::builder().label(*key).xalign(1.0).build();
-        k.add_css_class("key");
+        k.add_css_class("accent");
+        k.add_css_class("heading");
         grid.attach(&k, 0, i as i32, 1, 1);
         grid.attach(
             &gtk::Label::builder().label(*what).xalign(0.0).build(),
@@ -44,7 +45,6 @@ pub fn show(parent: &gtk::Window) {
         .resizable(false)
         .child(&grid)
         .build();
-    window.add_css_class("cloudmail");
     let keys = gtk::EventControllerKey::new();
     let w = window.clone();
     keys.connect_key_pressed(move |_, key, _, _| {

@@ -402,8 +402,8 @@ dependencies = [
  "cloudmail-api",
  "dirs",
  "gtk4",
+ "omui",
  "serde_json",
- "toml",
  "urlencoding",
  "webkit6",
 ]
@@ -875,6 +875,12 @@ dependencies = [
  "memchr",
  "smallvec",
 ]
+
+[[package]]
+name = "glib-build-tools"
+version = "0.22.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9871f38b67853c358b8190f77b9f878eb27d933a950f1045b244c4559a9f5f0"
 
 [[package]]
 name = "glib-macros"
@@ -1385,6 +1391,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "omui"
+version = "0.2.0"
+source = "git+https://github.com/ferdousbhai/omui?rev=ce060c5242e38caa4b3735683fb16c7b2f36fc38#ce060c5242e38caa4b3735683fb16c7b2f36fc38"
+dependencies = [
+ "glib-build-tools",
+ "gtk4",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 use gtk::{glib, glib::clone, prelude::*};
 use std::rc::Rc;
 
-use super::{Ui, clear, confirm, keep_until_closed, text, tool_window};
+use super::{Ui, keep_until_closed, tool_window};
 use crate::api::accounts::{self, Link};
 use crate::api::{AccountStatus, config};
 use crate::util;
@@ -35,10 +35,10 @@ pub fn show(ui: &Rc<Ui>) {
     }
     root.append(&add_row);
 
-    let status = text("", "column-sub");
+    let status = omui::label("", "column-sub");
     root.append(&status);
     let restart = gtk::Button::with_label("Restart Cloudmail");
-    restart.add_css_class("suggested");
+    restart.add_css_class("suggested-action");
     restart.set_visible(false);
     root.append(&restart);
 
@@ -86,8 +86,8 @@ fn changed(a: &Rc<Accounts>, text: &str) {
 
 /// Reads each linked account's status, off the main loop.
 fn refresh(a: &Rc<Accounts>) {
-    clear(&a.list);
-    a.list.append(&text("Checking your accounts…", "column-sub"));
+    omui::clear(&a.list);
+    a.list.append(&omui::label("Checking your accounts…", "column-sub"));
     util::run(
         || -> Result<Vec<AccountStatus>, String> {
             let file = config::read_file(&config::path())?.unwrap_or_default();
@@ -111,9 +111,11 @@ fn refresh(a: &Rc<Accounts>) {
             #[weak]
             a,
             move |result: Result<Vec<AccountStatus>, String>| {
-                clear(&a.list);
+                omui::clear(&a.list);
                 match result {
-                    Ok(list) if list.is_empty() => a.list.append(&text("None yet: link one below.", "column-sub")),
+                    Ok(list) if list.is_empty() => {
+                        a.list.append(&omui::label("None yet: link one below.", "column-sub"))
+                    }
                     Ok(list) => {
                         for s in list {
                             a.list.append(&row(&a, s));
@@ -138,7 +140,7 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     } else {
         format!("{}\n{}", s.addresses.join(", "), s.detail)
     };
-    text_box.append(&text(&detail, "column-sub"));
+    text_box.append(&omui::label(&detail, "column-sub"));
     row.append(&text_box);
     if !s.ok {
         let sign_in = gtk::Button::with_label("Sign in");
@@ -175,11 +177,12 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
         a,
         move |_| {
             let name = name.clone();
-            confirm(
+            omui::confirm(
                 &a.window,
                 &format!("Unlink {label}?"),
                 "Its mail stops showing here; nothing changes in the account itself.",
-                ["Cancel", "Unlink"],
+                "Unlink",
+                omui::Appearance::Destructive,
                 clone!(
                     #[weak]
                     a,

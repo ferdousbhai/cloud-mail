@@ -1,10 +1,9 @@
 use crate::api::{Address, Message, ThreadDetail};
-use crate::theme::Palette;
 use crate::util::{escape_html, format_addresses, html_to_text, human_size, long_time, subject_or_placeholder};
 
 pub const ATTACHMENT_SCHEME: &str = "cloudmail-attachment:";
 
-pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String {
+pub fn thread(detail: &ThreadDetail, t: &omui::Tokens, remote_images: bool) -> String {
     let img_src = if remote_images { "data: https: http:" } else { "data:" };
     let last = detail.messages.len().saturating_sub(1);
     let mut body = String::new();
@@ -43,47 +42,48 @@ pub fn thread(detail: &ThreadDetail, p: &Palette, remote_images: bool) -> String
 html, body {{ background: {bg}; color: {fg}; }}
 body {{ margin: 0; padding: 18px 22px 60px; font: 10.5pt "JetBrainsMono Nerd Font", "JetBrains Mono", monospace; }}
 a {{ color: {accent}; }}
-.subject {{ color: {bfg}; font-size: 13pt; font-weight: bold; margin: 0 0 16px; overflow-wrap: anywhere; }}
-.note {{ color: {dfg}; font-size: 9pt; margin: 0 0 14px; }}
-.acct {{ color: {dfg}; font-size: 8pt; font-weight: normal; border: 1px solid {muted}; border-radius: 4px; padding: 0 5px; vertical-align: middle; }}
-.msg {{ margin: 0 0 18px; border-bottom: 1px solid {lbg}; padding-bottom: 14px; }}
+.subject {{ color: {fg}; font-size: 13pt; font-weight: bold; margin: 0 0 16px; overflow-wrap: anywhere; }}
+.note {{ color: {dim}; font-size: 9pt; margin: 0 0 14px; }}
+.acct {{ color: {dim}; font-size: 8pt; font-weight: normal; border: 1px solid {border}; border-radius: 4px; padding: 0 5px; vertical-align: middle; }}
+.msg {{ margin: 0 0 18px; border-bottom: 1px solid {rule}; padding-bottom: 14px; }}
 .msg:last-child {{ border-bottom: none; }}
 summary {{ list-style: none; cursor: pointer; }}
 summary::-webkit-details-marker {{ display: none; }}
 .hdr {{ display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; }}
 .hdr > div:first-child {{ flex: 1 1 220px; min-width: 0; overflow-wrap: break-word; }}
-.from {{ color: {bfg}; font-weight: bold; }}
-.warn {{ color: {red}; font-size: 9pt; border: 1px solid {red}; border-radius: 4px; padding: 0 5px; margin-left: 4px; white-space: nowrap; }}
-.addr, .date, .rcpt, .preview {{ color: {dfg}; }}
+.from {{ color: {fg}; font-weight: bold; }}
+.warn {{ color: {danger}; font-size: 9pt; border: 1px solid {danger}; border-radius: 4px; padding: 0 5px; margin-left: 4px; white-space: nowrap; }}
+.addr, .date, .rcpt, .preview {{ color: {dim}; }}
 .date {{ white-space: nowrap; font-size: 9pt; }}
 .rcpt {{ font-size: 9pt; margin-top: 2px; }}
 .preview {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }}
 details[open] .preview {{ display: none; }}
 .plain {{ white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: {fg}; }}
-.quoted summary {{ color: {dfg}; display: inline-block; border: 1px solid {muted}; border-radius: 4px; padding: 0 6px; line-height: 1.2; margin: 4px 0; }}
-.quoted .plain {{ color: {dfg}; }}
+.quoted summary {{ color: {dim}; display: inline-block; border: 1px solid {border}; border-radius: 4px; padding: 0 6px; line-height: 1.2; margin: 4px 0; }}
+.quoted .plain {{ color: {dim}; }}
 /* The frame is outside the message's reach (it can style its own host, not this parent):
    paint containment makes it the containing block for fixed-position content and clips it,
    so a message can't draw over the headers or the sender warning. Its white background and
    border mark where the message starts even if the message makes its own card transparent. */
 .frame {{ position: relative; contain: paint; isolation: isolate; border-radius: 8px;
-  background: #ffffff; border: 1px solid {muted}; }}
+  background: #ffffff; border: 1px solid {border}; }}
 .paper {{ background: #ffffff; color: #1f2328; border-radius: 8px; padding: 18px 20px; overflow-x: auto;
   font: 11pt -apple-system, "Inter", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }}
 .atts {{ margin-top: 10px; }}
-.att {{ display: inline-block; border: 1px solid {muted}; border-radius: 6px; padding: 4px 10px; margin: 6px 8px 0 0;
-  color: {fg}; text-decoration: none; background: {lbg}; }}
-.att:hover {{ border-color: {accent}; color: {bfg}; }}
-.att small {{ color: {dfg}; }}
+.att {{ display: inline-block; border: 1px solid {border}; border-radius: 6px; padding: 4px 10px; margin: 6px 8px 0 0;
+  color: {fg}; text-decoration: none; background: {raised}; }}
+.att:hover {{ border-color: {accent}; color: {fg}; }}
+.att small {{ color: {dim}; }}
 </style></head><body>{heading}{note}{body}</body></html>"#,
-        bg = p.background,
-        fg = p.foreground,
-        bfg = p.bright_foreground,
-        dfg = p.dark_foreground,
-        lbg = p.lighter_background,
-        muted = p.muted,
-        accent = p.accent,
-        red = p.red,
+        bg = t.background,
+        fg = t.text,
+        dim = t.dim_text,
+        raised = t.muted,
+        // omui's separators: the border colour at 60% over the background.
+        rule = omui::blend(&t.background, &t.border, 0.6),
+        border = t.border,
+        accent = t.accent,
+        danger = t.danger,
     )
 }
 
@@ -354,6 +354,37 @@ fn trim_url(mut url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_is_drawn_in_the_themes_colours() {
+        let dark = omui::Tokens::fallback();
+        let light = omui::Tokens::from_colors(
+            "paper",
+            "mode = \"light\"\nbackground = \"#fafafa\"\nforeground = \"#202020\"\naccent = \"#0a66c2\"\nred = \"#c01c28\"",
+        )
+        .unwrap();
+        assert_ne!(dark.background, light.background);
+        for t in [dark, light] {
+            let detail = ThreadDetail {
+                thread: Default::default(),
+                messages: Vec::new(),
+            };
+            let page = thread(&detail, &t, false);
+            for rule in [
+                format!("html, body {{ background: {}; color: {}; }}", t.background, t.text),
+                format!("a {{ color: {}; }}", t.accent),
+                format!(".note {{ color: {};", t.dim_text),
+                format!(".warn {{ color: {};", t.danger),
+                format!(".att:hover {{ border-color: {}; color: {}; }}", t.accent, t.text),
+                format!("text-decoration: none; background: {}; }}", t.muted),
+                format!("background: #ffffff; border: 1px solid {}; }}", t.border),
+            ] {
+                assert!(page.contains(&rule), "{rule} missing for {}", t.name);
+            }
+            // The message's own card stays white on any theme.
+            assert!(page.contains(".paper { background: #ffffff; color: #1f2328;"));
+        }
+    }
 
     #[test]
     fn warns_on_dmarc_fail() {

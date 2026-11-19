@@ -8,10 +8,10 @@ license.workspace = true
 
 [dependencies]
 cloudmail-api.workspace = true
-toml.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 urlencoding.workspace = true
 gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
+omui = { git = "https://github.com/ferdousbhai/omui", rev = "ce060c5242e38caa4b3735683fb16c7b2f36fc38" } # v0.2.0
 webkit6 = "0.6"
 ammonia = "4.2.0"

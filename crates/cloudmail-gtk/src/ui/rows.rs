@@ -131,12 +131,12 @@ pub fn sender_row(s: &PendingSender) -> SenderRow {
         .label("Yes")
         .tooltip_text("Let them in (y)")
         .build();
-    approve.add_css_class("approve");
+    approve.add_css_class("suggested-action");
     let block = gtk::Button::builder()
         .label("No")
         .tooltip_text("Block them (n)")
         .build();
-    block.add_css_class("block");
+    block.add_css_class("destructive-action");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     buttons.set_valign(gtk::Align::Center);
     buttons.append(&approve);

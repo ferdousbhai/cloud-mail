@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""A stand-in for the Cloudmail worker's API with made-up mail, for dev/preview.sh.
+
+    fake-worker <port-file>
+
+Listens on a free port of 127.0.0.1, writes the port to <port-file>, and answers what the app reads: the admin's
+token, four boxes of threads, a waiting sender, one more user. Writes (move, read, send) are accepted and forgotten.
+"""
+
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+NOW = 1_795_000_000_000  # a fixed day, so two runs draw the same times
+HOUR = 3_600_000
+ME = {"name": "Robin Vale", "email": "robin@example.org"}
+
+
+def address(name, email):
+    return {"name": name, "email": email}
+
+
+def thread(n, folder, who, subject, snippet, **more):
+    return {
+        "id": f"t{n}",
+        "subject": subject,
+        "folder": folder,
+        "snippet": snippet,
+        "from": who,
+        "to_address": more.get("to", ME["email"]),
+        "message_count": more.get("count", 1),
+        "unread": more.get("unread", False),
+        "has_attachments": more.get("attachments", False),
+        "last_at": NOW - n * 5 * HOUR,
+    }
+
+
+SAM = address("Sam Okafor", "sam@example.com")
+PRESS = address("Fernhill Press", "news@fernhill.example")
+THREADS = [
+    thread(1, "inbox", SAM, "Trail map for Saturday", "Here is the route we talked about, with the two water stops marked.", unread=True, attachments=True, count=2),
+    thread(2, "inbox", PRESS, "Autumn catalogue", "New titles this season, and a reading at the shop on the 14th.", unread=True),
+    thread(3, "inbox", address("Ines Duarte", "ines@example.net"), "Re: invoice 2291", "Paid this morning, thank you. The receipt is attached.", attachments=True, to="billing@example.org"),
+    thread(4, "inbox", address(None, "noreply@railway.example"), "Your ticket to Halden", "Coach 4, seat 61. Departs 08:12 from platform 3."),
+    thread(5, "inbox", address("Mika Lindqvist", "mika@example.com"), "", "Can you send me the photos from the lake when you have a minute?"),
+    thread(6, "archive", SAM, "Boots", "They fit. Thanks for the tip about the wider last."),
+    thread(7, "sent", address("Robin Vale", ME["email"]), "Lake photos", "All forty of them, in one folder."),
+    thread(8, "screener", address("Brightline Offers", "deals@brightline.example"), "You have been selected", "Open now to claim."),
+]
+
+NEWSLETTER = """<table width="100%" style="font-family: Georgia, serif"><tr><td style="background:#2f5d50;color:#fff;padding:18px">
+<h1 style="margin:0">Fernhill Press</h1></td></tr><tr><td style="padding:18px"><h2>Autumn catalogue</h2>
+<p>New titles this season, and a reading at the shop on the 14th.</p>
+<p><a href="https://fernhill.example/autumn">See the whole list</a></p></td></tr></table>"""
+
+
+def message(n, thread_id, who, date, **more):
+    return {
+        "id": f"m{n}",
+        "thread_id": thread_id,
+        "outgoing": more.get("outgoing", False),
+        "from": who,
+        "to": more.get("to", [ME]),
+        "cc": [],
+        "reply_to": [],
+        "subject": more.get("subject", ""),
+        "date": date,
+        "text": more.get("text"),
+        "html": more.get("html"),
+        "message_id": f"<m{n}@example>",
+        "attachments": more.get("attachments", []),
+        "auth": more.get("auth"),
+    }
+
+
+def detail(summary):
+    tid, at = summary["id"], summary["last_at"]
+    if tid == "t1":
+        messages = [
+            message(1, tid, ME, at - HOUR, outgoing=True, to=[SAM], text="Which way round are we doing the ridge?"),
+            message(2, tid, SAM, at, text=f"{summary['snippet']}\n\nBring the long rope.\n\n> Which way round are we doing the ridge?",
+                    attachments=[{"id": "a1", "filename": "ridge-route.gpx", "mime_type": "application/gpx+xml", "size": 48_213, "inline": False}],
+                    auth={"dmarc": "fail", "verified": False}),
+        ]
+    elif tid == "t2":
+        messages = [message(3, tid, PRESS, at, html=NEWSLETTER)]
+    else:
+        messages = [message(10 + int(tid[1:]), tid, summary["from"], at, text=summary["snippet"])]
+    return {"thread": summary, "messages": messages}
+
+
+USERS = [
+    {"name": "owner", "role": "admin", "mailboxes": [ME["email"], "billing@example.org"], "connected": True, "created_at": NOW},
+    {"name": "sam", "role": "user", "mailboxes": ["sam@example.org"], "connected": True, "created_at": NOW, "forward_to": "sam@oldmail.example"},
+    {"name": "ines", "role": "user", "mailboxes": [], "connected": False, "invite_expires_at": NOW + 48 * HOUR, "created_at": NOW},
+]
+
+
+def answer(path, query):
+    if path == "/api/me":
+        return {"user": {"name": "owner", "role": "admin"}}
+    if path == "/api/threads":
+        folder = query.get("folder", ["inbox"])[0]
+        # One page is all there is: a request for older mail gets none.
+        return {"threads": [] if "before" in query else [t for t in THREADS if t["folder"] == folder]}
+    if path.startswith("/api/threads/"):
+        found = [t for t in THREADS if t["id"] == path.rsplit("/", 1)[1]]
+        return detail(found[0]) if found else None
+    if path == "/api/screener":
+        return {"senders": [{"email": "deals@brightline.example", "name": "Brightline Offers", "thread_count": 1, "last_subject": "You have been selected", "last_at": NOW - 40 * HOUR}]}
+    if path == "/api/counts":
+        return {"screener": 1, "inbox": 5, "inbox_unread": 2}
+    if path == "/api/identities":
+        return {"identities": [ME, address("Robin Vale", "billing@example.org")], "default": ME}
+    if path == "/api/users":
+        return {"users": USERS}
+    return {}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, body):
+        data = json.dumps({"error": "not found"} if body is None else body).encode()
+        self.send_response(404 if body is None else 200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        self.reply(answer(url.path, parse_qs(url.query)))
+
+    def write(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.reply({})
+
+    do_POST = do_PUT = do_PATCH = do_DELETE = write
+
+    def log_message(self, *_):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(sys.argv[1], "w") as port_file:
+    port_file.write(str(server.server_address[1]))
+server.serve_forever()

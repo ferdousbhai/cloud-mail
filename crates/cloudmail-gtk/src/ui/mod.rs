@@ -8,6 +8,7 @@ mod rows;
 mod shortcuts;
 
 use gtk::{gdk, gio, glib, glib::clone, pango, prelude::*};
+use omui::icons::name;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -18,7 +19,6 @@ use crate::api::{
     AccountWarning, Address, Client, Identities, Mail, PendingSender, ThreadDetail, ThreadQuery, ThreadSummary,
 };
 use crate::config::{self, Config};
-use crate::theme::{self, Palette};
 use crate::util::{self, Draft, unused_path};
 
 const PAGE: u32 = 50;
@@ -68,17 +68,17 @@ impl View {
         }
     }
 
-    fn icon(self) -> &'static str {
+    fn icon(self) -> Icon {
         match self {
-            View::Screener => "\u{f0b0}",
-            View::Inbox => "\u{f01c}",
-            View::Archive => "\u{f187}",
-            View::Sent => "\u{f1d8}",
-            View::Search => "\u{f002}",
-            View::Feed => "\u{f09e}",
-            View::PaperTrail => "\u{f15c}",
-            View::SetAside => "\u{f02e}",
-            View::ReplyLater => "\u{f017}",
+            View::Screener => Icon::Glyph("\u{f0b0}"),
+            View::Inbox => INBOX,
+            View::Archive => ARCHIVE,
+            View::Sent => Icon::Glyph("\u{f1d8}"),
+            View::Search => Icon::Om(name::SEARCH),
+            View::Feed => Icon::Glyph("\u{f09e}"),
+            View::PaperTrail => Icon::Om(name::DOCUMENT),
+            View::SetAside => Icon::Glyph("\u{f02e}"),
+            View::ReplyLater => Icon::Om(name::CLOCK),
         }
     }
 
@@ -149,7 +149,6 @@ pub struct Ui {
     signed_out_notified: RefCell<HashSet<String>>,
     /// Open compose windows, so closing the main window goes through their discard prompts.
     pub composes: RefCell<Vec<glib::WeakRef<gtk::Window>>>,
-    palette: RefCell<Palette>,
     view: Cell<View>,
     before_search: Cell<View>,
     query: RefCell<String>,
@@ -173,7 +172,6 @@ pub struct Ui {
     exhausted: Cell<bool>,
     suppress: Cell<bool>,
     seen: RefCell<Option<Seen>>,
-    toast_timer: Rc<RefCell<Option<glib::SourceId>>>,
     nav: gtk::ListBox,
     badges: Vec<gtk::Label>,
     wide_only: Vec<gtk::Widget>,
@@ -184,9 +182,12 @@ pub struct Ui {
     scroller: gtk::ScrolledWindow,
     empty: gtk::Label,
     list_stack: gtk::Stack,
+    /// The icon of the box on show, beside `title`; nothing for a search by meaning.
+    title_icon: gtk::Box,
     title: gtk::Label,
     subtitle: gtk::Label,
-    toast: gtk::Label,
+    /// The window's overlay, for toasts and the delete question.
+    pub shell: Rc<omui::Shell>,
     search: gtk::SearchEntry,
     reader_stack: gtk::Stack,
     reader_subject: gtk::Label,
@@ -195,61 +196,56 @@ pub struct Ui {
     webview: webkit6::WebView,
 }
 
-fn icon_button(glyph: &str, tooltip: &str) -> gtk::Button {
-    let b = gtk::Button::builder().label(glyph).tooltip_text(tooltip).build();
-    b.add_css_class("flat");
-    b
+/// An icon of omui's, or the Nerd Font glyph the app drew before omui for the ones omui does not bundle yet.
+#[derive(Clone, Copy)]
+enum Icon {
+    Om(&'static str),
+    Glyph(&'static str),
+}
+
+const INBOX: Icon = Icon::Glyph("\u{f01c}");
+const ARCHIVE: Icon = Icon::Glyph("\u{f187}");
+
+impl Icon {
+    fn widget(self) -> gtk::Widget {
+        match self {
+            Icon::Om(name) => omui::icon(name).upcast(),
+            Icon::Glyph(glyph) => gtk::Label::builder()
+                .label(glyph)
+                .css_classes(["glyph"])
+                .accessible_role(gtk::AccessibleRole::Presentation)
+                .build()
+                .upcast(),
+        }
+    }
+
+    /// A borderless button; `tooltip` is also its accessible name.
+    fn button(self, tooltip: &str) -> gtk::Button {
+        match self {
+            Icon::Om(name) => omui::icon_button(name, tooltip),
+            Icon::Glyph(glyph) => {
+                let button = gtk::Button::builder()
+                    .label(glyph)
+                    .tooltip_text(tooltip)
+                    .css_classes(["header-action", "glyph"])
+                    .build();
+                button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
+                button
+            }
+        }
+    }
 }
 
 /// A sidebar button with an icon and a label; the label is hidden when the window is narrow.
-fn sidebar_button(glyph: &str, text: &str, tooltip: &str, wide_only: &mut Vec<gtk::Widget>) -> gtk::Button {
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    content.append(&gtk::Label::new(Some(glyph)));
+fn sidebar_button(icon: Icon, text: &str, tooltip: &str, wide_only: &mut Vec<gtk::Widget>) -> gtk::Button {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    content.append(&icon.widget());
     let label = gtk::Label::builder().label(text).xalign(0.0).build();
     content.append(&label);
     wide_only.push(label.upcast());
     let b = gtk::Button::builder().child(&content).tooltip_text(tooltip).build();
-    b.add_css_class("flat");
+    b.add_css_class("sidebar-footer");
     b
-}
-
-pub(super) fn clear(b: &gtk::Box) {
-    while let Some(child) = b.first_child() {
-        b.remove(&child);
-    }
-}
-
-/// A left-aligned, wrapping label, in one of the theme's text classes (`column-title`,
-/// `column-sub`) or none ("").
-pub(super) fn text(label: &str, class: &str) -> gtk::Label {
-    let l = gtk::Label::builder().label(label).xalign(0.0).wrap(true).build();
-    if !class.is_empty() {
-        l.add_css_class(class);
-    }
-    l
-}
-
-/// Asks before doing something that can't be taken back; `yes` runs only on `action`.
-pub(super) fn confirm(
-    parent: &impl IsA<gtk::Window>,
-    message: &str,
-    detail: &str,
-    [cancel, action]: [&str; 2],
-    yes: impl FnOnce() + 'static,
-) {
-    let dialog = gtk::AlertDialog::builder()
-        .message(message)
-        .detail(detail)
-        .buttons([cancel, action])
-        .cancel_button(0)
-        .default_button(0)
-        .modal(true)
-        .build();
-    dialog.choose(Some(parent), gio::Cancellable::NONE, move |res| {
-        if res == Ok(1) {
-            yes()
-        }
-    });
 }
 
 /// A window over the main one for managing something (Accounts, People): the window, with a
@@ -261,7 +257,7 @@ pub(super) fn tool_window(ui: &Ui, title: &str, class: &str, heading: &str, widt
     root.set_margin_bottom(18);
     root.set_margin_start(18);
     root.set_margin_end(18);
-    root.append(&text(heading, "column-title"));
+    root.append(&omui::label(heading, "column-title"));
     let window = gtk::Window::builder()
         .title(title)
         .transient_for(&ui.window)
@@ -269,7 +265,6 @@ pub(super) fn tool_window(ui: &Ui, title: &str, class: &str, heading: &str, widt
         .default_width(width)
         .child(&root)
         .build();
-    window.add_css_class("cloudmail");
     window.add_css_class(class);
     (window, root)
 }
@@ -282,34 +277,32 @@ pub(super) fn keep_until_closed<T: 'static>(window: &gtk::Window, state: &Rc<T>)
 
 impl Ui {
     pub fn new(app: &gtk::Application, config: Result<Config, String>) -> Rc<Self> {
-        let palette = theme::load();
-        theme::apply(&palette);
-
         let window = gtk::ApplicationWindow::builder()
             .application(app)
             .title("Cloudmail")
             .default_width(1320)
             .default_height(840)
             .build();
-        window.add_css_class("cloudmail");
         window.set_icon_name(Some(crate::APP_ID));
 
         // Sidebar
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.add_css_class("sidebar");
         sidebar.set_width_request(200);
-        let brand = gtk::Label::builder().label("\u{f0e0}  cloudmail").xalign(0.0).build();
+        let brand = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         brand.add_css_class("brand");
+        brand.append(&omui::icon(name::MAIL));
+        brand.append(&gtk::Label::new(Some("cloudmail")));
         sidebar.append(&brand);
-        let compose_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        compose_box.append(&gtk::Label::new(Some("\u{f040}")));
+        let compose_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        compose_box.append(&omui::icon(name::EDIT));
         let compose_label = gtk::Label::builder().label("Compose").xalign(0.0).build();
         compose_box.append(&compose_label);
         let compose_btn = gtk::Button::builder()
             .child(&compose_box)
             .tooltip_text("New message (c)")
             .build();
-        compose_btn.add_css_class("suggested");
+        compose_btn.add_css_class("suggested-action");
         compose_btn.add_css_class("compose");
         sidebar.append(&compose_btn);
         let nav = gtk::ListBox::new();
@@ -339,10 +332,8 @@ impl Ui {
             });
         }
         for (i, view) in nav_views.iter().enumerate() {
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let icon = gtk::Label::new(Some(view.icon()));
-            icon.set_width_chars(2);
-            row_box.append(&icon);
+            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            row_box.append(&view.icon().widget());
             let name = gtk::Label::builder()
                 .label(view.title())
                 .xalign(0.0)
@@ -350,15 +341,21 @@ impl Ui {
                 .build();
             row_box.append(&name);
             wide_only.push(name.upcast());
-            let badge = gtk::Label::new(None);
-            badge.add_css_class("badge");
-            if i != 0 {
-                badge.add_css_class("dim");
-            }
+            // The Screener's count asks for a decision; the others only say how much is unread.
+            let badge = if i == 0 {
+                omui::badge("", "")
+            } else {
+                gtk::Label::builder().css_classes(["count", "numeric"]).build()
+            };
             badge.set_visible(false);
             row_box.append(&badge);
             badges.push(badge);
-            nav.append(&gtk::ListBoxRow::builder().child(&row_box).build());
+            nav.append(
+                &gtk::ListBoxRow::builder()
+                    .css_classes(["sidebar-row"])
+                    .child(&row_box)
+                    .build(),
+            );
         }
         sidebar.append(&nav);
         let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -366,7 +363,7 @@ impl Ui {
         sidebar.append(&spacer);
         // Shown once the worker says you're its admin.
         let people_btn = sidebar_button(
-            "\u{f0c0}",
+            Icon::Glyph("\u{f0c0}"),
             "People",
             "Who else reads their mail on your worker; invite someone",
             &mut wide_only,
@@ -374,7 +371,7 @@ impl Ui {
         people_btn.set_visible(false);
         sidebar.append(&people_btn);
         let accounts_btn = sidebar_button(
-            "\u{f2c0}",
+            Icon::Om(name::USER),
             "Accounts",
             "Linked accounts: HEY, Gmail, iCloud Mail",
             &mut wide_only,
@@ -382,6 +379,8 @@ impl Ui {
         sidebar.append(&accounts_btn);
         let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
         hint.add_css_class("hint");
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
         sidebar.append(&hint);
         wide_only.push(hint.upcast());
         wide_only.push(compose_label.upcast());
@@ -393,11 +392,15 @@ impl Ui {
         let search = gtk::SearchEntry::builder()
             .placeholder_text("Search mail · ~ meaning")
             .build();
-        search.add_css_class("search");
+        search.add_css_class("mail-search");
         middle.append(&search);
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        title_row.add_css_class("column-title");
+        let title_icon = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        title_row.append(&title_icon);
         let title = gtk::Label::builder().xalign(0.0).build();
-        title.add_css_class("column-title");
-        middle.append(&title);
+        title_row.append(&title);
+        middle.append(&title_row);
         let subtitle = gtk::Label::builder()
             .xalign(0.0)
             .ellipsize(pango::EllipsizeMode::End)
@@ -420,6 +423,7 @@ impl Ui {
             .wrap(true)
             .justify(gtk::Justification::Center)
             .build();
+        empty.add_css_class("status-line");
         empty.add_css_class("empty");
         empty.set_valign(gtk::Align::Start);
         let scroller = gtk::ScrolledWindow::builder()
@@ -434,25 +438,22 @@ impl Ui {
         list_stack.add_named(&scroller, Some("list"));
         list_stack.add_named(&empty, Some("empty"));
         middle.append(&list_stack);
-        let toast = text("", "column-sub");
-        toast.set_margin_top(6);
-        toast.set_visible(false);
-        middle.append(&toast);
 
         // Reader
         let reader = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        bar.add_css_class("toolbar");
         bar.add_css_class("reader-bar");
         // An empty spacer that pushes the buttons right and carries the subject as its tooltip.
         let reader_subject = gtk::Label::builder().hexpand(true).build();
         bar.append(&reader_subject);
-        let reply_btn = icon_button("\u{f112}", "Reply (r)");
-        let reply_all_btn = icon_button("\u{f122}", "Reply all (a)");
-        let archive_btn = icon_button("\u{f187}", "Archive (e)");
-        let inbox_btn = icon_button("\u{f01c}", "Move to Inbox (i)");
-        let delete_btn = icon_button("\u{f1f8}", "Delete (#)");
-        let unread_btn = icon_button("\u{f0e0}", "Mark unread (u)");
-        let images_btn = icon_button("\u{f03e}", "Load remote images (L)");
+        let reply_btn = Icon::Glyph("\u{f112}").button("Reply (r)");
+        let reply_all_btn = Icon::Glyph("\u{f122}").button("Reply all (a)");
+        let archive_btn = ARCHIVE.button("Archive (e)");
+        let inbox_btn = INBOX.button("Move to Inbox (i)");
+        let delete_btn = omui::icon_button(name::DELETE, "Delete (#)");
+        let unread_btn = omui::icon_button(name::MAIL, "Mark unread (u)");
+        let images_btn = omui::icon_button(name::IMAGE, "Load remote images (L)");
         for b in [
             &reply_btn,
             &reply_all_btn,
@@ -479,16 +480,13 @@ impl Ui {
             .build();
         reader.append(&webview);
 
-        let placeholder = gtk::Label::builder()
-            .label("Nothing selected\n\nj / k to move · 1–4 to switch boxes\n? for all keys")
-            .justify(gtk::Justification::Center)
-            .wrap(true)
-            .margin_start(20)
-            .margin_end(20)
-            .build();
-        placeholder.add_css_class("placeholder");
+        let placeholder = omui::EmptyState::new(
+            Some(name::MAIL),
+            "Nothing selected",
+            Some("j / k to move · 1–4 to switch boxes\n? for all keys"),
+        );
         let reader_stack = gtk::Stack::new();
-        reader_stack.add_named(&placeholder, Some("empty"));
+        reader_stack.add_named(&placeholder.widget, Some("empty"));
         reader_stack.add_named(&reader, Some("thread"));
         reader_stack.set_visible_child_name("empty");
 
@@ -508,7 +506,7 @@ impl Ui {
             Ok(_) => root.append(&paned),
             Err(msg) => root.append(&setup_page(msg)),
         }
-        window.set_child(Some(&root));
+        let shell = omui::Shell::new(&window, &root);
 
         let poll_seconds = config
             .as_ref()
@@ -529,7 +527,6 @@ impl Ui {
             signing_in: RefCell::new(HashSet::new()),
             signed_out_notified: RefCell::new(HashSet::new()),
             composes: RefCell::new(Vec::new()),
-            palette: RefCell::new(palette),
             view: Cell::new(View::Inbox),
             before_search: Cell::new(View::Inbox),
             query: RefCell::new(String::new()),
@@ -547,7 +544,6 @@ impl Ui {
             exhausted: Cell::new(false),
             suppress: Cell::new(false),
             seen: RefCell::new(None),
-            toast_timer: Rc::new(RefCell::new(None)),
             nav,
             badges,
             wide_only,
@@ -558,9 +554,10 @@ impl Ui {
             scroller,
             empty,
             list_stack,
+            title_icon,
             title,
             subtitle,
-            toast,
+            shell,
             search,
             reader_stack,
             reader_subject,
@@ -732,16 +729,20 @@ impl Ui {
         ));
         ui.window.add_controller(keys);
 
-        theme::watch(clone!(
-            #[weak]
-            ui,
-            move |palette| {
-                theme::apply(&palette);
-                *ui.palette.borrow_mut() = palette;
-                ui.apply_webview_background();
-                ui.render_current();
-            }
-        ));
+        // The page in the web view is drawn from the theme's colours, which CSS does not reach.
+        if let Some(theme) = omui::Theme::get() {
+            theme.on_change(
+                &ui.window,
+                clone!(
+                    #[weak]
+                    ui,
+                    move |_| {
+                        ui.apply_webview_background();
+                        ui.render_current();
+                    }
+                ),
+            );
+        }
 
         if ui.mail.is_some() {
             ui.set_view(View::Inbox);
@@ -788,27 +789,20 @@ impl Ui {
     }
 
     fn apply_webview_background(&self) {
-        if let Ok(rgba) = gdk::RGBA::parse(self.palette.borrow().background.as_str()) {
+        if let Ok(rgba) = gdk::RGBA::parse(tokens().background) {
             self.webview.set_background_color(&rgba);
         }
     }
 
-    pub fn toast(&self, msg: &str) {
-        self.toast.set_label(msg);
-        self.toast.set_visible(true);
-        if let Some(id) = self.toast_timer.borrow_mut().take() {
-            id.remove();
-        }
-        let label = self.toast.clone();
-        let slot = self.toast_timer.clone();
-        let timer = glib::timeout_add_seconds_local_once(5, move || {
-            slot.borrow_mut().take();
-            label.set_visible(false);
-        });
-        *self.toast_timer.borrow_mut() = Some(timer);
-    }
-
     // ---- views & lists ---------------------------------------------------
+
+    fn set_title(&self, icon: Option<Icon>, title: &str) {
+        omui::clear(&self.title_icon);
+        if let Some(icon) = icon {
+            self.title_icon.append(&icon.widget());
+        }
+        self.title.set_label(title);
+    }
 
     fn select_nav(&self, view: View) {
         self.suppress.set(true);
@@ -830,7 +824,7 @@ impl Ui {
         if view != View::Search {
             self.search.set_text("");
         }
-        self.title.set_label(&format!("{}  {}", view.icon(), view.title()));
+        self.set_title(Some(view.icon()), view.title());
         self.subtitle.set_label("");
         self.clear_reader();
         self.load_list(false);
@@ -865,7 +859,7 @@ impl Ui {
         self.clear_reader();
         self.exhausted.set(true);
         self.list_loading.set(false);
-        self.title.set_label("Semantic search");
+        self.set_title(None, "Semantic search");
         self.subtitle.set_label("Searching locally loaded conversations…");
         let ui = Rc::downgrade(self);
         glib::spawn_future_local(async move {
@@ -889,7 +883,8 @@ impl Ui {
                 }
                 None => {
                     ui.start_search(query);
-                    ui.toast("Recall unavailable or warming up; using mail’s text search");
+                    ui.shell
+                        .toast("Recall unavailable or warming up; using mail’s text search");
                 }
             }
         });
@@ -1106,7 +1101,7 @@ impl Ui {
         self.warning.set_label(&text);
         self.warning.set_tooltip_text(Some(&details));
         self.warning.set_visible(!text.is_empty());
-        clear(&self.sign_in);
+        omui::clear(&self.sign_in);
         let expired: Vec<&AccountWarning> = warnings.iter().filter(|w| signed_out(w)).collect();
         for w in &expired {
             let name = w.account.clone();
@@ -1153,7 +1148,7 @@ impl Ui {
             return;
         }
         let label = account.label().to_string();
-        self.toast(&format!(
+        self.shell.toast(&format!(
             "Finish signing in to {label} (in the browser or sign-in window)"
         ));
         let name = name.to_string();
@@ -1167,10 +1162,10 @@ impl Ui {
                     match result {
                         Ok(()) => {
                             ui.signed_out_notified.borrow_mut().remove(&name);
-                            ui.toast(&format!("Signed in to {label}"));
+                            ui.shell.toast(&format!("Signed in to {label}"));
                             ui.load_identities();
                         }
-                        Err(e) => ui.toast(&e),
+                        Err(e) => ui.shell.toast(&e),
                     }
                     ui.load_list(true);
                     ui.check_new();
@@ -1273,7 +1268,7 @@ impl Ui {
                             }
                             ui.update_subtitle();
                         }
-                        Err(e) => ui.toast(&e),
+                        Err(e) => ui.shell.toast(&e),
                     }
                 }
             ),
@@ -1441,7 +1436,7 @@ impl Ui {
                                 ui.set_unread(&id, false);
                             }
                         }
-                        Err(e) => ui.toast(&format!("Couldn't open conversation: {e}")),
+                        Err(e) => ui.shell.toast(&format!("Couldn't open conversation: {e}")),
                     }
                 }
             ),
@@ -1472,7 +1467,7 @@ impl Ui {
             .borrow()
             .as_ref()
             .is_some_and(|(_, allowed)| detail.messages.iter().all(|m| allowed.contains(&m.id)));
-        let html = html::thread(detail, &self.palette.borrow(), images);
+        let html = html::thread(detail, &tokens(), images);
         self.webview.load_html(&html, Some("about:blank"));
         self.reader_stack.set_visible_child_name("thread");
     }
@@ -1536,7 +1531,7 @@ impl Ui {
             return;
         };
         let id = id.to_string();
-        self.toast(&format!("Downloading {filename}…"));
+        self.shell.toast(&format!("Downloading {filename}…"));
         util::run(
             move || {
                 let bytes = mail.provider(&id)?.download_attachment(&id)?.bytes;
@@ -1551,10 +1546,10 @@ impl Ui {
                 self,
                 move |result: Result<std::path::PathBuf, String>| match result {
                     Ok(path) => {
-                        ui.toast(&format!("Saved {}", path.display()));
+                        ui.shell.toast(&format!("Saved {}", path.display()));
                         util::open_uri(&gio::File::for_path(&path).uri());
                     }
-                    Err(e) => ui.toast(&format!("Download failed: {e}")),
+                    Err(e) => ui.shell.toast(&format!("Download failed: {e}")),
                 }
             ),
         );
@@ -1633,11 +1628,12 @@ impl Ui {
             return;
         }
         let ui = Rc::downgrade(self);
-        confirm(
+        omui::confirm(
             &self.window,
             "Delete this conversation?",
             "It's deleted for good, with its attachments.",
-            ["Cancel", "Delete"],
+            "Delete",
+            omui::Appearance::Destructive,
             move || {
                 if let Some(ui) = ui.upgrade() {
                     ui.finish_delete(id);
@@ -1666,7 +1662,7 @@ impl Ui {
             self.clear_reader();
         }
         self.forget_account_rows();
-        self.toast(&if permanent {
+        self.shell.toast(&if permanent {
             "Deleted".to_string()
         } else {
             format!("Moved to {label}'s Trash")
@@ -1678,7 +1674,7 @@ impl Ui {
                 self,
                 move |result| {
                     if let Err(e) = result {
-                        ui.toast(&format!("Couldn't delete conversation: {e}"));
+                        ui.shell.toast(&format!("Couldn't delete conversation: {e}"));
                         ui.load_list(true);
                     }
                     ui.refresh_counts();
@@ -1740,7 +1736,7 @@ impl Ui {
             self.render_current();
         }
         self.forget_account_rows();
-        self.toast(match (folder, new_folder) {
+        self.shell.toast(match (folder, new_folder) {
             (_, "paper_trail") => "Moved to Paper Trail",
             ("archive", _) => "Archived",
             _ => "Moved to Inbox",
@@ -1752,7 +1748,7 @@ impl Ui {
                 self,
                 move |result| {
                     if let Err(e) = result {
-                        ui.toast(&format!("Couldn't move conversation: {e}"));
+                        ui.shell.toast(&format!("Couldn't move conversation: {e}"));
                         ui.load_list(true);
                     }
                     ui.refresh_counts();
@@ -1807,7 +1803,7 @@ impl Ui {
                 self,
                 move |result| {
                     if let Err(e) = result {
-                        ui.toast(&format!("Couldn't update: {e}"));
+                        ui.shell.toast(&format!("Couldn't update: {e}"));
                     }
                     ui.refresh_counts();
                 }
@@ -1831,7 +1827,7 @@ impl Ui {
         });
         if let Some((id, unread)) = target {
             self.set_unread(&id, !unread);
-            self.toast(if unread { "Marked read" } else { "Marked unread" });
+            self.shell.toast(if unread { "Marked read" } else { "Marked unread" });
         }
     }
 
@@ -1860,7 +1856,7 @@ impl Ui {
         self.account_cache.borrow_mut().remove(&View::Screener);
         self.clear_reader();
         self.remove_row(idx);
-        self.toast(&format!(
+        self.shell.toast(&format!(
             "{} {}",
             if status == "approved" { "Let in" } else { "Blocked" },
             sender.display()
@@ -1874,7 +1870,7 @@ impl Ui {
                 move |result: Result<(i64, Vec<AccountWarning>), String>| {
                     match result {
                         Err(e) => {
-                            ui.toast(&format!("Couldn't screen sender: {e}"));
+                            ui.shell.toast(&format!("Couldn't screen sender: {e}"));
                             ui.load_list(true);
                         }
                         Ok((_, warnings)) if !warnings.is_empty() => ui.show_warnings(&warnings),
@@ -2242,7 +2238,7 @@ impl Ui {
             'R' => {
                 self.load_list(false);
                 self.refresh_counts();
-                self.toast("Refreshed");
+                self.shell.toast("Refreshed");
             }
             'L' => self.load_images(),
             'y' => self.decide_selected("approved"),
@@ -2276,14 +2272,19 @@ fn attachment_file_name(filename: &str) -> String {
     }
 }
 
+/// The theme's colours now, for what is drawn outside CSS.
+fn tokens() -> omui::Tokens {
+    omui::Theme::get().map_or_else(omui::Tokens::fallback, |theme| theme.tokens())
+}
+
 fn setup_page(msg: &str) -> gtk::Widget {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 12);
     b.set_valign(gtk::Align::Center);
     b.set_halign(gtk::Align::Center);
     b.set_hexpand(true);
     b.add_css_class("setup");
-    let t = gtk::Label::new(Some("Almost there"));
-    t.add_css_class("setup-title");
+    let t = omui::label("Almost there", "title-2");
+    t.add_css_class("accent");
     b.append(&t);
     let l = gtk::Label::builder()
         .label(msg)

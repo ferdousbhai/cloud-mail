@@ -14,7 +14,7 @@ CONTRIBUTING.md.
 |---|---|
 | `crates/cloudmail-api` | library shared by CLI and app: worker `Client` (`client.rs`), config (`config.rs`), the `Provider` trait (`provider.rs`) and its HEY, Gmail and iCloud Mail implementations (`hey.rs`, `gmail.rs`, `icloud.rs`, `session.rs`), merging and screening across providers (`unified.rs`), the Screener's lists kept in Gmail filters and iCloud rules (`screening.rs`), linking (`accounts.rs`), Secret Service (`keyring.rs`) |
 | `crates/cloudmail` | the CLI: clap definitions (`cli.rs`), mail commands (`mail.rs`), `setup` on Cloudflare (`setup.rs`), mailboxes, settings, `user` and `connect` (`admin.rs`), JSON envelope and exit codes (`output.rs`), `agent-guide`, `commands` and the built-in skill (`docs.rs`). Tests in `tests/cli.rs` with fakes (`tests/fake-hey`, `tests/fake-gws`, `tests/support`) |
-| `crates/cloudmail-gtk` | GTK 4 + WebKitGTK 6.0 app (`src/ui/`; the Accounts window in `accounts.rs`, the admin's People window in `people.rs`); needs Rust 1.95 |
+| `crates/cloudmail-gtk` | GTK 4 + WebKitGTK 6.0 app (`src/ui/`; the Accounts window in `accounts.rs`, the admin's People window in `people.rs`); needs Rust 1.95. Its look, icons, toasts and dialogs are [omui](https://github.com/ferdousbhai/omui)'s, a git dependency pinned by revision; `src/style.css` holds only what is Cloudmail's own, in omui's `@om_*` colours |
 | `worker/` | the Worker (TypeScript, `cf` CLI): `src/api.ts` (bearer-token JSON API under `/api/*`, plus `/health`), `src/ingest.ts` (incoming email), `src/store.ts`, `src/mailboxes.ts`, `src/users.ts` (tokens, invites; the `API_TOKEN` secret is the admin, user `owner`). D1 schema in `migrations/`; tests in `test/` (bun) |
 | `skills/cloudmail/SKILL.md` | the agent skill; compiled into the CLI (`include_str!` in `docs.rs`) and printed by `cloudmail skill`; `skill install|remove` and the startup refresh live in `src/agent_skill.rs`, shared verbatim with our other product CLIs |
 | `bin/` | `check` (every check), release and package scripts |
@@ -61,6 +61,9 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
 - Tests never touch real accounts or the session bus: `CLOUDMAIL_HEY_COMMAND` /
   `CLOUDMAIL_GWS_COMMAND` point at the fakes, and tests needing D-Bus start a private
   `dbus-daemon` (the `dbus` package).
+- Never run the app on your own desktop to look at a change: `crates/cloudmail-gtk/dev/preview.sh <png> [theme-dir]`
+  runs a debug build in a nested Hyprland with a private home and session bus against `dev/fake-worker`'s made-up
+  mail, and `CLOUDMAIL_SCRIPT` (`src/ui/devscript.rs`) drives it.
 - `worker/install.json` (written by `cloudmail setup`) holds a user's names and IDs and isn't
   committed; `worker/cloudflare.config.ts` reads it.
 - Inbound mail that can't be parsed or stored is never bounced; it's kept in R2 under `failed/`.

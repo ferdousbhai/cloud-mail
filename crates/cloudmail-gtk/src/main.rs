@@ -1,12 +1,11 @@
 mod recall_client;
-mod theme;
 mod ui;
 mod util;
 
 use cloudmail_api as api;
 use cloudmail_api::config;
 
-use gtk::{gio, glib, prelude::*};
+use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::OnceCell;
 use std::rc::Rc;
 
@@ -15,10 +14,19 @@ pub const APP_ID: &str = "com.ferdousbhai.Cloudmail";
 pub static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() -> glib::ExitCode {
+    // omui's look is its own whatever GTK theme the desktop names, and GTK_THEME would load one under it. This is
+    // what `omui::application` does first; the app builds its own application because it also opens mailto: links.
+    // SAFETY: nothing else is running yet that could be reading the environment.
+    unsafe { std::env::remove_var("GTK_THEME") };
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
+    app.connect_startup(|_| {
+        if let Some(display) = gdk::Display::default() {
+            omui::Theme::install(&display, include_str!("style.css"));
+        }
+    });
 
     let main_ui: Rc<OnceCell<Rc<ui::Ui>>> = Rc::default();
     let ensure = move |app: &gtk::Application| {

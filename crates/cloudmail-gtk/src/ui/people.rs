@@ -5,7 +5,7 @@
 use gtk::{gdk, glib, glib::clone, pango, prelude::*};
 use std::rc::Rc;
 
-use super::{Ui, clear, confirm, keep_until_closed, text, tool_window};
+use super::{Ui, keep_until_closed, tool_window};
 use crate::api::text::shell_arg;
 use crate::api::{Client, Invite, MailboxUpdate, User};
 use crate::util::{self, long_time, split_addresses};
@@ -22,7 +22,7 @@ struct People {
 pub fn show(ui: &Rc<Ui>) {
     let Some(client) = ui.client.clone() else { return };
     let (window, root) = tool_window(ui, "People", "people", "People on your worker", 620);
-    root.append(&text(
+    root.append(&omui::label(
         "Each sees only the mail of their own addresses, and needs no Cloudflare account.",
         "column-sub",
     ));
@@ -30,7 +30,7 @@ pub fn show(ui: &Rc<Ui>) {
     let list = gtk::Box::new(gtk::Orientation::Vertical, 14);
     list.set_margin_start(14);
     list.set_margin_end(14);
-    list.append(&text("Loading…", "column-sub"));
+    list.append(&omui::label("Loading…", "column-sub"));
     let scroller = gtk::ScrolledWindow::builder()
         .child(&list)
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -40,7 +40,7 @@ pub fn show(ui: &Rc<Ui>) {
         .build();
     root.append(&scroller);
 
-    root.append(&text("Invite someone", "column-title"));
+    root.append(&omui::label("Invite someone", "column-title"));
     let form = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     form.set_margin_start(14);
     form.set_margin_end(14);
@@ -53,12 +53,12 @@ pub fn show(ui: &Rc<Ui>) {
         .hexpand(true)
         .build();
     let invite_btn = gtk::Button::with_label("Invite");
-    invite_btn.add_css_class("suggested");
+    invite_btn.add_css_class("suggested-action");
     form.append(&name);
     form.append(&addresses);
     form.append(&invite_btn);
     root.append(&form);
-    root.append(&text(
+    root.append(&omui::label(
         "Their addresses' Email Routing must point at your worker: `cloudmail mailbox add <address> --route`.",
         "column-sub",
     ));
@@ -68,7 +68,7 @@ pub fn show(ui: &Rc<Ui>) {
     invite_box.set_margin_start(14);
     invite_box.set_margin_end(14);
     root.append(&invite_box);
-    let status = text("", "column-sub");
+    let status = omui::label("", "column-sub");
     status.set_selectable(true);
     root.append(&status);
 
@@ -141,11 +141,11 @@ fn refresh(p: &Rc<People>) {
                     Ok(users) => users,
                     Err(e) => return say(&p, &e),
                 };
-                clear(&p.list);
+                omui::clear(&p.list);
                 let others: Vec<User> = users.into_iter().filter(|u| !u.is_admin()).collect();
                 if others.is_empty() {
                     p.list
-                        .append(&text("Only you so far: invite someone below.", "column-sub"));
+                        .append(&omui::label("Only you so far: invite someone below.", "column-sub"));
                 }
                 for u in others {
                     p.list.append(&row(&p, u));
@@ -200,7 +200,7 @@ fn row(p: &Rc<People>, u: User) -> gtk::Box {
         &u.name,
         |p, name| revoke(p, name, true),
     );
-    remove.add_css_class("error");
+    remove.add_css_class("destructive-action");
     top.append(&remove);
     row.append(&top);
 
@@ -209,7 +209,7 @@ fn row(p: &Rc<People>, u: User) -> gtk::Box {
     } else {
         u.mailboxes.join(", ")
     };
-    let detail = text(&boxes, "column-sub");
+    let detail = omui::label(&boxes, "column-sub");
     detail.set_selectable(true);
     row.append(&detail);
 
@@ -334,8 +334,8 @@ fn invite(p: &Rc<People>, name: String, mailboxes: Vec<String>) {
 }
 
 fn show_invite(p: &Rc<People>, name: &str, invite: &Invite) {
-    clear(&p.invite);
-    p.invite.append(&text(
+    omui::clear(&p.invite);
+    p.invite.append(&omui::label(
         &format!(
             "{name}'s link works once, until {}. Send it privately (anyone who uses it first reads their mail). On their computer, with Cloudmail installed:",
             long_time(invite.expires_at)
@@ -343,7 +343,7 @@ fn show_invite(p: &Rc<People>, name: &str, invite: &Invite) {
         "column-sub",
     ));
     let command = format!("cloudmail connect {}", shell_arg(&invite.url));
-    let shown = text(&command, "");
+    let shown = omui::label(&command, "");
     shown.set_wrap_mode(pango::WrapMode::Char);
     shown.set_selectable(true);
     p.invite.append(&shown);
@@ -377,11 +377,12 @@ fn revoke(p: &Rc<People>, name: String, purge: bool) {
             "Sign out",
         )
     };
-    confirm(
+    omui::confirm(
         &p.window,
         &message,
         detail,
-        ["Cancel", action],
+        action,
+        omui::Appearance::Destructive,
         clone!(
             #[weak]
             p,
