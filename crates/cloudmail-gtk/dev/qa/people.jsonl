@@ -13,10 +13,10 @@
 {"do":"wait","role":"label","name":"cloudmail connect https://mail.example.org/invite/c0ffee","visible":true}
 {"do":"wait","role":"button","name":"Copy link","visible":true}
 
-# Signing someone out asks first, over the People window; Escape keeps them, Sign out does it.
+# Signing someone out asks first, in a window over the People window; Cancel keeps them, Sign out does it.
 {"do":"click","role":"button","name":"Sign out"}
 {"do":"wait","dialog":"Sign sam out everywhere?"}
-{"do":"key","keys":"Escape"}
+{"do":"click","role":"button","name":"Cancel","in":{"role":"dialog","name":"Sign sam out everywhere?"}}
 {"do":"wait","dialog":null}
 {"do":"click","role":"button","name":"Sign out"}
 {"do":"wait","dialog":"Sign sam out everywhere?"}

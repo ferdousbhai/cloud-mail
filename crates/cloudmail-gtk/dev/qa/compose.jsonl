@@ -1,7 +1,9 @@
 # Writing mail on dev/fake-worker's stand-in data. QA's shots are of the main window; dev/preview.sh pictures the
 # compose window itself.
 
-# A new message: the To field has the keyboard; Tab walks to the subject and the body; Ctrl+Enter sends it.
+# A new message: the To field has the keyboard, and Ctrl+Enter asks for a recipient; Tab walks to the subject and the
+# body; Send sends it. (A key that closes its window is not pressed: omui 0.5.1 may miss its release, which goes
+# nowhere once the window has gone.)
 {"do":"click","role":"button","name":"New message (c)"}
 {"do":"wait","role":"text-box","name":"name@example.com, …","focused":true}
 {"do":"wait","role":"button","name":"Send","in":{"role":"window","name":"New message"},"sensitive":true}
@@ -13,7 +15,7 @@
 {"do":"type","text":"Lake photos"}
 {"do":"key","keys":"Tab"}
 {"do":"type","text":"All forty, in one folder."}
-{"do":"key","keys":"<Control>Return"}
+{"do":"click","role":"button","name":"Send","in":{"role":"window","name":"New message"}}
 {"do":"wait","role":"window","name":"New message","visible":false}
 {"do":"wait","toasts":["Sent"]}
 
@@ -32,11 +34,11 @@
 {"do":"wait","dialog":null}
 {"do":"wait","role":"window","name":"New message","visible":false}
 
-# A reply is addressed to the sender; untouched, Escape closes it without asking.
-{"do":"key","keys":"j"}
+# A reply is addressed to the sender; untouched, it closes without asking.
+{"do":"select","role":"list-item","name":"Trail map for Saturday"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
 {"do":"click","role":"button","name":"Reply (r)"}
 {"do":"wait","role":"text-box","name":"name@example.com, …","text":"Sam Okafor <sam@example.com>"}
-{"do":"key","keys":"Escape"}
+{"do":"click","role":"button","name":"Close","in":{"role":"window","name":"Reply"}}
 {"do":"wait","role":"window","name":"Reply","visible":false}
 {"do":"quit"}
