@@ -2,7 +2,7 @@
    Omarchy theme. */
 
 /* Nerd Font glyphs, for the icons omui does not bundle yet (ui/mod.rs `Icon`): drawn like the icons beside them. */
-.glyph { min-width: 16px; }
+label.glyph { min-width: 16px; }
 button.glyph { font-size: 1.15em; }
 .sidebar-row .glyph { color: @om_dim_text; }
 .sidebar-row:selected .glyph, .sidebar-footer .glyph { color: @om_accent; }

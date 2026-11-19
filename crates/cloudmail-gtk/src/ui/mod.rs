@@ -2185,6 +2185,11 @@ impl Ui {
 
     pub(super) fn on_key(self: &Rc<Self>, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
         use glib::Propagation::{Proceed, Stop};
+        // omui draws the delete question inside this window and holds the content back while it is up: every key
+        // is the dialog's then, as it was when the question was a window of its own.
+        if self.shell.overlay.child().is_some_and(|content| !content.can_target()) {
+            return Proceed;
+        }
         let typing = gtk::prelude::GtkWindowExt::focus(&self.window)
             .is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
         if key == gdk::Key::Escape {

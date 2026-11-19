@@ -13,6 +13,9 @@ set -Eeuo pipefail
 #
 #   CLOUDMAIL_SCRIPT           the debug build's script (src/ui/devscript.rs); the picture is taken once it has run.
 #                              Its own `shot:` steps draw one window each, without what WebKit paints.
+#   CLOUDMAIL_PREVIEW_KEYS     key names (`wtype -k`: e, Return, Escape) pressed for real once the script has run, 1.5 s
+#                              apart, before the picture: what a dialog does with keys is seen only this way, since
+#                              the script's keys go straight to the window's handler
 #   CLOUDMAIL_PREVIEW_BINARY   the app to run (default target/debug/cloudmail-gtk)
 #   CLOUDMAIL_PREVIEW_SIZE     the output's size (default 1400x900); under 1000 wide the sidebar is icons only
 #   CLOUDMAIL_PREVIEW_LOG      a file for what the app printed
@@ -185,6 +188,15 @@ shoot() {
   /usr/bin/grim -o cloudmail "$1"
   echo "preview: $1"
 }
+if [[ -n ${CLOUDMAIL_PREVIEW_KEYS:-} ]]; then
+  command -v wtype >/dev/null || { echo "preview: wtype is required for CLOUDMAIL_PREVIEW_KEYS" >&2; exit 1; }
+  sleep "$settle"
+  for key in $CLOUDMAIL_PREVIEW_KEYS; do
+    wtype -k "$key"
+    sleep 1.5
+  done
+  settle=1
+fi
 shoot "$screenshot" "$settle"
 if [[ -n $next_theme ]]; then
   stage_theme "$next_theme" next
