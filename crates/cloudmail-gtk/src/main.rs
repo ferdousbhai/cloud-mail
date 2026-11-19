@@ -22,6 +22,10 @@ fn main() -> glib::ExitCode {
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
+    // With OMUI_QA=1, omui drives the window the first activate or open shows (dev/qa.sh); before GTK starts, so what
+    // it logs from the start is counted.
+    #[cfg(feature = "qa")]
+    omui::qa::attach(&app);
     app.connect_startup(|_| {
         if let Some(display) = gdk::Display::default() {
             omui::Theme::install(&display, include_str!("style.css"));

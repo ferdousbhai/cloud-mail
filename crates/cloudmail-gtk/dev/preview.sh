@@ -11,8 +11,7 @@ set -Eeuo pipefail
 # the scratch theme directory is then replaced by `mv` while the app runs, as Omarchy does on a switch, and a second
 # picture is written beside the first as `<screenshot>-switched.png`.
 #
-#   CLOUDMAIL_SCRIPT           the debug build's script (src/ui/devscript.rs); the picture is taken once it has run.
-#                              Its own `shot:` steps draw one window each, without what WebKit paints.
+#   CLOUDMAIL_SCRIPT           the debug build's script (src/ui/devscript.rs); the picture is taken once it has run
 #   CLOUDMAIL_PREVIEW_KEYS     key names (`wtype -k`: e, Return, Escape) pressed for real once the script has run, 1.5 s
 #                              apart, before the picture: what a dialog does with keys is seen only this way, since
 #                              the script's keys go straight to the window's handler

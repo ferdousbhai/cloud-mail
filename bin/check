@@ -3,7 +3,7 @@
 # set NO_CHECK=1 to push without it. GitHub only builds the release packages
 # (.github/workflows/packages.yml, on a version tag).
 #
-#   bin/check          # Rust (format, clippy, tests), the worker (tests, types), packaging
+#   bin/check          # Rust (format, clippy, tests), the app's QA, the worker (tests, types), packaging
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -28,6 +28,15 @@ step "clippy"
 cargo clippy --locked "${crates[@]}" --all-targets -- -D warnings
 step "cargo test"
 cargo test --locked "${crates[@]}"
+
+# The app's flows on stand-in mail, driven by omui's scripted QA on a hidden broadway display (dev/qa.sh); its shots
+# of the main window land in target/qa/.
+if [[ " ${crates[*]} " == *" cloudmail-gtk "* ]]; then
+  step "app QA (crates/cloudmail-gtk/dev/qa)"
+  cargo build --locked -p cloudmail-gtk --features qa
+  mkdir -p target/qa
+  crates/cloudmail-gtk/dev/qa.sh target/debug/cloudmail-gtk crates/cloudmail-gtk/dev/qa/*.jsonl
+fi
 
 step "worker"
 (cd worker && { [[ -d node_modules ]] || bun install --frozen-lockfile; } && bun test && bun run typecheck)

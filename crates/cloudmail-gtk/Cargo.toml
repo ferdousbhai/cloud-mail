@@ -15,3 +15,7 @@ gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
 omui = { git = "https://github.com/ferdousbhai/omui", rev = "84fda37d4df6c0f0f47e8296c4a1357930fceab1" } # v0.5.1
 webkit6 = "0.6"
 ammonia = "4.2.0"
+
+[features]
+# Scripted QA (dev/qa.sh, bin/check): omui drives the app through JSON lines on stdin. Release builds leave it off.
+qa = ["omui/qa"]

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""A stand-in for the Cloudmail worker's API with made-up mail, for dev/preview.sh.
+"""A stand-in for the Cloudmail worker's API with made-up mail, for dev/preview.sh and dev/qa.sh.
 
     fake-worker <port-file>
 
 Listens on a free port of 127.0.0.1, writes the port to <port-file>, and answers what the app reads: the admin's
-token, four boxes of threads, a waiting sender, one more user. Writes (move, read, send) are accepted and forgotten.
+token, four boxes of threads, a waiting sender, one more user. Writes (move, read, send, invite) are accepted and
+forgotten.
 """
 
 import json
@@ -103,7 +104,12 @@ def answer(path, query):
     if path == "/api/threads":
         folder = query.get("folder", ["inbox"])[0]
         # One page is all there is: a request for older mail gets none.
-        return {"threads": [] if "before" in query else [t for t in THREADS if t["folder"] == folder]}
+        if "before" in query:
+            return {"threads": []}
+        # A search looks in every box, as the worker's does, here by words in the subject or the snippet.
+        if words := query.get("q", [""])[0].lower().split():
+            return {"threads": [t for t in THREADS if all(w in f"{t['subject']} {t['snippet']}".lower() for w in words)]}
+        return {"threads": [t for t in THREADS if t["folder"] == folder]}
     if path.startswith("/api/threads/"):
         found = [t for t in THREADS if t["id"] == path.rsplit("/", 1)[1]]
         return detail(found[0]) if found else None
@@ -135,7 +141,15 @@ class Handler(BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.reply({})
 
-    do_POST = do_PUT = do_PATCH = do_DELETE = write
+    do_PUT = do_PATCH = do_DELETE = write
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/users":
+            return self.write()
+        # An invite: the new user, and a link for them that is never kept.
+        asked = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        user = {"name": asked.get("name", ""), "role": "user", "mailboxes": asked.get("mailboxes", []), "connected": False, "created_at": NOW}
+        self.reply({"user": user, "invite": {"code": "c0ffee", "url": "https://mail.example.org/invite/c0ffee", "expires_at": NOW + 48 * HOUR}})
 
     def log_message(self, *_):
         pass

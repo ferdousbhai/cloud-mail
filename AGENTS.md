@@ -23,7 +23,7 @@ CONTRIBUTING.md.
 ## Commands
 
 ```sh
-bin/check                                   # everything below, plus packaging tests
+bin/check                                   # everything below, plus the app's QA and packaging tests
 cargo fmt --all -- --check
 cargo clippy --locked -p cloudmail-api -p cloudmail --all-targets -- -D warnings   # add -p cloudmail-gtk with gtk4 + webkitgtk-6.0
 cargo test --locked -p cloudmail-api -p cloudmail
@@ -63,7 +63,10 @@ Checks run locally, not on GitHub: `git config core.hooksPath .githooks` makes e
   `dbus-daemon` (the `dbus` package).
 - Never run the app on your own desktop to look at a change: `crates/cloudmail-gtk/dev/preview.sh <png> [theme-dir]`
   runs a debug build in a nested Hyprland with a private home and session bus against `dev/fake-worker`'s made-up
-  mail, and `CLOUDMAIL_SCRIPT` (`src/ui/devscript.rs`) drives it.
+  mail, and `CLOUDMAIL_SCRIPT` (`src/ui/devscript.rs`) puts it in a scene: for themes and the compositor's picture.
+- The app's flows are checked by omui's scripted QA: `dev/qa.sh <app built with --features qa> dev/qa/*.jsonl` runs
+  them against the same made-up mail on a hidden broadway display (bin/check does), and any GLib warning fails it.
+  Release builds and the PKGBUILD's `check()` leave the feature off.
 - `worker/install.json` (written by `cloudmail setup`) holds a user's names and IDs and isn't
   committed; `worker/cloudflare.config.ts` reads it.
 - Inbound mail that can't be parsed or stored is never bounced; it's kept in R2 under `failed/`.

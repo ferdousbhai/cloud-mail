@@ -1,0 +1,39 @@
+# What the keys do to the Screener's senders and the open conversation, on dev/fake-worker's stand-in data.
+
+# The Screener: y lets the waiting sender in.
+{"do":"key","keys":"1"}
+{"do":"wait","role":"list-item","name":"Brightline Offers","visible":true}
+{"do":"key","keys":"j"}
+{"do":"wait","role":"list-item","name":"Brightline Offers","selected":true}
+{"do":"key","keys":"y"}
+{"do":"wait","toasts":["Let in Brightline Offers"]}
+{"do":"wait","role":"list-item","name":"Brightline Offers","visible":false}
+
+# e archives the open conversation: it leaves the Inbox, with a toast, and the next one opens.
+{"do":"key","keys":"2"}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true}
+{"do":"key","keys":"j"}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
+{"do":"key","keys":"e"}
+{"do":"wait","toasts":["Archived"]}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":false}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
+
+# # asks before deleting for good: the dialog has the window's keys, so j does not move under it; Escape keeps the
+# conversation, and Delete takes it.
+{"do":"type","text":"#"}
+{"do":"wait","dialog":"Delete this conversation?"}
+{"do":"wait","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"},"visible":true,"sensitive":true}
+{"do":"shot","path":"target/qa/delete.png"}
+{"do":"key","keys":"j"}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","visible":true}
+{"do":"type","text":"#"}
+{"do":"wait","dialog":"Delete this conversation?"}
+{"do":"click","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"}}
+{"do":"wait","dialog":null}
+{"do":"wait","toasts":["Deleted"]}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","visible":false}
+{"do":"quit"}
