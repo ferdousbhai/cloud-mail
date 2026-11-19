@@ -2185,9 +2185,9 @@ impl Ui {
 
     pub(super) fn on_key(self: &Rc<Self>, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
         use glib::Propagation::{Proceed, Stop};
-        // omui draws the delete question inside this window and holds the content back while it is up: every key
-        // is the dialog's then, as it was when the question was a window of its own.
-        if self.shell.overlay.child().is_some_and(|content| !content.can_target()) {
+        // omui draws the delete question inside this window: every key is the dialog's while it is up, as it was when
+        // the question was a window of its own. omui holds back the window's shortcut controllers, not this one.
+        if self.shell.dialog_open() {
             return Proceed;
         }
         let typing = gtk::prelude::GtkWindowExt::focus(&self.window)
