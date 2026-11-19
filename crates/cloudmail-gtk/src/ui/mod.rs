@@ -295,7 +295,7 @@ impl Ui {
         brand.append(&gtk::Label::new(Some("cloudmail")));
         sidebar.append(&brand);
         let compose_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        compose_box.append(&omui::icon(name::EDIT));
+        compose_box.append(&omui::icon(name::COMPOSE));
         let compose_label = gtk::Label::builder().label("Compose").xalign(0.0).build();
         compose_box.append(&compose_label);
         let compose_btn = gtk::Button::builder()
