@@ -374,7 +374,7 @@ impl Ui {
         sidebar.append(&spacer);
         // Shown once the worker says you're its admin.
         let people_btn = sidebar_button(
-            Icon::Glyph("\u{f0c0}"),
+            Icon::Om(name::USERS),
             "People",
             "Who else reads their mail on your worker; invite someone",
             &mut wide_only,
