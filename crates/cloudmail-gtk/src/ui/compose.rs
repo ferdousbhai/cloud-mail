@@ -68,6 +68,8 @@ pub fn open(ui: &Rc<Ui>, draft: Draft) {
         let label = gtk::Label::builder().label(name).xalign(1.0).build();
         label.add_css_class("dim-label");
         grid.attach(&label, 0, row, 1, 1);
+        // The caption is the field's name to a screen reader, and to dev/qa's scripts.
+        widget.update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
         widget.set_hexpand(true);
         grid.attach(widget, 1, row, 1, 1);
     };

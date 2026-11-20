@@ -5,7 +5,7 @@
 # body; Send sends it. (A key that closes its window is not pressed: omui 0.5.1 may miss its release, which goes
 # nowhere once the window has gone.)
 {"do":"click","role":"button","name":"New message (c)"}
-{"do":"wait","role":"text-box","name":"name@example.com, …","focused":true}
+{"do":"wait","role":"text-box","name":"To","focused":true}
 {"do":"wait","role":"button","name":"Send","in":{"role":"window","name":"New message"},"sensitive":true}
 {"do":"key","keys":"<Control>Return"}
 {"do":"wait","role":"label","name":"Add at least one recipient.","visible":true}
@@ -21,13 +21,13 @@
 
 # An edited draft asks before its window closes: Keep editing keeps it, Discard closes it.
 {"do":"click","role":"button","name":"New message (c)"}
-{"do":"wait","role":"text-box","name":"name@example.com, …","focused":true}
+{"do":"wait","role":"text-box","name":"To","focused":true}
 {"do":"type","text":"ines@example.net"}
 {"do":"click","role":"button","name":"Close","in":{"role":"window","name":"New message"}}
 {"do":"wait","dialog":"Discard this draft?"}
 {"do":"click","role":"button","name":"Keep editing"}
 {"do":"wait","dialog":null}
-{"do":"wait","role":"text-box","name":"name@example.com, …","text":"ines@example.net"}
+{"do":"wait","role":"text-box","name":"To","text":"ines@example.net"}
 {"do":"click","role":"button","name":"Close","in":{"role":"window","name":"New message"}}
 {"do":"wait","dialog":"Discard this draft?"}
 {"do":"click","role":"button","name":"Discard"}
@@ -38,7 +38,7 @@
 {"do":"select","role":"list-item","name":"Trail map for Saturday"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
 {"do":"click","role":"button","name":"Reply (r)"}
-{"do":"wait","role":"text-box","name":"name@example.com, …","text":"Sam Okafor <sam@example.com>"}
+{"do":"wait","role":"text-box","name":"To","text":"Sam Okafor <sam@example.com>"}
 {"do":"click","role":"button","name":"Close","in":{"role":"window","name":"Reply"}}
 {"do":"wait","role":"window","name":"Reply","visible":false}
 {"do":"quit"}
