@@ -98,6 +98,17 @@ struct Parts {
 
 /// One source's threads, and for the Screener its waiting senders.
 type Part = (Vec<ThreadSummary>, Vec<PendingSender>);
+
+impl Parts {
+    /// In both sources: the list is built again from them whenever the later one answers.
+    fn set_unread(&mut self, id: &str, unread: bool) {
+        for (threads, _) in self.worker.iter_mut().chain(self.accounts.iter_mut()) {
+            for t in threads.iter_mut().filter(|t| t.id == id) {
+                t.unread = unread;
+            }
+        }
+    }
+}
 /// The linked accounts' part of a list, with what went wrong on the way.
 type AccountPart = (Vec<ThreadSummary>, Vec<PendingSender>, Vec<AccountWarning>);
 /// New-mail check: Inbox threads, waiting senders, and the accounts' (Screener, unread) counts.
@@ -1791,11 +1802,7 @@ impl Ui {
                 t.unread = unread;
             }
         }
-        if let Some(a) = self.parts.borrow_mut().accounts.as_mut() {
-            for t in a.0.iter_mut().filter(|t| t.id == id) {
-                t.unread = unread;
-            }
-        }
+        self.parts.borrow_mut().set_unread(&id, unread);
         util::run(
             move || mail.provider(&id)?.set_unread(&id, unread),
             clone!(
@@ -2303,4 +2310,26 @@ fn setup_page(msg: &str) -> gtk::Widget {
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marking_unread_reaches_the_worker_s_part_and_the_accounts() {
+        let thread = |id: &str| ThreadSummary {
+            id: id.into(),
+            ..Default::default()
+        };
+        let mut parts = Parts {
+            worker: Some((vec![thread("t1"), thread("t2")], Vec::new())),
+            accounts: Some((vec![thread("hey:9")], Vec::new())),
+        };
+        parts.set_unread("t1", true);
+        parts.set_unread("hey:9", true);
+        let unread = |part: &Option<Part>| -> Vec<bool> { part.iter().flat_map(|p| &p.0).map(|t| t.unread).collect() };
+        assert_eq!(unread(&parts.worker), [true, false]);
+        assert_eq!(unread(&parts.accounts), [true]);
+    }
 }
