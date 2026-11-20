@@ -39,9 +39,10 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     sender.set_hexpand(true);
     top.append(&sender);
     if t.has_attachments {
-        // A glyph, though omui 0.5 bundles a paperclip: the same icon in two rows aborts GTK 4.24's broadway display
-        // (an `append_node_ops` assertion) as the list redraws, and the app's QA runs on broadway.
-        top.append(&label("\u{f0c6}", "time"));
+        let clip = omui::icon(omui::icons::name::ATTACH);
+        clip.set_pixel_size(12);
+        clip.add_css_class("time");
+        top.append(&clip);
     }
     if let Some(badge) = account_badge(t.account.as_deref()) {
         top.append(&badge);

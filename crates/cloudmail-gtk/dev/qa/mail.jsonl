@@ -1,9 +1,12 @@
 # The mail on dev/fake-worker's stand-in data: dev/qa.sh runs it (bin/check), from the repository, where the shots go.
 # A broadway display is 1024 by 768, so the window starts wide; WebKit's message view is not in the shots.
 
-# The Inbox's threads; j opens the first and marks it read, j and k move, and the reader's actions show.
+# The Inbox's threads, a paperclip on those with an attachment; j opens the first and marks it read, j and k move,
+# and the reader's actions show.
 {"do":"wait","role":"label","name":"5 conversations · 2 unread"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true,"selected":false}
+{"do":"wait","role":"presentation","in":{"role":"list-item","name":"Trail map for Saturday"},"visible":true}
+{"do":"wait","role":"presentation","in":{"role":"list-item","name":"Re: invoice 2291"},"visible":true}
 {"do":"key","keys":"j"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
 {"do":"wait","role":"label","name":"5 conversations · 1 unread"}
