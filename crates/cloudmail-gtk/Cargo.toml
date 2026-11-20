@@ -12,7 +12,7 @@ serde_json.workspace = true
 dirs.workspace = true
 urlencoding.workspace = true
 gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
-omui = { git = "https://github.com/ferdousbhai/omui", rev = "422c8602886614021104e250c3aef2577b98c2de" } # v0.5.2
+omui = { git = "https://github.com/ferdousbhai/omui", rev = "ad8058e157b028074bb4c492723cd0316b283968" } # v0.5.3
 webkit6 = "0.6"
 ammonia = "4.2.0"
 
