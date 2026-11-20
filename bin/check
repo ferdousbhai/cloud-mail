@@ -34,8 +34,7 @@ cargo test --locked "${crates[@]}"
 if [[ " ${crates[*]} " == *" cloudmail-gtk "* ]]; then
   step "app QA (crates/cloudmail-gtk/dev/qa)"
   cargo build --locked -p cloudmail-gtk --features qa
-  mkdir -p target/qa
-  crates/cloudmail-gtk/dev/qa.sh target/debug/cloudmail-gtk crates/cloudmail-gtk/dev/qa/*.jsonl
+  CLOUDMAIL_QA_SHOTS=target/qa crates/cloudmail-gtk/dev/qa.sh target/debug/cloudmail-gtk crates/cloudmail-gtk/dev/qa/*.jsonl
 fi
 
 step "worker"

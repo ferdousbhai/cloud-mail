@@ -8,7 +8,8 @@ set -Eeuo pipefail
 # warning or a critical. Each script gets a fresh app and worker, so one script's moves are not the next one's mail.
 #
 #   dev/qa.sh <app-binary> <script.jsonl>...
-#   OMUI_QA_TIMEOUT=120                    seconds before one script's run is stopped
+#   CLOUDMAIL_QA_SHOTS=<dir>   where a script's `shot` paths are written (default: a scratch directory, removed)
+#   OMUI_QA_TIMEOUT=120        seconds before one script's run is stopped
 (( $# >= 2 )) || { echo "usage: dev/qa.sh <app-binary> <script.jsonl>..." >&2; exit 2; }
 app=$(realpath -- "$1")
 shift
@@ -16,6 +17,7 @@ here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 command -v gtk4-broadwayd >/dev/null || { echo "qa: gtk4-broadwayd is required" >&2; exit 1; }
 
 root=""
+shots_root=""
 broadway_pid=""
 worker_pid=""
 app_pid=""
@@ -30,9 +32,16 @@ stop() {
   [[ -z $root ]] || rm -rf -- "$root"
   root=""
 }
-trap 'status=$?; stop; exit "$status"' EXIT
+trap 'status=$?; stop; [[ -z $shots_root ]] || rm -rf -- "$shots_root"; exit "$status"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [[ -n ${CLOUDMAIL_QA_SHOTS:-} ]]; then
+  mkdir -p "$CLOUDMAIL_QA_SHOTS"
+  shots=$(realpath -- "$CLOUDMAIL_QA_SHOTS")
+else
+  shots_root=$(mktemp -d /tmp/cloudmail-qa-shots.XXXXXX)
+  shots=$shots_root
+fi
 
 run() {
   local script=$1 index=$2
@@ -68,14 +77,17 @@ run() {
   # Broadway has no OpenGL, and WebKit's DMA-BUF renderer warns that it fell back without it, which would fail the run;
   # WebKit's other renderer draws the same message without asking for OpenGL.
   local status=0
-  env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u GTK_THEME -u CLOUDMAIL_SCRIPT \
-    HOME="$root/home" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
-    XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
-    CLOUDMAIL_API_URL="http://127.0.0.1:$(< "$root/port")" CLOUDMAIL_API_TOKEN=qa \
-    CLOUDMAIL_HEY_COMMAND=/usr/bin/false CLOUDMAIL_GWS_COMMAND=/usr/bin/false CLOUDMAIL_BROWSER=/usr/bin/true \
-    WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=broadway BROADWAY_DISPLAY=":$display" \
-    OMUI_QA=1 OMUI_QA_INPUT="127.0.0.1:$port" OMUI_QA_FD=3 \
-    timeout "${OMUI_QA_TIMEOUT:-120}" "$app" <"$script" 3>"$root/answers" &
+  (
+    cd "$shots"
+    exec env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u GTK_THEME -u CLOUDMAIL_SCRIPT \
+      HOME="$root/home" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+      XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
+      CLOUDMAIL_API_URL="http://127.0.0.1:$(< "$root/port")" CLOUDMAIL_API_TOKEN=qa \
+      CLOUDMAIL_HEY_COMMAND=/usr/bin/false CLOUDMAIL_GWS_COMMAND=/usr/bin/false CLOUDMAIL_BROWSER=/usr/bin/true \
+      WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=broadway BROADWAY_DISPLAY=":$display" \
+      OMUI_QA=1 OMUI_QA_INPUT="127.0.0.1:$port" OMUI_QA_FD=3 \
+      timeout "${OMUI_QA_TIMEOUT:-120}" "$app" <"$script" 3>"$root/answers"
+  ) &
   app_pid=$!
   wait "$app_pid" || status=$?
   app_pid=""

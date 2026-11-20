@@ -1,29 +1,47 @@
 # Writing mail on dev/fake-worker's stand-in data. QA's shots are of the main window; dev/preview.sh pictures the
 # compose window itself.
 
-# A new message: the To field has the keyboard, and Ctrl+Enter asks for a recipient; Tab walks to the subject and the
-# body; Send sends it. (A key that closes its window is not pressed: omui 0.5.1 may miss its release, which goes
-# nowhere once the window has gone.)
-{"do":"click","role":"button","name":"New message (c)"}
+# c opens a new message: the To field has the keyboard, and Ctrl+Enter asks for a recipient.
+{"do":"key","keys":"c"}
 {"do":"wait","role":"text-box","name":"To","focused":true}
 {"do":"wait","role":"button","name":"Send","in":{"role":"window","name":"New message"},"sensitive":true}
 {"do":"key","keys":"<Control>Return"}
 {"do":"wait","role":"label","name":"Add at least one recipient.","visible":true}
+
+# From is a drop-down of your addresses: with its menu open, Escape closes the menu and not the draft, and Down and
+# Enter choose the other address.
+{"do":"wait","role":"label","name":"Robin Vale <robin@example.org>","in":{"role":"combo-box","name":"From"},"visible":true}
+{"do":"click","role":"combo-box","name":"From"}
+{"do":"wait","focus":{"role":"list-item","name":"Robin Vale <robin@example.org>"}}
+{"do":"key","keys":"Escape"}
+{"do":"wait","focus":{"role":"combo-box","name":"From"}}
+{"do":"wait","role":"window","name":"New message","visible":true}
+{"do":"click","role":"combo-box","name":"From"}
+{"do":"key","keys":"Down"}
+{"do":"wait","focus":{"role":"list-item","name":"Robin Vale <billing@example.org>"}}
+{"do":"key","keys":"Return"}
+{"do":"wait","role":"label","name":"Robin Vale <billing@example.org>","in":{"role":"combo-box","name":"From"},"visible":true}
+
+# Tab walks from To to the subject and the body, and Ctrl+Enter sends.
+{"do":"focus","role":"text-box","name":"To"}
 {"do":"type","text":"sam@example.com"}
 {"do":"key","keys":"Tab"}
+{"do":"wait","role":"text-box","name":"Cc","focused":true}
 {"do":"key","keys":"Tab"}
+{"do":"wait","role":"text-box","name":"Subject","focused":true}
 {"do":"type","text":"Lake photos"}
 {"do":"key","keys":"Tab"}
 {"do":"type","text":"All forty, in one folder."}
-{"do":"click","role":"button","name":"Send","in":{"role":"window","name":"New message"}}
+{"do":"key","keys":"<Control>Return"}
 {"do":"wait","role":"window","name":"New message","visible":false}
 {"do":"wait","toasts":["Sent"]}
 
-# An edited draft asks before its window closes: Keep editing keeps it, Discard closes it.
+# An edited draft asks before its window closes, by Escape or the title bar's close: Keep editing keeps it, Discard
+# closes it. The button opens a message as c does.
 {"do":"click","role":"button","name":"New message (c)"}
 {"do":"wait","role":"text-box","name":"To","focused":true}
 {"do":"type","text":"ines@example.net"}
-{"do":"click","role":"button","name":"Close","in":{"role":"window","name":"New message"}}
+{"do":"key","keys":"Escape"}
 {"do":"wait","dialog":"Discard this draft?"}
 {"do":"click","role":"button","name":"Keep editing"}
 {"do":"wait","dialog":null}
@@ -34,11 +52,12 @@
 {"do":"wait","dialog":null}
 {"do":"wait","role":"window","name":"New message","visible":false}
 
-# A reply is addressed to the sender; untouched, it closes without asking.
-{"do":"select","role":"list-item","name":"Trail map for Saturday"}
+# r replies to the sender of the open conversation; untouched, Escape closes it without asking.
+{"do":"key","keys":"j"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
-{"do":"click","role":"button","name":"Reply (r)"}
+{"do":"wait","role":"button","name":"Reply (r)","visible":true}
+{"do":"key","keys":"r"}
 {"do":"wait","role":"text-box","name":"To","text":"Sam Okafor <sam@example.com>"}
-{"do":"click","role":"button","name":"Close","in":{"role":"window","name":"Reply"}}
+{"do":"key","keys":"Escape"}
 {"do":"wait","role":"window","name":"Reply","visible":false}
 {"do":"quit"}

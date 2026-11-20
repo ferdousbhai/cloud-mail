@@ -1,4 +1,4 @@
-# The mail on dev/fake-worker's stand-in data: dev/qa.sh runs it (bin/check), from the repository, where the shots go.
+# The mail on dev/fake-worker's stand-in data: dev/qa.sh runs it (bin/check keeps the shots in target/qa).
 # A broadway display is 1024 by 768, so the window starts wide; WebKit's message view is not in the shots.
 
 # The Inbox's threads, a paperclip on those with an attachment; j opens the first and marks it read, j and k move
@@ -11,7 +11,7 @@
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
 {"do":"wait","role":"label","name":"5 conversations · 1 unread"}
 {"do":"wait","role":"button","name":"Reply (r)","visible":true}
-{"do":"shot","path":"target/qa/inbox.png"}
+{"do":"shot","path":"inbox.png"}
 {"do":"key","keys":"j"}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
 {"do":"wait","role":"label","name":"5 conversations"}
@@ -30,12 +30,12 @@
 # The boxes by number, and by the sidebar.
 {"do":"key","keys":"3"}
 {"do":"wait","role":"list-item","name":"Boots","visible":true}
-{"do":"shot","path":"target/qa/archive.png"}
+{"do":"shot","path":"archive.png"}
 {"do":"key","keys":"4"}
 {"do":"wait","role":"list-item","name":"Lake photos","visible":true}
 {"do":"key","keys":"1"}
 {"do":"wait","role":"list-item","name":"Brightline Offers","visible":true}
-{"do":"shot","path":"target/qa/screener.png"}
+{"do":"shot","path":"screener.png"}
 {"do":"select","role":"list-item","name":"Inbox"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true}
 
@@ -46,19 +46,33 @@
 {"do":"key","keys":"Return"}
 {"do":"wait","role":"list-item","name":"Your ticket to Halden","visible":true}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","visible":false}
-{"do":"shot","path":"target/qa/search.png"}
+{"do":"shot","path":"search.png"}
 {"do":"key","keys":"Escape"}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","visible":true}
 
-# R refreshes. (`type`, not `key`: an accelerator's letter is lower case, and Shift+r is Reply's r here. The keys'
-# window `?` opens is not reached: its key's release goes to that window, which omui 0.5.1 is not yet watching.)
-{"do":"type","text":"R"}
+# R refreshes; r would reply.
+{"do":"key","keys":"R"}
 {"do":"wait","toasts":["Refreshed"]}
+
+# ? lists the keys in a window of its own, which Escape, ? and q close.
+{"do":"key","keys":"question"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"wait","role":"label","name":"Toggle unread","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
+{"do":"key","keys":"question"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"key","keys":"question"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
+{"do":"key","keys":"question"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"key","keys":"q"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
 
 # A narrow window: the sidebar is its icons.
 {"do":"resize","width":800,"height":700}
 {"do":"wait","size":[800,700]}
 {"do":"wait","role":"label","name":"Compose","visible":false}
 {"do":"wait","role":"button","name":"New message (c)","visible":true}
-{"do":"shot","path":"target/qa/narrow.png"}
+{"do":"shot","path":"narrow.png"}
 {"do":"quit"}

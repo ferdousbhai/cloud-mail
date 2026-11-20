@@ -21,16 +21,16 @@
 
 # # asks before deleting for good: the dialog has the window's keys, so j does not move under it; Escape keeps the
 # conversation, and Delete takes it.
-{"do":"type","text":"#"}
+{"do":"key","keys":"numbersign"}
 {"do":"wait","dialog":"Delete this conversation?"}
 {"do":"wait","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"},"visible":true,"sensitive":true}
-{"do":"shot","path":"target/qa/delete.png"}
+{"do":"shot","path":"delete.png"}
 {"do":"key","keys":"j"}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
 {"do":"key","keys":"Escape"}
 {"do":"wait","dialog":null}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","visible":true}
-{"do":"type","text":"#"}
+{"do":"key","keys":"numbersign"}
 {"do":"wait","dialog":"Delete this conversation?"}
 {"do":"click","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"}}
 {"do":"wait","dialog":null}
