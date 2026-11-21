@@ -45,6 +45,14 @@ login or Node.js. The link works once, within 7 days: `unauthorized` means it wa
 the user asks their admin for a new one. Already connected elsewhere: `--force` replaces it (confirm
 first). Adding addresses, routing and forwarding destinations are the admin's job. Then **Use**.
 
+Another machine of the same person (admin or invited): on one that's signed in, `cloudmail machine add
+--json` gives `data.invite.url`; `cloudmail connect '<that link>'` on the new machine. Each machine has
+its own token, so none is signed out and no token is copied. `cloudmail machine list` shows them;
+`cloudmail machine remove <id> --yes` signs one out (a lost laptop). The admin with no signed-in machine
+at hand runs `cloudmail setup` on the new one (Cloudflare login): it adds a token for that machine and
+leaves the others working. Never use `setup --force` for this: it rotates the worker's secret and signs
+the first machine out.
+
 ## Set up (admin only, once)
 
 Setup drives the Cloudflare CLI as `npx cf`; for other Cloudflare work, find commands with
@@ -84,7 +92,8 @@ Later: add an address with `cloudmail mailbox add sales@a.com --route`; forwardi
    `--yes` once approved). Optional copy to their old inbox while they switch:
    `cloudmail settings set forward-to sam@old.com --user sam` (the address must be verified in the account).
 3. They install Cloudmail and run **Connect**. `cloudmail user list` shows them `connected`.
-New link (lost machine, expired): `cloudmail user invite sam` again; it replaces their token once used.
+New link (expired, or they can't make their own with `cloudmail machine add`): `cloudmail user invite sam`
+again; the machines they already use stay signed in.
 `cloudmail user revoke sam --yes` signs them out (mail kept; `--purge` deletes it). The admin can read
 every user's mail in D1/R2; users only see their own.
 

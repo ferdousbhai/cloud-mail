@@ -161,6 +161,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::User(u) => admin::user(ctx, u),
         Command::Connect(a) => admin::connect(&a),
         Command::Open(a) => app::open(&a),
+        Command::Machine(m) => admin::machine(ctx, m),
         Command::Config(c) => admin::config_cmd(c),
         Command::Account(a) => accounts::account(ctx, a),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),

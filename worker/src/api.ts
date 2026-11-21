@@ -6,10 +6,12 @@ import {
   createUser,
   findUser,
   issueInvite,
+  listMachines,
   listUsers,
   NAME_RE,
   OWNER,
   redeemInvite,
+  removeMachine,
   revokeUser,
 } from "./users";
 import {
@@ -431,9 +433,9 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
 
   // The one call without a token: trading an invite for one.
   if (method === "POST" && path === "/api/connect") {
-    const body = await readJson<{ code?: unknown }>(req);
+    const body = await readJson<{ code?: unknown; machine?: unknown }>(req);
     const code = typeof body?.code === "string" ? body.code.trim() : "";
-    const redeemed = code ? await redeemInvite(env, code) : null;
+    const redeemed = code ? await redeemInvite(env, code, typeof body?.machine === "string" ? body.machine : "") : null;
     if (!redeemed) return error("this invite is invalid, used or expired; ask for a new one", 403);
     return json({ ok: true, ...redeemed });
   }
@@ -443,6 +445,16 @@ export async function handleApi(req: Request, env: Env): Promise<Response> {
   if (!u) return error("unauthorized", 401);
 
   if (method === "GET" && path === "/api/me") return json({ user: { name: u.name, role: u.admin ? "admin" : "user" } });
+  // Your own machines: each has its own token, so adding one never signs another out.
+  if (path === "/api/machines") {
+    if (method === "GET") return json({ machines: await listMachines(env, u) });
+    // A one-time link that `cloudmail connect` on the new machine trades for its token.
+    if (method === "POST") return json({ ok: true, invite: await issueInvite(env, u.id, url.origin) });
+    return error("not found", 404);
+  }
+  if (method === "DELETE" && (m = path.match(/^\/api\/machines\/([\w-]+)$/))) {
+    return (await removeMachine(env, u.id, m[1])) ? json({ ok: true }) : error("not found", 404);
+  }
   if (path === "/api/users" || path.startsWith("/api/users/")) {
     if (!u.admin) return error("only the admin manages users", 403);
     return users(env, req, url);
@@ -690,7 +702,7 @@ async function users(env: Env, req: Request, url: URL): Promise<Response> {
         return error("mailboxes must be a list of email addresses");
       }
       const existing = await findUser(env, name);
-      if (existing?.id === OWNER) return error("the admin signs in with the worker's API_TOKEN; rotate it with `cloudmail setup --force`");
+      if (existing?.id === OWNER) return error("that's you: `cloudmail machine add` connects another machine of yours");
       for (const e of list as string[]) {
         if (await isForwardTarget(env, e)) return error(`${normalizeEmail(e)} is a forward_to target; change forward_to first`);
       }

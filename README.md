@@ -312,8 +312,13 @@ mailboxes, Screener and settings, and see only their own mail; you see only your
 you: re-running `cloudmail setup` updates the worker for everyone.
 
 - `cloudmail user list` shows who's connected.
-- `cloudmail user invite sam` again gives a new link (a new machine, or an expired link); once used,
-  it replaces their old token.
+- `cloudmail user invite sam` again gives a new link (an expired one, or another machine of theirs);
+  the machines they already use stay signed in.
+- Anyone adds their own machines, you included: `cloudmail machine add` on one that's signed in prints
+  a one-time link, and `cloudmail connect <link>` on the other signs it in with a token of its own.
+  Nothing is copied between them and none is signed out; `cloudmail machine list` shows them and
+  `cloudmail machine remove <id>` signs one out. With no signed-in machine at hand, `cloudmail setup`
+  on the new one (logged in to Cloudflare) adds its token the same way.
 - `cloudmail user revoke sam` signs them out (their mail stays; `--purge` deletes it, and you remove
   their addresses' routing).
 - They should know that, as the Cloudflare account's owner, you can read their mail in D1 and R2.
@@ -423,9 +428,9 @@ What it doesn't do (yet), so you know before you move a domain:
 
 - Each person has their own bearer token, kept in their keyring (the Secret Service) and nowhere
   else; a config.toml from an older version has its token moved there on first use. Without a
-  keyring, Cloudmail stops and says so rather than keep it in a file. The admin's token is the
-  worker's `API_TOKEN` secret. Invited people's tokens and one-time invite codes are stored on the
-  worker only as SHA-256 hashes, and every API call answers for its token's user only.
+  keyring, Cloudmail stops and says so rather than keep it in a file. The first machine's token
+  is the worker's `API_TOKEN` secret. Every other machine's token (the admin's later ones and invited
+  people's) and one-time invite codes are stored on the worker only as SHA-256 hashes, and every API call answers for its token's user only.
 - iCloud Mail goes through icloud-session's sign-in; Cloudmail keeps no iCloud credential of its
   own. Gmail's sign-in is gws's, in Cloudmail's own gws directory: gws keeps its encryption key in a
   file there because its keyring backend shares one `gws-cli` entry with any gws of yours and still

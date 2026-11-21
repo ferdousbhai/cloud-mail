@@ -205,6 +205,16 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail open 'mailto:sam@example.com?subject=Lake%20photos'",
         ],
     ),
+    ("machine", &["cloudmail machine add"]),
+    (
+        "machine add",
+        &["cloudmail machine add", "cloudmail machine add --json"],
+    ),
+    (
+        "machine list",
+        &["cloudmail machine list", "cloudmail machine list --json"],
+    ),
+    ("machine remove", &["cloudmail machine remove k_1a2b3c --yes"]),
     ("config", &["cloudmail config show"]),
     (
         "config show",
@@ -477,6 +487,18 @@ Connect with an invite (someone else runs the worker; no Cloudflare account need
 
 The link works once, within 7 days; `unauthorized` means ask the admin for a new one. `--force`
 replaces an existing connection. Never run `setup` for an invited user: it refuses.
+
+Use your mail on another machine of yours (admin or invited; every machine has its own token, so
+none is signed out and no token is copied):
+
+    cloudmail machine add --json                    # here: data.invite.url, a one-time link (7 days)
+    cloudmail connect '<that link>'                 # on the other machine
+    cloudmail machine list --json                   # data: [{id, name, created_at, current}]
+    cloudmail machine remove <id> --yes             # sign one out (a lost laptop)
+
+The admin with no signed-in machine at hand runs `cloudmail setup` on the new one instead: with the
+Cloudflare login it adds that machine's token and leaves the others working. `setup --force` is the
+one that rotates the worker's secret, signing the first machine out.
 
 Set up your own instance (admin only; one command; safe to re-run, and re-running also updates the worker):
 

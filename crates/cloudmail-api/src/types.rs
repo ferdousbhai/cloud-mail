@@ -265,6 +265,18 @@ impl User {
     }
 }
 
+/// A machine signed in as you, with a token of its own (`cloudmail machine list`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Machine {
+    pub id: String,
+    /// What it called itself when it connected (its hostname); may be empty.
+    pub name: String,
+    pub created_at: i64,
+    /// The one this request came from.
+    pub current: bool,
+}
+
 /// A one-time invite: `cloudmail connect <url>` on the invitee's machine.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]

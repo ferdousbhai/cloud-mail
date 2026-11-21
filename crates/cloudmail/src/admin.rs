@@ -377,6 +377,64 @@ pub fn user(ctx: &Ctx, cmd: UserCommand) -> CliResult {
     }
 }
 
+pub fn machine(ctx: &Ctx, cmd: MachineCommand) -> CliResult {
+    let client = ctx.client()?;
+    match cmd {
+        MachineCommand::Add => {
+            let invite = client.add_machine()?;
+            let human = format!(
+                "On the other machine, with Cloudmail installed (valid once until {}):\n\n  cloudmail connect {}\n\nIt gets a token of its own; this machine stays signed in.",
+                long_time(invite.expires_at),
+                shell_arg(&invite.url)
+            );
+            let summary = format!("Link for another machine: {}", invite.url);
+            Ok(Response::new(json!({ "invite": invite }), summary)
+                .human(human)
+                .crumbs(vec![crumb(
+                    "list",
+                    "cloudmail machine list",
+                    "See which machines are signed in",
+                )]))
+        }
+        MachineCommand::List => {
+            let list = client.machines()?;
+            let w = list.iter().map(|m| m.id.len()).max().unwrap_or(0);
+            let human = list
+                .iter()
+                .map(|m| {
+                    let name = if m.name.is_empty() { "(unnamed)" } else { &m.name };
+                    let here = if m.current { "  (this machine)" } else { "" };
+                    format!(
+                        "{}  {}{here}  {}",
+                        render::pad(&m.id, w),
+                        render::clean_line(name),
+                        dim(&format!("since {}", long_time(m.created_at)))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let ids = list.iter().map(|m| m.id.clone()).collect();
+            let mut summary = crate::mail::plural(list.len(), "machine");
+            // The first machine's token is the worker's API_TOKEN secret, which isn't a row here.
+            if !list.iter().any(|m| m.current) {
+                summary.push_str(", and this one (signed in with the worker's API token)");
+            }
+            Ok(Response::new(&list, summary).human(human).ids(ids).crumbs(vec![
+                crumb("add", "cloudmail machine add", "Sign in on another machine of yours"),
+                crumb("remove", "cloudmail machine remove <id>", "Sign one machine out"),
+            ]))
+        }
+        MachineCommand::Remove { id, yes } => {
+            confirm(
+                yes,
+                &format!("Sign machine {id} out? `cloudmail machine add` lets it back in."),
+            )?;
+            client.remove_machine(&id)?;
+            Ok(Response::new(json!({ "id": id }), format!("Signed machine {id} out")))
+        }
+    }
+}
+
 /// Splits an invite link into the worker's URL and the code.
 fn parse_invite(link: &str) -> Option<(&str, &str)> {
     let (url, code) = link.trim().split_once("/invite/")?;
@@ -406,7 +464,7 @@ pub fn connect(args: &ConnectArgs) -> CliResult {
         let unusable = e.kind == ErrorKind::Unauthorized;
         let err = CliError::from(e);
         if unusable {
-            err.hint("ask whoever invited you for a new link (`cloudmail user invite <name>`)")
+            err.hint("ask whoever invited you for a new link (`cloudmail user invite <name>`), or make one on a machine of yours that's signed in (`cloudmail machine add`)")
         } else {
             err
         }

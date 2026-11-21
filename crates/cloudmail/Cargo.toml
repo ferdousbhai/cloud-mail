@@ -18,6 +18,8 @@ serde_json.workspace = true
 ureq.workspace = true
 dirs.workspace = true
 clap = { version = "4", features = ["derive", "wrap_help", "env"] }
+# SHA-256, for the token `setup` gives a second machine; already built for ureq's TLS.
+ring = "0.17"
 
 [dev-dependencies]
 base64.workspace = true

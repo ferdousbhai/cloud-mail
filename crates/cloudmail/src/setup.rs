@@ -151,6 +151,28 @@ pub fn parse_d1_list(output: &str, name: &str) -> Option<String> {
         .and_then(|d| d["uuid"].as_str().map(str::to_string))
 }
 
+/// The D1 database id and R2 bucket bound to a deployed worker, from `cf workers versions list`
+/// (newest first; cf prints a `result_info: {…}` line above the list).
+pub fn parse_worker_bindings(output: &str) -> Option<(String, String)> {
+    let versions = output.match_indices('[').find_map(|(i, _)| {
+        let v = serde_json::Deserializer::from_str(&output[i..])
+            .into_iter::<Value>()
+            .next()?
+            .ok()?;
+        v.as_array()
+            .is_some_and(|a| a.first().is_some_and(|x| x["bindings"].is_array()))
+            .then_some(v)
+    })?;
+    let bindings = versions[0]["bindings"].as_array()?;
+    let bound = |kind: &str, key: &str| {
+        bindings
+            .iter()
+            .find(|b| b["type"] == kind)
+            .and_then(|b| b[key].as_str().map(str::to_string))
+    };
+    Some((bound("d1", "database_id")?, bound("r2_bucket", "bucket_name")?))
+}
+
 /// Bucket names in `cf r2 buckets list`.
 pub fn parse_r2_buckets(output: &str) -> Vec<String> {
     let list = first_json(output).unwrap_or_default();
@@ -373,6 +395,41 @@ fn random_token() -> CliResult<String> {
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut buf))
         .map_err(|e| CliError::generic(format!("could not read /dev/urandom: {e}")))?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn sha256_hex(s: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, s.as_bytes());
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// This machine's name as a cf argument: never empty, never read as a flag.
+fn machine_param() -> String {
+    let name: String = config::machine_name()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    let name = name.trim_start_matches('-');
+    if name.is_empty() { "machine".into() } else { name.into() }
+}
+
+/// Whether the worker turns this token away (as opposed to not answering, which says nothing).
+fn token_refused(url: &str, token: &str) -> bool {
+    let client = Client::new(&Config {
+        api_url: url.into(),
+        api_token: token.into(),
+        poll_seconds: config::DEFAULT_POLL_SECONDS,
+        accounts: Default::default(),
+    });
+    client
+        .counts()
+        .is_err_and(|e| e.kind == cloudmail_api::ErrorKind::Unauthorized)
 }
 
 // ---------- running cf ----------
@@ -1041,9 +1098,9 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     let previous = recorded(&dir);
     let keep = previous.file.is_some() && !args.force;
     let previous = if keep { previous } else { Recorded::default() };
-    let worker_name = previous.worker.clone().unwrap_or_else(|| args.name.clone());
-    let db_name = previous.database.clone().unwrap_or_else(|| args.name.clone());
-    let bucket_name = previous.bucket.clone().unwrap_or_else(|| args.name.clone());
+    let mut worker_name = previous.worker.clone().unwrap_or_else(|| args.name.clone());
+    let mut db_name = previous.database.clone().unwrap_or_else(|| args.name.clone());
+    let mut bucket_name = previous.bucket.clone().unwrap_or_else(|| args.name.clone());
     let mut w = Cf::new(&args.cf, dir.clone(), args.dry_run, interactive);
 
     // 1. dependencies
@@ -1062,6 +1119,46 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
     if let Some(id) = &account {
         w.use_account(id);
         w.record("Cloudflare account", "ok", None, Some(id.clone()));
+    }
+
+    // Nothing recorded here, yet the worker may exist: another machine set it up. Its own bindings say
+    // which database and bucket are its, so this machine joins that install instead of creating a
+    // second one beside it (under the default names, when the first has older ones).
+    if previous.file.is_none() && !args.force {
+        let configured = existing_cfg
+            .as_ref()
+            .and_then(|c| c.api_url.as_deref())
+            .and_then(worker_name_from_url);
+        let candidate = configured.unwrap_or_else(|| worker_name.clone());
+        let bindings = w
+            // --worker-id (a name will do) is the spelling every cf version takes.
+            .probe(&[
+                "workers",
+                "versions",
+                "list",
+                "--worker-id",
+                &candidate,
+                "--per-page",
+                "1",
+            ])
+            .ok()
+            .and_then(|o| parse_worker_bindings(&o));
+        if let Some((database_id, bucket)) = bindings {
+            let named = w
+                .probe(&["d1", "get", &database_id])
+                .ok()
+                .and_then(|o| first_json(&o))
+                .and_then(|d| d["name"].as_str().map(str::to_string));
+            if let Some(name) = named {
+                w.record(
+                    &format!("worker {candidate}"),
+                    "exists",
+                    None,
+                    Some(format!("set up from another machine: database {name}, bucket {bucket}")),
+                );
+                (worker_name, db_name, bucket_name) = (candidate, name, bucket);
+            }
+        }
     }
 
     // 3. D1 + R2
@@ -1182,20 +1279,22 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         }
     };
     // The token is in the keyring (or, from an older version, still in the file).
-    let reused = match existing_cfg
+    let configured_here = existing_cfg
         .as_ref()
-        .filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker))
-    {
+        .filter(|c| !args.force && c.api_url.as_deref().is_some_and(same_worker));
+    let reused = match configured_here {
         Some(c) => match c.api_token.clone() {
             Some(t) => Some(t),
             None => config::keyring_token()?,
         },
         None => None,
     };
+    // One the worker no longer takes (its secret was rotated from another machine) is no token.
+    let reused = reused.filter(|t| args.dry_run || !token_refused(&url, t));
     let token = if let Some(token) = reused {
         w.record("API token", "exists", None, Some("keyring".into()));
         token
-    } else if !first_time && !args.force {
+    } else if !first_time && !args.force && configured_here.is_none() {
         if !args.dry_run {
             return Err(
                 CliError::generic(format!("{} already points at another worker", cfg_path.display()))
@@ -1213,31 +1312,63 @@ fn run_with_config(args: &SetupArgs, interactive: bool, existing_cfg: Option<con
         );
         String::new()
     } else {
+        // A worker that already has its API_TOKEN secret is in use from another machine: this one
+        // gets a token of its own (a row in `tokens`, as the admin), and that one keeps working.
+        // Only a new worker, or --force, sets the secret.
+        let in_use = !args.force
+            && w.probe(&["workers", "secrets", "list", "--worker", &worker_name])
+                .is_ok_and(|out| out.contains("\"API_TOKEN\""));
         let token = if args.dry_run {
             "<generated>".to_string()
+        } else if in_use {
+            format!("cm_{}", random_token()?)
         } else {
             random_token()?
         };
-        let secret = json!({ "name": "API_TOKEN", "type": "secret_text", "text": token }).to_string();
-        w.mutate(
-            "set API_TOKEN secret",
-            &[
-                "workers",
-                "secrets",
-                "update",
-                "API_TOKEN",
-                "--worker",
-                &worker_name,
-                "--body",
-                "@/dev/stdin",
-            ],
-            Some(&secret),
-        )?;
+        if in_use {
+            let (id, name) = (format!("k_{}", &random_token()?[..20]), machine_param());
+            let (hash, now) = (sha256_hex(&token), now_ms().to_string());
+            w.mutate(
+                "add this machine's API token",
+                &[
+                    "d1",
+                    "query",
+                    &database_id,
+                    "--sql",
+                    "INSERT INTO tokens (id, user_id, token_hash, name, created_at) VALUES (?, 'owner', ?, ?, ?)",
+                    "--params",
+                    &id,
+                    "--params",
+                    &hash,
+                    "--params",
+                    &name,
+                    "--params",
+                    &now,
+                ],
+                None,
+            )?;
+        } else {
+            let secret = json!({ "name": "API_TOKEN", "type": "secret_text", "text": token }).to_string();
+            w.mutate(
+                "set API_TOKEN secret",
+                &[
+                    "workers",
+                    "secrets",
+                    "update",
+                    "API_TOKEN",
+                    "--worker",
+                    &worker_name,
+                    "--body",
+                    "@/dev/stdin",
+                ],
+                Some(&secret),
+            )?;
+        }
         let file = config::FileConfig {
             api_url: Some(url.clone()),
             api_token: None,
             poll_seconds: Some(config::DEFAULT_POLL_SECONDS),
-            // Linked accounts survive a token rotation.
+            // Linked accounts survive a new token.
             accounts: existing_cfg.as_ref().map(|c| c.accounts.clone()).unwrap_or_default(),
         };
         w.perform(
@@ -1704,6 +1835,99 @@ mod tests {
         assert!(
             todo.contains("where you registered it") && todo.contains("Cloudflare dashboard"),
             "{todo}"
+        );
+    }
+
+    #[test]
+    fn a_worker_already_in_use_gives_this_machine_its_own_token() {
+        let dir = worker_dir("setup-second-machine");
+        // A cf whose worker already has its secret, and that fails everything else.
+        let cf = dir.join("fake-cf");
+        std::fs::write(
+            &cf,
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"workers secrets list\" ] && { echo '[{\"name\": \"API_TOKEN\", \"type\": \"secret_text\"}]'; exit 0; }\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cf, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let steps_of = |force: bool| {
+            let mut args = dry_run_args(&dir, force);
+            args.cf = cf.display().to_string();
+            let resp = run_with_config(&args, false, None).unwrap();
+            let steps = resp.data["steps"].as_array().unwrap().clone();
+            steps
+                .iter()
+                .map(|s| s["step"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        // The other machine's token (the secret) is left alone.
+        let steps = steps_of(false);
+        assert!(steps.iter().any(|s| s == "add this machine's API token"), "{steps:?}");
+        assert!(!steps.iter().any(|s| s == "set API_TOKEN secret"), "{steps:?}");
+        // --force still rotates it.
+        let steps = steps_of(true);
+        assert!(steps.iter().any(|s| s == "set API_TOKEN secret"), "{steps:?}");
+        assert!(!steps.iter().any(|s| s == "add this machine's API token"), "{steps:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_machine_without_the_install_record_finds_the_worker_by_its_bindings() {
+        let versions = r#"result_info: {"page":1,"per_page":10,"count":2,"total_count":30}
+[
+  { "id": "v2", "number": 30, "bindings": [
+      { "name": "API_TOKEN", "type": "secret_text" },
+      { "bucket_name": "old-mail", "name": "BUCKET", "type": "r2_bucket" },
+      { "database_id": "db-1", "id": "db-1", "name": "DB", "type": "d1" },
+      { "name": "EMAIL", "type": "send_email" } ] },
+  { "id": "v1", "number": 29, "bindings": [] }
+]"#;
+        assert_eq!(
+            parse_worker_bindings(versions),
+            Some(("db-1".into(), "old-mail".into()))
+        );
+        assert_eq!(
+            parse_worker_bindings("┌ APIError\n│ [10007] This Worker does not exist on your account."),
+            None
+        );
+
+        let dir = worker_dir("setup-found-worker");
+        std::fs::write(dir.join("versions.txt"), versions).unwrap();
+        // A cf that knows the worker and its database by id, and fails everything else.
+        let cf = dir.join("fake-cf");
+        std::fs::write(
+            &cf,
+            "#!/bin/sh\ncase \"$1 $2 $3 $5\" in\n  'workers versions list old-worker') cat versions.txt ;;\n  'd1 get db-1 ') echo '{\"uuid\": \"db-1\", \"name\": \"old-db\"}' ;;\n  *) exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cf, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut args = dry_run_args(&dir, false);
+        args.cf = cf.display().to_string();
+        // This machine's config points at the worker (its token went stale), but it never ran setup.
+        let cfg = config::FileConfig {
+            api_url: Some("https://old-worker.me.workers.dev".into()),
+            // In the file, so the test never asks the keyring.
+            api_token: Some("stale".into()),
+            ..Default::default()
+        };
+        let resp = run_with_config(&args, false, Some(cfg)).unwrap();
+        let steps = resp.data["steps"].to_string();
+        for expected in [
+            "worker old-worker",
+            "create D1 database old-db",
+            "R2 bucket old-mail",
+            "https://old-worker.",
+        ] {
+            assert!(steps.contains(expected), "{expected}: {steps}");
+        }
+        assert!(!steps.contains("database cloudmail"), "{steps}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn hashes_a_token_as_the_worker_does() {
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 

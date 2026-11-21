@@ -370,6 +370,7 @@ dependencies = [
  "clap",
  "cloudmail-api",
  "dirs",
+ "ring",
  "serde",
  "serde_json",
  "ureq",

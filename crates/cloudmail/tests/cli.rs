@@ -478,6 +478,44 @@ fn users_are_invited_listed_and_revoked() {
 }
 
 #[test]
+fn machines_are_added_listed_and_removed() {
+    let m = mock(|r| match (r.method.as_str(), r.path.as_str()) {
+        ("POST", "/api/machines") => ok(json!({
+            "ok": true,
+            "invite": { "code": "inv_2", "url": "https://w.example/invite/inv_2", "expires_at": 1_800_000_000_000i64 },
+        })),
+        ("GET", "/api/machines") => ok(json!({ "machines": [
+            { "id": "k_1", "name": "desk", "created_at": 1_700_000_000_000i64, "current": false },
+            { "id": "k_2", "name": "laptop", "created_at": 1_700_000_100_000i64, "current": true },
+        ] })),
+        ("DELETE", _) => ok(json!({ "ok": true })),
+        _ => default_handler(r),
+    });
+
+    let v = json_out(&cloudmail(&m, &["machine", "add"], None));
+    assert_eq!(v["data"]["invite"]["url"], "https://w.example/invite/inv_2");
+
+    let v = json_out(&cloudmail(&m, &["machine", "list"], None));
+    assert_eq!(v["data"][1]["current"], true);
+    assert_eq!(v["summary"], "2 machines");
+    let ids = String::from_utf8(cloudmail(&m, &["machine", "list", "--ids-only"], None).stdout).unwrap();
+    assert_eq!(ids, "k_1\nk_2\n");
+
+    let o = cloudmail(&m, &["machine", "remove", "k_1"], None);
+    assert_eq!(json_out(&o)["error"]["code"], "confirmation_required");
+    assert!(
+        json_out(&cloudmail(&m, &["machine", "remove", "k_1", "--yes"], None))["ok"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        requests(&m)
+            .iter()
+            .any(|r| r.method == "DELETE" && r.path == "/api/machines/k_1")
+    );
+}
+
+#[test]
 fn setup_is_only_for_the_admin() {
     let m = mock(|r| match r.path.as_str() {
         "/api/me" => ok(json!({ "user": { "name": "sara", "role": "user" } })),

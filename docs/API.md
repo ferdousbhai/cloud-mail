@@ -7,8 +7,11 @@ out. Timestamps are Unix milliseconds. Errors: `{ "error": "message" }` with a 4
 ## Users
 
 One worker can hold several people's mail. The worker's `API_TOKEN` secret signs in as the admin, user
-`owner`, who has everything from before users existed. The admin invites others; each gets their own
-token and sees only their own mailboxes, threads, screening decisions and settings. Every endpoint below
+`owner`, who has everything from before users existed. The admin invites others; each sees only their
+own mailboxes, threads, screening decisions and settings. Every machine has a token of its own (stored
+here as a SHA-256 hash): an invite adds one for the machine that redeems it, and anyone adds more
+machines of their own with `POST /api/machines`, the admin included, so the secret never has to be
+copied or rotated for a second computer. Every endpoint below
 answers for the token's user, and someone else's thread, message or attachment is a 404. Incoming mail
 belongs to the user of the mailbox it was sent to (the admin's when the address has no mailbox). Mail to
 two users is stored once for each, and a reply only joins its own user's threads.
@@ -126,7 +129,10 @@ senders are blocked everywhere. Replying to / emailing someone approves them.
 | GET | `/api/users` | | admin: `{ "users": [{ "name", "role", "mailboxes": [email], "connected", "invite_expires_at", "revoked", "created_at", "forward_to" }] }` |
 | POST | `/api/users` | `{ "name": "sam", "mailboxes"?: [email] }` | admin: `{ "ok": true, "user": { "name", "role", "mailboxes" }, "invite": Invite }` – creates the user, or for an existing one adds the mailboxes and issues a new invite (replacing any pending one, and letting a revoked user back in) |
 | DELETE | `/api/users/:name` | `?purge=1` | admin: `{ "ok": true, "purged": bool }` – signs them out; with purge also deletes their mail, decisions, settings, mailboxes and the user |
-| POST | `/api/connect` | `{ "code": "inv_…" }` (no token) | `{ "ok": true, "token": "cm_…", "user": { "name", "role" } }`; 403 if the invite is invalid, used or expired |
+| POST | `/api/connect` | `{ "code": "inv_…", "machine"?: "its hostname" }` (no token) | `{ "ok": true, "token": "cm_…", "user": { "name", "role" } }` – a new token for this machine; the user's other machines keep theirs. 403 if the invite is invalid, used or expired |
+| GET | `/api/machines` | | `{ "machines": [{ "id": "k_…", "name", "created_at", "current" }] }` – the machines signed in as you, oldest first; `current` is the one asking. Whoever signs in with the `API_TOKEN` secret isn't listed |
+| POST | `/api/machines` | | `{ "ok": true, "invite": Invite }` – a one-time link that signs another machine in as you (replacing any pending invite of yours) |
+| DELETE | `/api/machines/:id` | | `{ "ok": true }` – signs that machine of yours out; 404 if it isn't yours |
 
 `Invite` is `{ "code": "inv_…", "url": "https://<worker>/invite/inv_…", "expires_at": … }`. Opening the
 `url` in a browser (`GET /invite/:code`, no token) shows how to use it: `cloudmail connect <url>`.

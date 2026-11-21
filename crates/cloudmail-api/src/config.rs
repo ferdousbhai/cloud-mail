@@ -210,6 +210,17 @@ pub fn migrate_secrets(file: &mut FileConfig) -> Result<bool> {
     Ok(true)
 }
 
+/// What this machine is called where its token is listed (`cloudmail machine list`): its hostname.
+pub fn machine_name() -> String {
+    ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .chain(std::env::var("HOSTNAME").ok())
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
 /// The API token kept in the keyring, if any.
 pub fn keyring_token() -> Result<Option<String>> {
     crate::keyring::get(crate::keyring::API_TOKEN)

@@ -87,10 +87,13 @@ pub enum Command {
     /// Let someone else read their own mail on your worker: invite, list and revoke users (admin)
     #[command(subcommand)]
     User(UserCommand),
-    /// Connect to someone's worker with the invite link they sent you
+    /// Connect to a worker with an invite link: someone's, or your own from `cloudmail machine add`
     Connect(ConnectArgs),
     /// Open the desktop app (what the app launcher runs), with any mailto: links to write to
     Open(OpenArgs),
+    /// Use your mail on another machine of yours: each gets its own token, so none is signed out or copied
+    #[command(subcommand)]
+    Machine(MachineCommand),
     /// View or change worker settings (forwarding)
     #[command(subcommand)]
     Settings(SettingsCommand),
@@ -525,6 +528,20 @@ pub enum UserCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum MachineCommand {
+    /// Print a one-time link (valid 7 days): `cloudmail connect <link>` on the other machine signs it in as you
+    Add,
+    /// List the machines signed in as you
+    List,
+    /// Sign one machine out (its ID from `machine list`); the others stay signed in
+    Remove {
+        id: String,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
 #[derive(Args, Debug)]
 pub struct OpenArgs {
     /// mailto: links to open a message to, as a browser passes them
@@ -611,7 +628,7 @@ pub struct SetupArgs {
     /// Show what would happen without changing anything
     #[arg(long)]
     pub dry_run: bool,
-    /// Regenerate install.json and the local config, rotating the API token
+    /// Regenerate install.json and the local config, rotating the worker's API token (signs out the machine that held it; a second machine needs no --force, it gets a token of its own)
     #[arg(long)]
     pub force: bool,
     /// Same as the ADDRESS arguments (older spelling)

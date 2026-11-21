@@ -86,18 +86,67 @@ test("the API_TOKEN secret is the admin; an invite gives someone their own token
   expect(JSON.stringify(db.query("SELECT * FROM users").all())).not.toContain(first.body.token);
 });
 
-test("an expired invite doesn't work, and a new one replaces the old token", async () => {
+test("an expired invite doesn't work, and a new one adds a machine without signing the first out", async () => {
   const created = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara" });
   db.run("UPDATE users SET invite_expires_at = 1 WHERE name = 'sara'");
   expect((await api("", "POST", "/api/connect", { code: created.body.invite.code })).status).toBe(403);
 
   // Inviting someone again gives them a new link.
   const again = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara" });
-  const old = (await api<{ token: string }>("", "POST", "/api/connect", { code: again.body.invite.code })).body.token;
+  const first = (await api<{ token: string }>("", "POST", "/api/connect", { code: again.body.invite.code })).body.token;
   const next = await api<{ invite: { code: string } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara" });
-  const token = (await api<{ token: string }>("", "POST", "/api/connect", { code: next.body.invite.code })).body.token;
-  expect((await api(old, "GET", "/api/me")).status).toBe(401);
-  expect((await api(token, "GET", "/api/me")).status).toBe(200);
+  const second = (await api<{ token: string }>("", "POST", "/api/connect", { code: next.body.invite.code })).body.token;
+  expect(second).not.toBe(first);
+  expect((await api(first, "GET", "/api/me")).status).toBe(200);
+  expect((await api(second, "GET", "/api/me")).status).toBe(200);
+});
+
+type Machines = { machines: { id: string; name: string; current: boolean }[] };
+
+test("you add your own machines: each gets its own token, and one can be signed out alone", async () => {
+  // The admin's second machine, without the API_TOKEN secret leaving the first.
+  const link = await api<{ invite: { code: string; url: string } }>(OWNER_TOKEN, "POST", "/api/machines");
+  expect(link.body.invite.url).toContain("/invite/inv_");
+  const laptop = (await api<{ token: string; user: { name: string; role: string } }>("", "POST", "/api/connect", { code: link.body.invite.code, machine: "laptop\n" })).body;
+  expect(laptop.user).toEqual({ name: "owner", role: "admin" });
+  expect(laptop.token).not.toBe(OWNER_TOKEN);
+  expect((await api(laptop.token, "GET", "/api/users")).status).toBe(200);
+  expect((await api(OWNER_TOKEN, "GET", "/api/me")).status).toBe(200);
+  expect((await api("", "POST", "/api/connect", { code: link.body.invite.code })).status).toBe(403);
+  expect(JSON.stringify(db.query("SELECT * FROM tokens").all())).not.toContain(laptop.token);
+
+  // A machine adds the next one itself; the secret's holder isn't listed, having no row.
+  const code = (await api<{ invite: { code: string } }>(laptop.token, "POST", "/api/machines")).body.invite.code;
+  const desk = (await api<{ token: string }>("", "POST", "/api/connect", { code, machine: "desk" })).body.token;
+  const seen = (await api<Machines>(desk, "GET", "/api/machines")).body.machines;
+  expect(seen.map(({ name, current }) => ({ name, current }))).toEqual([{ name: "laptop", current: false }, { name: "desk", current: true }]);
+  expect((await api<Machines>(OWNER_TOKEN, "GET", "/api/machines")).body.machines.every((k) => !k.current)).toBe(true);
+
+  // Nobody else's machines are theirs to see or sign out.
+  const sara = await inviteSara();
+  expect((await api<Machines>(sara, "GET", "/api/machines")).body.machines).toHaveLength(1);
+  expect((await api(sara, "DELETE", `/api/machines/${seen[0].id}`)).status).toBe(404);
+  const saras = (await api<{ token: string }>("", "POST", "/api/connect", { code: (await api<{ invite: { code: string } }>(sara, "POST", "/api/machines")).body.invite.code })).body.token;
+  expect((await api<{ user: { name: string; role: string } }>(saras, "GET", "/api/me")).body.user).toEqual({ name: "sara", role: "user" });
+
+  expect((await api(desk, "DELETE", `/api/machines/${seen[0].id}`)).status).toBe(200);
+  expect((await api(laptop.token, "GET", "/api/me")).status).toBe(401);
+  expect((await api(desk, "GET", "/api/me")).status).toBe(200);
+
+  // Revoking a user signs every one of their machines out.
+  expect((await api(OWNER_TOKEN, "DELETE", "/api/users/sara")).status).toBe(200);
+  expect((await api(sara, "GET", "/api/me")).status).toBe(401);
+  expect((await api(saras, "GET", "/api/me")).status).toBe(401);
+});
+
+test("a token from before machines had their own keeps working", async () => {
+  const old = new Database(":memory:");
+  migrate(old, { until: "0007" });
+  const hash = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cm_old"))).toString("hex");
+  old.run("INSERT INTO users (id, name, role, token_hash, created_at) VALUES ('u_1', 'sara', 'user', ?, 5)", [hash]);
+  migrate(old, { from: "0007" });
+  const res = await request({ ...env, DB: d1(old) } as unknown as Env, "cm_old", "GET", "/api/me");
+  expect(await res.json()).toEqual({ user: { name: "sara", role: "user" } });
 });
 
 test("each user sees only their own mail", async () => {
@@ -184,7 +233,7 @@ test("only the admin manages users and adds or gives away mailboxes", async () =
   expect((await api(sara, "PUT", `/api/mailboxes/${encodeURIComponent(SARA)}`, { name: "Sara", screen: false })).status).toBe(200);
   expect((await api(sara, "DELETE", `/api/mailboxes/${encodeURIComponent(SARA)}`)).status).toBe(403);
   expect((await api(OWNER_TOKEN, "POST", "/api/users", { name: "owner" })).status).toBe(400);
-  // Inviting an existing user again adds mailboxes; their token works until the new link is used.
+  // Inviting an existing user again adds mailboxes; their token keeps working.
   const again = await api<{ user: { mailboxes: string[] } }>(OWNER_TOKEN, "POST", "/api/users", { name: "sara", mailboxes: ["hi@saraadolfsen.com"] });
   expect(again.body.user.mailboxes.sort()).toEqual(["hi@saraadolfsen.com", SARA]);
   expect((await api(sara, "GET", "/api/me")).status).toBe(200);

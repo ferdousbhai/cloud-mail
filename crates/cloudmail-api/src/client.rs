@@ -57,12 +57,12 @@ impl Client {
         }
     }
 
-    /// Trades a one-time invite code for this user's API token (the one call without a token).
+    /// Trades a one-time invite code for an API token of this machine's own (the one call without a
+    /// token); the user's other machines keep theirs.
     pub fn connect(api_url: &str, code: &str) -> Result<Connected> {
         let url = format!("{}/api/connect", api_url.trim_end_matches('/'));
-        Self::decode(Self::finish(
-            agent().post(url).send_json(serde_json::json!({ "code": code })),
-        )?)
+        let body = serde_json::json!({ "code": code, "machine": crate::config::machine_name() });
+        Self::decode(Self::finish(agent().post(url).send_json(body))?)
     }
 
     pub fn base_url(&self) -> &str {
@@ -370,8 +370,33 @@ impl Client {
         self.get::<Users>("/api/users").map(|u| u.users)
     }
 
+    /// The machines signed in as you (not whoever holds the worker's API_TOKEN secret).
+    pub fn machines(&self) -> Result<Vec<Machine>> {
+        #[derive(serde::Deserialize)]
+        struct Machines {
+            machines: Vec<Machine>,
+        }
+        self.get::<Machines>("/api/machines").map(|m| m.machines)
+    }
+
+    /// A one-time link for another machine of yours: `cloudmail connect <url>` there gives it its
+    /// own token, and this one keeps its own.
+    pub fn add_machine(&self) -> Result<Invite> {
+        #[derive(serde::Deserialize)]
+        struct Created {
+            invite: Invite,
+        }
+        self.post::<Created>("/api/machines", &serde_json::json!({}))
+            .map(|c| c.invite)
+    }
+
+    /// Signs one of your machines out.
+    pub fn remove_machine(&self, id: &str) -> Result<()> {
+        self.delete(&format!("/api/machines/{}", Self::enc(id)))
+    }
+
     /// Invites someone: a new user, or an existing one given these mailboxes too and a new link
-    /// (which replaces their token once used, and lets a revoked user back in).
+    /// (for another machine of theirs, or to let a revoked user back in).
     pub fn invite_user(&self, name: &str, mailboxes: &[String]) -> Result<(User, Invite)> {
         #[derive(serde::Deserialize)]
         struct Created {
