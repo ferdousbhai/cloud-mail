@@ -25,13 +25,14 @@ jobs:
     steps:
       # gtk4 has the broadway display the QA runs on; dbus is the CLI tests' private session bus; a font, because
       # the image has none and GTK warns when it has nothing to draw text with, which fails the QA; nodejs for the
-      # worker's cf CLI, which will not load cloudflare.config.ts under Bun.
+      # worker's cf CLI, which will not load cloudflare.config.ts under Bun; unzip for bin/release, which the packaging
+      # tests run.
       - name: Install what the checks need
         run: |
           sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
           pacman-key --init
           pacman-key --populate archlinux
-          pacman -Syu --needed --noconfirm base-devel rust git gtk4 webkitgtk-6.0 dbus python bun nodejs ttf-dejavu
+          pacman -Syu --needed --noconfirm base-devel rust git gtk4 webkitgtk-6.0 dbus python bun nodejs unzip ttf-dejavu
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:
