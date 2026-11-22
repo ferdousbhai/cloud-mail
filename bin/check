@@ -1,9 +1,9 @@
 #!/bin/bash
-# Every check a change must pass, run on this machine. .githooks/pre-push runs it before a push;
-# set NO_CHECK=1 to push without it. GitHub only builds the release packages
-# (.github/workflows/packages.yml, on a version tag).
+# Every check a change must pass. .githooks/pre-push runs it on this machine before a push (set NO_CHECK=1 to push
+# without it), and GitHub runs it on every push (.github/workflows/check.yml).
 #
-#   bin/check          # Rust (format, clippy, tests), the app's QA, the worker (tests, types), packaging
+#   bin/check                        # Rust (format, clippy, tests), the app's QA, the worker (tests, types), packaging
+#   CLOUDMAIL_CHECK_NO_GTK=1 bin/check   # the same without the desktop app, on a machine without GTK 4 and WebKitGTK
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -13,13 +13,17 @@ python3 bin/check-shared-support
 
 step() { printf '\n==> %s\n' "$*"; }
 
-# The desktop app needs GTK 4 and WebKitGTK 6.0 to build; without them only the CLI and the
-# library are checked, and the build of the release packages is the app's check.
+# The desktop app needs GTK 4 and WebKitGTK 6.0 to build. Without them the check fails rather than pass having never
+# built the app: a green run must mean every crate was checked. Leaving the app out is a choice made out loud, with
+# CLOUDMAIL_CHECK_NO_GTK=1, and the run says it did.
 crates=(-p cloudmail-api -p cloudmail)
-if pkg-config --exists gtk4 webkitgtk-6.0 2>/dev/null; then
+if [[ ${CLOUDMAIL_CHECK_NO_GTK:-} == 1 ]]; then
+  echo "note: CLOUDMAIL_CHECK_NO_GTK=1, so cloudmail-gtk and its QA are not checked" >&2
+elif pkg-config --exists gtk4 webkitgtk-6.0 2>/dev/null; then
   crates+=(-p cloudmail-gtk)
 else
-  echo "note: skipping cloudmail-gtk (install gtk4 and webkitgtk-6.0 to check it)" >&2
+  echo "error: gtk4 and webkitgtk-6.0 are needed to check cloudmail-gtk; install them, or set CLOUDMAIL_CHECK_NO_GTK=1 to check without the app" >&2
+  exit 1
 fi
 
 step "rustfmt (fix with: cargo fmt --all)"

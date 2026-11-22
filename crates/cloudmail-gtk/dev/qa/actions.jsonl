@@ -9,13 +9,23 @@
 {"do":"wait","toasts":["Let in Brightline Offers"]}
 {"do":"wait","role":"list-item","name":"Brightline Offers","visible":false}
 
-# e archives the open conversation: it leaves the Inbox, with a toast, and the next one opens.
+# e archives the open conversation: it leaves the Inbox, with a toast, and the next one opens. The toast's Undo
+# puts it back where it was and opens it again; archived once more, it stays archived.
 {"do":"key","keys":"2"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true}
 {"do":"key","keys":"j"}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
 {"do":"key","keys":"e"}
-{"do":"wait","toasts":["Archived"]}
+{"do":"wait","role":"alert","name":"Archived","visible":true}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":false}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
+{"do":"click","role":"button","name":"Undo","in":{"role":"alert","name":"Archived"}}
+{"do":"wait","role":"alert","name":"Archived","visible":false}
+{"do":"wait","role":"alert","name":"Undone","visible":true}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","selected":false}
+{"do":"key","keys":"e"}
+{"do":"wait","role":"alert","name":"Archived","visible":true}
 {"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":false}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
 
@@ -34,6 +44,17 @@
 {"do":"wait","dialog":"Delete this conversation?"}
 {"do":"click","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"}}
 {"do":"wait","dialog":null}
-{"do":"wait","toasts":["Deleted"]}
+{"do":"wait","role":"alert","name":"Deleted","visible":true}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","visible":false}
+
+# The delete is only sent when its toast goes, so Undo in the toast brings the conversation back; deleted again and
+# left alone, it is deleted as the window closes.
+{"do":"click","role":"button","name":"Undo","in":{"role":"alert","name":"Deleted"}}
+{"do":"wait","role":"alert","name":"Deleted","visible":false}
+{"do":"wait","role":"list-item","name":"Autumn catalogue","selected":true}
+{"do":"key","keys":"numbersign"}
+{"do":"wait","dialog":"Delete this conversation?"}
+{"do":"click","role":"button","name":"Delete","in":{"role":"dialog","name":"Delete this conversation?"}}
+{"do":"wait","role":"alert","name":"Deleted","visible":true}
 {"do":"wait","role":"list-item","name":"Autumn catalogue","visible":false}
 {"do":"quit"}

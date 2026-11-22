@@ -23,9 +23,13 @@ docker run --rm --platform "$platform" -e EXPECTED_VERSION="$version" -e EXPECTE
     [[ $(pacman -Q cloudmail | cut -d" " -f2) == "$EXPECTED_VERSION-1" ]]
     [[ $(cloudmail --version) == "cloudmail $EXPECTED_VERSION" ]]
     cmail --version
+    test -x /usr/lib/cloudmail/cloudmail-gtk
     test -x /usr/bin/cloudmail-gtk
-    ldd /usr/bin/cloudmail-gtk > /tmp/gtk-libraries
+    grep -q "cloudmail\" open" /usr/bin/cloudmail-gtk
+    ldd /usr/lib/cloudmail/cloudmail-gtk > /tmp/gtk-libraries
     ! grep -q "not found" /tmp/gtk-libraries
+    grep -qx "Exec=cloudmail open %u" /usr/share/applications/cloudmail.desktop
+    test -f /usr/share/icons/hicolor/scalable/apps/cloudmail.svg
     for f in cloudflare.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
       test -f "/usr/share/cloudmail/worker/$f"
     done

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Before 0.8 the desktop app was started as `cloudmail-gtk`; it is `cloudmail open` now. This stands in for the old
+# command, so that key bindings, notification actions and mailto: handlers set up with it keep working: it runs the
+# `cloudmail` installed beside it, handing on its arguments (a mailto: link) as they are.
+#
+# `cloudmail open` looks for the app under lib/cloudmail and then beside itself, where this is. Should it find this,
+# the second start says so instead of starting itself again for ever.
+if [ -n "${CLOUDMAIL_OLD_LAUNCHER:-}" ]; then
+  echo "cloudmail-gtk: the desktop app isn't installed; run \`cloudmail open\` to see where it is looked for" >&2
+  exit 1
+fi
+CLOUDMAIL_OLD_LAUNCHER=1
+export CLOUDMAIL_OLD_LAUNCHER
+exec "$(dirname -- "$0")/cloudmail" open "$@"

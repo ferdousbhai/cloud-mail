@@ -1,0 +1,14 @@
+{
+  "Inbox": "Indbakke",
+  "Compose": "Skriv",
+  "New message (c)": "Ny besked (c)",
+  "Nothing selected": "Intet valgt",
+  "Archive (e)": "Arkivér (e)",
+  "Search mail · ~ meaning": "Søg i post · ~ betydning",
+  "Reading": "Læsning",
+  "Next / previous": "Næste / forrige",
+  "{n} conversations": { "one": "{n} samtale", "other": "{n} samtaler" },
+  "{n}+ conversations": { "one": "{n}+ samtaler", "other": "{n}+ samtaler" },
+  "{n} conversations · {} unread": { "one": "{n} samtale · {} ulæst", "other": "{n} samtaler · {} ulæste" },
+  "{n}+ conversations · {} unread": { "one": "{n}+ samtaler · {} ulæste", "other": "{n}+ samtaler · {} ulæste" }
+}

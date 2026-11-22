@@ -1,5 +1,6 @@
-/* What is Cloudmail's own, over omui's stylesheet. Colours are omui's @om_* tokens, so every rule follows the
-   Omarchy theme. */
+/* What is Cloudmail's own, over omui's stylesheet. Colours are omui's @om_* tokens and corners its --om-radius
+   variables, so every rule follows the Omarchy theme and Hyprland's rounding. A rule with a side in it has its mirror
+   under :dir(rtl), for the languages that read right to left. */
 
 /* Nerd Font glyphs, for the icons omui does not bundle yet (ui/mod.rs `Icon`): drawn like the icons beside them. */
 label.glyph { min-width: 16px; }
@@ -13,7 +14,7 @@ button.glyph { font-size: 1.15em; }
 .sidebar .brand image { color: @om_accent; }
 .sidebar button.compose { margin: 0 12px 12px; padding: 5px 10px; }
 .sidebar-row { margin: 1px 8px; }
-.sidebar-row .badge { border-radius: 9px; }
+.sidebar-row .badge { border-radius: var(--om-radius-small); }
 .sidebar .hint { padding: 6px 18px 4px; }
 .nav-heading { color: @om_dim_text; font-size: 0.8em; font-weight: 650; padding: 12px 18px 2px; }
 
@@ -24,22 +25,24 @@ button.glyph { font-size: 1.15em; }
 .column-sub { color: @om_dim_text; font-size: 0.9em; padding: 0 14px 8px; }
 .account-warning { color: @om_danger; font-size: 0.9em; padding: 0 14px 8px; }
 .account-sign-in { padding: 0 14px 8px; }
-/* A mail list: full-width rows ruled off from each other, the open one marked on its left edge. */
+/* A mail list: full-width rows ruled off from each other, the open one marked on the edge where reading starts. */
 .threadlist > row {
   border-bottom: 1px solid alpha(@om_border, 0.35);
   border-left: 2px solid transparent;
   border-radius: 0;
   padding: 12px 16px;
 }
+.threadlist > row:dir(rtl) { border-left: none; border-right: 2px solid transparent; }
 .threadlist > row:hover { background: alpha(@om_text, 0.04); }
 .threadlist > row:selected { background: alpha(@om_accent, 0.12); border-left-color: @om_accent; }
+.threadlist > row:selected:dir(rtl) { border-right-color: @om_accent; }
 .unread .sender { font-weight: 700; }
 .unread-dot { color: @om_accent; }
 .snippet, .time { color: @om_dim_text; }
 .time { font-size: 0.9em; }
 .account-badge {
   border: 1px solid alpha(@om_border, 0.6);
-  border-radius: 4px;
+  border-radius: var(--om-radius-small);
   color: @om_dim_text;
   font-size: 0.75em;
   padding: 0 4px;
@@ -55,11 +58,9 @@ button.glyph { font-size: 1.15em; }
 .compose .attachment-chip {
   background: @om_muted;
   border: 1px solid alpha(@om_border, 0.6);
-  border-radius: 6px;
+  border-radius: var(--om-radius);
   padding: 0 0 0 8px;
 }
+.compose .attachment-chip:dir(rtl) { padding: 0 8px 0 0; }
 .compose flowboxchild { padding: 0; }
 window.compose:drop(active) { box-shadow: inset 0 0 0 2px @om_accent; }
-
-/* ---- keyboard shortcuts ---- */
-.shortcuts { padding: 16px; }

@@ -7,38 +7,61 @@ use std::io::{IsTerminal, Write};
 
 use cloudmail_api::{Error as ApiError, ErrorKind};
 
-/// Process exit codes. Documented in `cloudmail agent-guide` and `cloudmail commands`.
+/// Process exit codes: Omarchy's contract for a command line, 0 when the command did what it was asked and 1 for any
+/// failure, with the error on stderr. What kind of failure it was is in the error itself ([`Kind`]), where a caller
+/// can read it without knowing a table of numbers. Documented in `cloudmail agent-guide` and `cloudmail commands`.
 pub mod exit {
     pub const OK: i32 = 0;
-    pub const GENERIC: i32 = 1;
-    pub const USAGE: i32 = 2;
-    pub const AUTH: i32 = 3;
-    pub const NOT_FOUND: i32 = 4;
-    pub const API: i32 = 5;
+    pub const FAILURE: i32 = 1;
 
     pub const TABLE: &[(i32, &str)] = &[
         (OK, "success"),
         (
-            GENERIC,
-            "other failure (local I/O, a setup step, a cancelled confirmation or editor)",
-        ),
-        (
-            USAGE,
-            "invalid arguments, a destructive command run without --yes, or a request the worker rejected",
-        ),
-        (
-            AUTH,
-            "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in",
-        ),
-        (
-            NOT_FOUND,
-            "the thread, message, attachment, mailbox or sender does not exist",
-        ),
-        (
-            API,
-            "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed",
+            FAILURE,
+            "any failure: the error is on stderr, as JSON with its `code` and `kind` when not on a terminal",
         ),
     ];
+}
+
+/// The broad class of a failure, given as `error.kind` beside the finer `error.code`. These are the classes the exit
+/// codes 2 to 5 used to tell apart, kept as stable strings now that every failure exits 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Usage,
+    Auth,
+    NotFound,
+    Unavailable,
+    Other,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 5] = [Kind::Usage, Kind::Auth, Kind::NotFound, Kind::Unavailable, Kind::Other];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Usage => "usage",
+            Kind::Auth => "auth",
+            Kind::NotFound => "not_found",
+            Kind::Unavailable => "unavailable",
+            Kind::Other => "other",
+        }
+    }
+
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Kind::Usage => {
+                "invalid arguments, a destructive command run without --yes, or a request the worker rejected"
+            }
+            Kind::Auth => {
+                "not configured, the API token was rejected, the Cloudflare CLI (cf) isn't logged in, or a linked account (HEY, Gmail) isn't signed in"
+            }
+            Kind::NotFound => "the thread, message, attachment, mailbox or sender does not exist",
+            Kind::Unavailable => {
+                "the worker could not be reached or returned an error, or a linked account's CLI is missing or failed"
+            }
+            Kind::Other => "any other failure (local I/O, a setup step, a cancelled confirmation or editor)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,33 +312,33 @@ pub struct CliError {
     pub code: String,
     pub message: String,
     pub hint: Option<String>,
-    pub exit: i32,
+    pub kind: Kind,
 }
 
 impl CliError {
-    pub fn new(code: &str, exit: i32, message: impl Into<String>) -> Self {
+    pub fn new(code: &str, kind: Kind, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
             hint: None,
-            exit,
+            kind,
         }
     }
 
     pub fn usage(message: impl Into<String>) -> Self {
-        Self::new("usage", exit::USAGE, message)
+        Self::new("usage", Kind::Usage, message)
     }
 
     pub fn generic(message: impl Into<String>) -> Self {
-        Self::new("error", exit::GENERIC, message)
+        Self::new("error", Kind::Other, message)
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self::new("not_found", exit::NOT_FOUND, message)
+        Self::new("not_found", Kind::NotFound, message)
     }
 
     pub fn cancelled(message: impl Into<String>) -> Self {
-        Self::new("cancelled", exit::GENERIC, message)
+        Self::new("cancelled", Kind::Other, message)
     }
 
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
@@ -324,16 +347,18 @@ impl CliError {
     }
 
     pub fn json(&self) -> Value {
-        let mut err = json!({ "code": self.code, "message": self.message });
+        let mut err = json!({ "code": self.code, "kind": self.kind.as_str(), "message": self.message });
         if let Some(h) = &self.hint {
             err["hint"] = json!(h);
         }
         json!({ "ok": false, "error": err })
     }
 
+    /// Writes the error to stderr, as JSON for a program and as text for a person: stdout is only ever a command's
+    /// result, so a caller reading it never mistakes a failure for data.
     pub fn print(&self, mode: Mode) {
         if mode.is_machine() {
-            write_line(&pretty(&self.json()));
+            eprintln!("{}", pretty(&self.json()));
         } else {
             let mut msg = format!("error: {}", self.message);
             if let Some(h) = &self.hint {
@@ -346,31 +371,31 @@ impl CliError {
 
 impl From<ApiError> for CliError {
     fn from(e: ApiError) -> Self {
-        let (exit, hint) = match e.kind {
+        let (kind, hint) = match e.kind {
             ErrorKind::Config => (
-                exit::AUTH,
+                Kind::Auth,
                 Some(
                     "invited? `cloudmail connect <invite link>`; your own deployment: `cloudmail setup`; only Gmail, iCloud Mail or HEY: `cloudmail account add`",
                 ),
             ),
             ErrorKind::Unauthorized => (
-                exit::AUTH,
+                Kind::Auth,
                 Some(
                     "the worker didn't accept this token for that: check `cloudmail config show`; if you were invited, ask for a new invite",
                 ),
             ),
-            ErrorKind::NotFound => (exit::NOT_FOUND, None),
-            ErrorKind::BadRequest => (exit::USAGE, None),
+            ErrorKind::NotFound => (Kind::NotFound, None),
+            ErrorKind::BadRequest => (Kind::Usage, None),
             ErrorKind::Network => (
-                exit::API,
+                Kind::Unavailable,
                 Some("check api_url with `cloudmail config show` and your connection"),
             ),
-            ErrorKind::Api | ErrorKind::Decode => (exit::API, None),
+            ErrorKind::Api | ErrorKind::Decode => (Kind::Unavailable, None),
             // The message already says which account and what to run.
-            ErrorKind::AccountAuth => (exit::AUTH, None),
-            ErrorKind::AccountUnavailable => (exit::API, Some("see `cloudmail account list`")),
+            ErrorKind::AccountAuth => (Kind::Auth, None),
+            ErrorKind::AccountUnavailable => (Kind::Unavailable, Some("see `cloudmail account list`")),
         };
-        let mut err = CliError::new(e.kind.code(), exit, e.message);
+        let mut err = CliError::new(e.kind.code(), kind, e.message);
         err.hint = hint.map(str::to_string);
         err
     }
@@ -449,18 +474,32 @@ mod tests {
     }
 
     #[test]
-    fn api_errors_map_to_exit_codes() {
+    fn api_errors_map_to_kinds() {
         let e: CliError = ApiError::new(ErrorKind::Unauthorized, "unauthorized").into();
-        assert_eq!((e.exit, e.code.as_str()), (exit::AUTH, "unauthorized"));
+        assert_eq!((e.kind, e.code.as_str()), (Kind::Auth, "unauthorized"));
         let e: CliError = ApiError::new(ErrorKind::NotFound, "not found").into();
-        assert_eq!(e.exit, exit::NOT_FOUND);
+        assert_eq!(e.kind, Kind::NotFound);
+        let e: CliError = ApiError::new(ErrorKind::BadRequest, "too large").into();
+        assert_eq!(e.kind, Kind::Usage);
         let e: CliError = ApiError::new(ErrorKind::Network, "refused").into();
-        assert_eq!(e.exit, exit::API);
+        assert_eq!(e.kind, Kind::Unavailable);
         let e2: CliError = ApiError::new(ErrorKind::AccountAuth, "HEY: not signed in").into();
-        assert_eq!((e2.exit, e2.code.as_str()), (exit::AUTH, "account_unauthorized"));
+        assert_eq!((e2.kind, e2.code.as_str()), (Kind::Auth, "account_unauthorized"));
         let j = e.json();
         assert_eq!(j["ok"], false);
         assert_eq!(j["error"]["code"], "network_error");
+        assert_eq!(j["error"]["kind"], "unavailable");
         assert!(j["error"]["hint"].is_string());
+    }
+
+    #[test]
+    fn every_failure_exits_one() {
+        assert_eq!(exit::TABLE, &[(0, exit::TABLE[0].1), (1, exit::TABLE[1].1)]);
+        let kinds: Vec<&str> = Kind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["usage", "auth", "not_found", "unavailable", "other"],
+            "kinds are a stable contract"
+        );
     }
 }

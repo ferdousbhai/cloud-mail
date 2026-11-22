@@ -1,0 +1,46 @@
+# A draft kept from an earlier run (dev/qa/drafts.state is this run's state directory as it starts): written but
+# neither sent nor discarded when the app last ended, or closed with Save draft.
+
+# It opens in a compose window of its own as the app starts, from the address it was being written from, and the
+# main window says so.
+{"do":"wait","role":"window","name":"New message","visible":true}
+{"do":"wait","role":"text-box","name":"To","text":"ines@example.net"}
+{"do":"wait","role":"text-box","name":"Subject","text":"Ridge on Saturday"}
+{"do":"wait","role":"label","name":"Robin Vale <billing@example.org>","in":{"role":"combo-box","name":"From"},"visible":true}
+{"do":"wait","toasts":["Opened the draft kept from last time"]}
+
+# It is unsaved work from the start: closing it asks, and Escape on the question keeps it.
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":"Discard this draft?"}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"window","name":"New message","visible":true}
+
+# Sent, it is gone from the state directory too.
+{"do":"key","keys":"<Control>Return"}
+{"do":"wait","role":"window","name":"New message","visible":false}
+{"do":"wait","toasts":["Sent"]}
+
+# A new message closed with Save draft is kept there instead: dev/qa/drafts.state-after lists what the state
+# directory must hold once the app has quit, which is that one draft and not the one that was sent.
+{"do":"key","keys":"c"}
+{"do":"wait","role":"text-box","name":"To","focused":true}
+{"do":"type","text":"ines@example.net"}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":"Discard this draft?"}
+{"do":"wait","role":"label","name":"A saved draft opens again the next time Cloudmail starts.","visible":true}
+{"do":"click","role":"button","name":"Save draft"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"window","name":"New message","visible":false}
+
+# F1 lists the keys from a compose window, where ? is typed into the message.
+{"do":"key","keys":"c"}
+{"do":"wait","role":"text-box","name":"To","focused":true}
+{"do":"key","keys":"F1"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
+{"do":"wait","role":"window","name":"New message","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","role":"window","name":"New message","visible":false}
+{"do":"quit"}

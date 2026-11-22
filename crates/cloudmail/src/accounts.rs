@@ -9,7 +9,7 @@ use cloudmail_api::{AccountStatus, Error, ErrorKind};
 
 use crate::Ctx;
 use crate::cli::AccountCommand;
-use crate::output::{Breadcrumb, CliError, CliResult, Response, crumb, dim, exit};
+use crate::output::{Breadcrumb, CliError, CliResult, Kind, Response, crumb, dim};
 
 pub fn account(ctx: &Ctx, cmd: AccountCommand) -> CliResult {
     match cmd {
@@ -49,9 +49,9 @@ fn link_error(e: LinkError) -> CliError {
             Some(h) => CliError::usage(message).hint(h),
             None => CliError::usage(message),
         },
-        LinkError::NotInstalled { message, hint } => CliError::new("not_installed", exit::GENERIC, message).hint(hint),
-        LinkError::NotSignedIn { message, hint } => CliError::new("not_logged_in", exit::AUTH, message).hint(hint),
-        LinkError::NotConfigured(message) => CliError::new("not_configured", exit::AUTH, message),
+        LinkError::NotInstalled { message, hint } => CliError::new("not_installed", Kind::Other, message).hint(hint),
+        LinkError::NotSignedIn { message, hint } => CliError::new("not_logged_in", Kind::Auth, message).hint(hint),
+        LinkError::NotConfigured(message) => CliError::new("not_configured", Kind::Auth, message),
         LinkError::Failed(e) => e.into(),
     }
 }

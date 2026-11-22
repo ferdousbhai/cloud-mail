@@ -11,7 +11,7 @@ use cloudmail_api::{ErrorKind, Mail, OutgoingAttachment, SendRequest, ThreadDeta
 
 use crate::Ctx;
 use crate::cli::*;
-use crate::output::{self, CliError, CliResult, Response, crumb, exit};
+use crate::output::{self, CliError, CliResult, Kind, Response, crumb, exit};
 use crate::render;
 
 /// Names the missing object in a not-found error.
@@ -276,7 +276,7 @@ pub fn confirm(yes: bool, question: &str) -> CliResult<()> {
     if !(output::stdin_is_tty() && output::stdout_is_tty()) {
         return Err(CliError::new(
             "confirmation_required",
-            exit::USAGE,
+            Kind::Usage,
             "refusing to do this without confirmation",
         )
         .hint("add --yes"));

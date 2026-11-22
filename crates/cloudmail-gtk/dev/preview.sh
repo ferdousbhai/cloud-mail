@@ -197,6 +197,11 @@ if [[ -n ${CLOUDMAIL_PREVIEW_KEYS:-} ]]; then
   settle=1
 fi
 shoot "$screenshot" "$settle"
+# What the compositor knows the window by, which Hyprland's window rules and the launcher match: Omarchy's one name,
+# from the first frame on (a rule that places a window reads its initial class).
+classes=$(hyprctl clients -j | jq -r 'first(.[] | select(.mapped) | .class + " " + .initialClass)')
+echo "preview: window class and initial class: $classes"
+[[ $classes == "cloudmail cloudmail" ]] || { echo "preview: the window is not known as cloudmail" >&2; exit 1; }
 if [[ -n $next_theme ]]; then
   stage_theme "$next_theme" next
   [[ ! -d $current/theme ]] || mv -- "$current/theme" "$current/previous"

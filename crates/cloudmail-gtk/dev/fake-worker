@@ -6,6 +6,9 @@
 Listens on a free port of 127.0.0.1, writes the port to <port-file>, and answers what the app reads: the admin's
 token, four boxes of threads, a waiting sender, one more user. Writes (move, read, send, invite) are accepted and
 forgotten.
+
+A search for "worker down" takes it down: it answers the search, and from then on fails every read with 503, as a
+worker that cannot be reached would, until a search for "worker up". A script has no other way to tell it anything.
 """
 
 import json
@@ -98,7 +101,18 @@ USERS = [
 ]
 
 
+DOWN = {"error": "the stand-in worker is down"}
+down = False
+
+
 def answer(path, query):
+    global down
+    words = query.get("q", [""])[0].lower().split()
+    if path == "/api/threads" and words in (["worker", "down"], ["worker", "up"]):
+        down = words[1] == "down"
+        return {"threads": []}
+    if down:
+        return DOWN
     if path == "/api/me":
         return {"user": {"name": "owner", "role": "admin"}}
     if path == "/api/threads":
@@ -107,7 +121,7 @@ def answer(path, query):
         if "before" in query:
             return {"threads": []}
         # A search looks in every box, as the worker's does, here by words in the subject or the snippet.
-        if words := query.get("q", [""])[0].lower().split():
+        if words:
             return {"threads": [t for t in THREADS if all(w in f"{t['subject']} {t['snippet']}".lower() for w in words)]}
         return {"threads": [t for t in THREADS if t["folder"] == folder]}
     if path.startswith("/api/threads/"):
@@ -127,7 +141,7 @@ def answer(path, query):
 class Handler(BaseHTTPRequestHandler):
     def reply(self, body):
         data = json.dumps({"error": "not found"} if body is None else body).encode()
-        self.send_response(404 if body is None else 200)
+        self.send_response(404 if body is None else 503 if body is DOWN else 200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

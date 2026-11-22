@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use cloudmail_api::{Client, Config, MailboxUpdate, config};
 
 use crate::cli::{RouteArgs, SetupArgs};
-use crate::output::{self, CliError, CliResult, Response, crumb, exit, prompt};
+use crate::output::{self, CliError, CliResult, Kind, Response, crumb, prompt};
 
 // ---------- parsing helpers (pure, unit-tested) ----------
 
@@ -951,7 +951,7 @@ fn login(w: &mut Cf, cf: &str) -> CliResult<Value> {
             return Ok(out);
         }
     }
-    Err(CliError::new("not_logged_in", exit::AUTH, "not logged in to Cloudflare").hint(format!(
+    Err(CliError::new("not_logged_in", Kind::Auth, "not logged in to Cloudflare").hint(format!(
         "run `{cf} auth login`, or set CLOUDFLARE_API_TOKEN to a token with the permissions listed in the README (https://github.com/ferdousbhai/cloud-mail#get-started)"
     )))
 }

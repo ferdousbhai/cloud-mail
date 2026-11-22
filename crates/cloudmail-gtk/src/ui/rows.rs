@@ -1,14 +1,19 @@
+//! The rows of the mail list and the Screener. They are built again from their data after a switch of language
+//! (`Ui::relabel`), so their text is written once, in the language of the moment.
+
 use gtk::{pango, prelude::*};
+use omui::tr;
 
 use crate::api::{PendingSender, ThreadSummary};
-use crate::util::{short_time, subject_or_placeholder};
+use crate::format::short_time;
+use crate::util::subject_or_placeholder;
 
 /// A small tag naming the linked account a row came from ("HEY", "Gmail"); nothing for your worker's mail.
 fn account_badge(account: Option<&str>) -> Option<gtk::Label> {
     let text = crate::api::provider::account_label(account?);
     let l = gtk::Label::new(Some(&text));
     l.add_css_class("account-badge");
-    l.set_tooltip_text(Some(&format!("In your linked {text} account")));
+    l.set_tooltip_text(Some(&omui::tr!("In your linked {} account", text)));
     l.set_valign(gtk::Align::Center);
     Some(l)
 }
@@ -29,9 +34,9 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let dot = label(if t.unread { "●" } else { " " }, "unread-dot");
     top.append(&dot);
-    let who = t.sender().unwrap_or_else(|| "(unknown)".into());
+    let who = t.sender().unwrap_or_else(|| tr("(unknown)"));
     let who = if t.message_count > 1 {
-        format!("{who} ({})", t.message_count)
+        format!("{who} ({})", omui::i18n::format_int(t.message_count))
     } else {
         who
     };
@@ -54,7 +59,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
     let subject = subject_or_placeholder(&t.subject);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 2);
     body.append(&top);
-    let subject = label(subject, "subject");
+    let subject = label(&subject, "subject");
     subject.set_margin_start(16);
     body.append(&subject);
     let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -70,7 +75,7 @@ pub fn thread_row(t: &ThreadSummary, sent_view: bool, default_email: Option<&str
         // Not ellipsized: the snippet gives way so the address stays readable.
         let to_label = gtk::Label::new(Some(to));
         to_label.add_css_class("time");
-        to_label.set_tooltip_text(Some(&format!("Sent to {to}")));
+        to_label.set_tooltip_text(Some(&omui::tr!("Sent to {}", to)));
         bottom.append(&to_label);
     }
     body.append(&bottom);
@@ -119,25 +124,23 @@ pub fn sender_row(s: &PendingSender) -> SenderRow {
     if s.display() != s.email {
         text.append(&label(&s.email, "snippet"));
     }
-    let count = if s.thread_count > 1 {
-        format!("{} emails · ", s.thread_count)
+    let subject = subject_or_placeholder(s.last_subject.as_deref().unwrap_or(""));
+    let line = if s.thread_count > 1 {
+        omui::trn!("{n} emails · {}", s.thread_count, subject)
     } else {
-        String::new()
+        subject
     };
-    text.append(&label(
-        &format!("{count}{}", s.last_subject.as_deref().unwrap_or("(no subject)")),
-        "subject",
-    ));
+    text.append(&label(&line, "subject"));
     text.add_css_class("unread");
 
     let approve = gtk::Button::builder()
-        .label("Yes")
-        .tooltip_text("Let them in (y)")
+        .label(tr("Yes"))
+        .tooltip_text(tr("Let them in (y)"))
         .build();
     approve.add_css_class("suggested-action");
     let block = gtk::Button::builder()
-        .label("No")
-        .tooltip_text("Block them (n)")
+        .label(tr("No"))
+        .tooltip_text(tr("Block them (n)"))
         .build();
     block.add_css_class("destructive-action");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);

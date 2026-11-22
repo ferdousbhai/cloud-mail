@@ -9,9 +9,11 @@ mod shortcuts;
 
 use gtk::{gdk, gio, glib, glib::clone, pango, prelude::*};
 use omui::icons::name;
+use omui::tr;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 use webkit6::prelude::*;
 
 use crate::api::unified::{merge, merge_senders};
@@ -19,9 +21,116 @@ use crate::api::{
     AccountWarning, Address, Client, Identities, Mail, PendingSender, ThreadDetail, ThreadQuery, ThreadSummary,
 };
 use crate::config::{self, Config};
-use crate::util::{self, Draft, unused_path};
+use crate::util::{self, Draft};
 
 const PAGE: u32 = 50;
+
+/// How long an archive or a delete can be taken back from its toast.
+const UNDO_SECONDS: u32 = 6;
+
+/// The window coming back to the front is shown the news at once, unless it was already this recent: closing a
+/// compose window or a dialog also brings it back, and that is no reason to ask the worker and every linked
+/// account again.
+const RETURN_REFRESH_AFTER: Duration = Duration::from_secs(10);
+
+/// Whether the window, active again after a time away, should check for mail now rather than at the next tick.
+fn refresh_on_return(since_last_poll: Option<Duration>) -> bool {
+    since_last_poll.is_none_or(|since| since >= RETURN_REFRESH_AFTER)
+}
+
+/// Something done in the background, for the window itself rather than at the user's asking, that failed. Each is
+/// said in a line above the list until it next works, where a log on stderr is read by no one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Trouble {
+    List,
+    NewMail,
+    Counts,
+    Addresses,
+}
+
+impl Trouble {
+    /// The whole sentence for this having failed with `error`, in the language of the moment.
+    fn sentence(self, error: &str) -> String {
+        match self {
+            Trouble::List => omui::tr!("Couldn't refresh the list: {}", error),
+            Trouble::NewMail => omui::tr!("Couldn't check for new mail: {}", error),
+            Trouble::Counts => omui::tr!("Couldn't update the counts: {}", error),
+            Trouble::Addresses => omui::tr!("Couldn't load your addresses: {}", error),
+        }
+    }
+}
+
+/// The line for what is failing now, and the tooltip that has each failure's own sentence: one line per cause, since
+/// a worker that cannot be reached fails everything at once with the same error. Each line is a whole sentence of
+/// the catalog's, never one put together from pieces, so a cause behind several failures is said with their number.
+fn trouble_text(troubles: &BTreeMap<Trouble, String>) -> (String, String) {
+    let mut causes: Vec<(&str, Vec<Trouble>)> = Vec::new();
+    for (trouble, error) in troubles {
+        match causes.iter_mut().find(|(cause, _)| cause == error) {
+            Some((_, whats)) => whats.push(*trouble),
+            None => causes.push((error, vec![*trouble])),
+        }
+    }
+    let line = causes
+        .iter()
+        .map(|(error, whats)| match whats.as_slice() {
+            [one] => one.sentence(error),
+            several => omui::trn!(
+                "{n} things the window does in the background failed: {}",
+                several.len(),
+                error
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let details = troubles
+        .iter()
+        .map(|(trouble, error)| trouble.sentence(error))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (line, details)
+}
+
+/// A thread put back among `threads`, which are newest first, where its date belongs; not twice.
+fn insert_by_date(threads: &mut Vec<ThreadSummary>, thread: &ThreadSummary) {
+    if threads.iter().any(|t| t.id == thread.id) {
+        return;
+    }
+    let at = threads
+        .iter()
+        .position(|t| t.last_at < thread.last_at)
+        .unwrap_or(threads.len());
+    threads.insert(at, thread.clone());
+}
+
+/// A conversation taken out of the list or moved to another box, as it was before, so that Undo can put it back.
+struct Taken {
+    thread: ThreadSummary,
+    /// Its row's place in the list.
+    index: usize,
+    view: View,
+    /// It left the list on show, rather than only changing box within it (an archive from a search).
+    left_view: bool,
+}
+
+/// An archive or a move to the Inbox that its toast can still undo. The move is sent at once, so Undo may be
+/// pressed before the answer is in: the move back is then sent when it is, never ahead of the move it undoes.
+struct Moved {
+    taken: Taken,
+    /// How the move went, once it has been answered.
+    answered: Cell<Option<bool>>,
+    undone: Cell<bool>,
+}
+
+/// A delete that its toast can still undo. Nothing can bring a conversation back once the worker has deleted it,
+/// and the linked accounts offer no way out of their Trash here, so the delete itself waits for the toast to go:
+/// until then the conversation is only out of the list.
+struct Deleting {
+    taken: Option<Taken>,
+    id: String,
+    /// Undone or sent: whichever comes first is the only one.
+    settled: Cell<bool>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum View {
@@ -54,17 +163,19 @@ impl View {
         }
     }
 
-    fn title(self) -> &'static str {
+    /// The box's name, in the language of the moment. HEY's boxes are named as HEY names them in English, and are
+    /// translated like any other name.
+    fn title(self) -> String {
         match self {
-            View::Screener => "The Screener",
-            View::Inbox => "Inbox",
-            View::Archive => "Archive",
-            View::Sent => "Sent",
-            View::Search => "Search",
-            View::Feed => "The Feed",
-            View::PaperTrail => "Paper Trail",
-            View::SetAside => "Set Aside",
-            View::ReplyLater => "Reply Later",
+            View::Screener => tr("The Screener"),
+            View::Inbox => tr("Inbox"),
+            View::Archive => tr("Archive"),
+            View::Sent => tr("Sent"),
+            View::Search => tr("Search"),
+            View::Feed => tr("The Feed"),
+            View::PaperTrail => tr("Paper Trail"),
+            View::SetAside => tr("Set Aside"),
+            View::ReplyLater => tr("Reply Later"),
         }
     }
 
@@ -152,6 +263,17 @@ pub struct Ui {
     /// Waiting senders in the accounts' Screeners and unread threads in their Inboxes, for the sidebar badges.
     account_counts: Cell<(i64, i64)>,
     warning: gtk::Label,
+    /// The linked accounts' warnings on show in `warning`, to say again after a switch of language.
+    warnings: RefCell<Vec<AccountWarning>>,
+    /// What the window could not do in the background, and the line under `warning` that says so.
+    troubles: RefCell<BTreeMap<Trouble, String>>,
+    trouble: gtk::Label,
+    /// Deletes waiting out their undo toast; the window closing sends them.
+    deleting: RefCell<Vec<Rc<Deleting>>>,
+    /// How often mail is checked for while the window is active, the timer that does it, and when it last was.
+    poll_seconds: u32,
+    poll_timer: RefCell<Option<glib::SourceId>>,
+    last_poll: Cell<Option<Instant>>,
     /// A "Sign in to …" button for each linked account whose sign-in expired.
     sign_in: gtk::Box,
     /// Accounts with a browser sign-in under way.
@@ -185,18 +307,22 @@ pub struct Ui {
     seen: RefCell<Option<Seen>>,
     nav: gtk::ListBox,
     badges: Vec<gtk::Label>,
+    /// The worker's counts as last heard, for the badges and the window's title to be written again from.
+    counts: RefCell<crate::api::Counts>,
     wide_only: Vec<gtk::Widget>,
     sidebar: gtk::Box,
     paned: gtk::Paned,
     compact: Cell<Option<bool>>,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
-    empty: gtk::Label,
+    /// What the list's place says while it has no rows ("Loading…", "Inbox zero."), written again after a switch of
+    /// language, as `title` and `subtitle` are.
+    empty: Live,
     list_stack: gtk::Stack,
     /// The icon of the box on show, beside `title`; nothing for a search by meaning.
     title_icon: gtk::Box,
-    title: gtk::Label,
-    subtitle: gtk::Label,
+    title: Live,
+    subtitle: Live,
     /// The window's overlay, for toasts and the delete question.
     pub shell: Rc<omui::Shell>,
     search: gtk::SearchEntry,
@@ -205,6 +331,62 @@ pub struct Ui {
     archive_btn: gtk::Button,
     inbox_btn: gtk::Button,
     webview: webkit6::WebView,
+    /// The window's single keys, which do nothing while the search field has the keyboard.
+    pub keys: omui::Keys,
+    /// Where an attachment is chosen: the desktop portal's dialog, or a stand-in in tests and scripted QA.
+    pub picker: Rc<dyn omui::FilePicker>,
+}
+
+/// A label whose text a function writes, now and again after every switch of language: for text built from
+/// translated strings and kept (a status line, an error), which would otherwise stay in the language it was made in.
+#[derive(Clone)]
+pub(super) struct Live {
+    pub label: gtk::Label,
+    text: Rc<RefCell<Rc<dyn Fn() -> String>>>,
+}
+
+impl Live {
+    pub fn new(label: gtk::Label) -> Self {
+        let text: Rc<RefCell<Rc<dyn Fn() -> String>>> = Rc::new(RefCell::new(Rc::new(String::new)));
+        let (weak, write) = (label.downgrade(), text.clone());
+        omui::i18n::on_change(&label, move || {
+            if let Some(label) = weak.upgrade() {
+                let text = write.borrow().clone();
+                label.set_label(&text());
+            }
+        });
+        Self { label, text }
+    }
+
+    /// Writes `text()` into the label, and again whenever the language changes.
+    pub fn set(&self, text: impl Fn() -> String + 'static) {
+        let text: Rc<dyn Fn() -> String> = Rc::new(text);
+        self.label.set_label(&text());
+        *self.text.borrow_mut() = text;
+    }
+
+    /// Text that is not the app's to translate (an error from the worker, a name), or nothing.
+    pub fn set_plain(&self, text: &str) {
+        let text = text.to_owned();
+        self.set(move || text.clone());
+    }
+}
+
+/// Makes `text`, translated, the tooltip and accessible name of `widget`, now and after each switch of language: for
+/// what is not a literal at the call (a wrapper's argument, which the catalog test is told of).
+fn bind_tooltip_text(widget: &gtk::Widget, text: &'static str) {
+    omui::i18n::bind(widget, move |widget| {
+        let text = omui::i18n::translate(text);
+        widget.set_tooltip_text(Some(&text));
+        widget.update_property(&[gtk::accessible::Property::Label(&text)]);
+    });
+}
+
+/// A window's title, translated now and after each switch of language.
+pub(super) fn bind_title(window: &gtk::Window, text: &'static str) {
+    omui::i18n::bind(window, move |window| {
+        window.set_title(Some(&omui::i18n::translate(text)))
+    });
 }
 
 /// An icon of omui's, or the Nerd Font glyph the app drew before omui for the ones omui does not bundle yet.
@@ -229,55 +411,87 @@ impl Icon {
                 .upcast(),
         }
     }
-
-    /// A borderless button; `tooltip` is also its accessible name.
-    fn button(self, tooltip: &str) -> gtk::Button {
-        match self {
-            Icon::Om(name) => omui::icon_button(name, tooltip),
-            Icon::Glyph(glyph) => {
-                let button = gtk::Button::builder()
-                    .label(glyph)
-                    .tooltip_text(tooltip)
-                    .css_classes(["header-action", "glyph"])
-                    .build();
-                button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
-                button
-            }
-        }
-    }
 }
 
-/// A sidebar button with an icon and a label; the label is hidden when the window is narrow.
-fn sidebar_button(icon: Icon, text: &str, tooltip: &str, wide_only: &mut Vec<gtk::Widget>) -> gtk::Button {
+/// A borderless button showing `icon`; `tooltip`, translated and followed, is also its accessible name.
+fn tip_button(icon: Icon, tooltip: &'static str) -> gtk::Button {
+    let button = match icon {
+        Icon::Om(name) => omui::icon_button(name, ""),
+        Icon::Glyph(glyph) => gtk::Button::builder()
+            .label(glyph)
+            .css_classes(["header-action", "glyph"])
+            .build(),
+    };
+    bind_tooltip_text(button.upcast_ref(), tooltip);
+    button
+}
+
+/// `omui::confirm` for a question with a name in it (`Unlink {}?`), which `confirm` cannot translate from its English:
+/// `texts` gives the heading, the body and the action's label, translated, and is asked again after each switch of
+/// language while the dialog is open. Destructive, as every such question here is, so Enter cancels as Escape does.
+pub(crate) fn ask_destructive(
+    parent: &impl IsA<gtk::Widget>,
+    texts: impl Fn() -> (String, String, String) + 'static,
+    yes: impl FnOnce() + 'static,
+) {
+    let dialog = omui::Dialog::new(Some(""), Some(""));
+    dialog.add_response("cancel", "");
+    dialog.add_response("confirm", "");
+    dialog.bind(move |dialog| {
+        let (heading, body, action) = texts();
+        dialog.set_heading(&heading);
+        dialog.set_body(&body);
+        // omui's own word, from omui's catalog, as `confirm` has it.
+        dialog.set_response_label("cancel", &omui::i18n::translate("_Cancel"));
+        dialog.set_response_label("confirm", &action);
+    });
+    dialog.set_response_appearance("confirm", omui::Appearance::Destructive);
+    dialog.set_default_response("cancel");
+    dialog.set_close_response("cancel");
+    let yes = Cell::new(Some(yes));
+    dialog.connect_response(move |_, id| {
+        if id == "confirm"
+            && let Some(yes) = yes.take()
+        {
+            yes();
+        }
+    });
+    dialog.present(parent);
+}
+
+/// A sidebar button with an icon and a label, which the caller names; the label is hidden when the window is narrow.
+fn sidebar_button(icon: Icon, wide_only: &mut Vec<gtk::Widget>) -> (gtk::Button, gtk::Label) {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     content.append(&icon.widget());
-    let label = gtk::Label::builder().label(text).xalign(0.0).build();
+    let label = gtk::Label::builder().xalign(0.0).build();
     content.append(&label);
-    wide_only.push(label.upcast());
-    let b = gtk::Button::builder().child(&content).tooltip_text(tooltip).build();
+    wide_only.push(label.clone().upcast());
+    let b = gtk::Button::builder().child(&content).build();
     b.add_css_class("sidebar-footer");
-    b
+    (b, label)
 }
 
-/// A window over the main one for managing something (Accounts, People): the window, with a
-/// `class` for scripts to find it by, and its root box, headed by `heading`.
-pub(super) fn tool_window(ui: &Ui, title: &str, class: &str, heading: &str, width: i32) -> (gtk::Window, gtk::Box) {
+/// A window over the main one for managing something (Accounts, People): the window, with a `class` for scripts to
+/// find it by, its root box, and the heading at the top of it, which the caller names (as it does the window).
+pub(super) fn tool_window(ui: &Ui, class: &str, width: i32) -> (gtk::Window, gtk::Box, gtk::Label) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     root.add_css_class("accounts");
     root.set_margin_top(18);
     root.set_margin_bottom(18);
     root.set_margin_start(18);
     root.set_margin_end(18);
-    root.append(&omui::label(heading, "column-title"));
+    let heading = omui::label("", "column-title");
+    root.append(&heading);
     let window = gtk::Window::builder()
-        .title(title)
         .transient_for(&ui.window)
         .modal(true)
         .default_width(width)
         .child(&root)
         .build();
     window.add_css_class(class);
-    (window, root)
+    // Ctrl+W closes it and Ctrl+Q the app, as in the main window.
+    omui::quit_keys(&window);
+    (window, root, heading)
 }
 
 /// Keeps a window's state alive until the window closes, so its handlers can hold it weakly.
@@ -287,14 +501,14 @@ pub(super) fn keep_until_closed<T: 'static>(window: &gtk::Window, state: &Rc<T>)
 }
 
 impl Ui {
-    pub fn new(app: &gtk::Application, config: Result<Config, String>) -> Rc<Self> {
+    pub fn new(app: &gtk::Application, config: Result<Config, crate::api::Error>) -> Rc<Self> {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
             .title("Cloudmail")
             .default_width(1320)
             .default_height(840)
             .build();
-        window.set_icon_name(Some(crate::APP_ID));
+        window.set_icon_name(Some(crate::NAME));
 
         // Sidebar
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -307,12 +521,11 @@ impl Ui {
         sidebar.append(&brand);
         let compose_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         compose_box.append(&omui::icon(name::COMPOSE));
-        let compose_label = gtk::Label::builder().label("Compose").xalign(0.0).build();
+        let compose_label = gtk::Label::builder().xalign(0.0).build();
+        omui::i18n::bind_label(&compose_label, "Compose");
         compose_box.append(&compose_label);
-        let compose_btn = gtk::Button::builder()
-            .child(&compose_box)
-            .tooltip_text("New message (c)")
-            .build();
+        let compose_btn = gtk::Button::builder().child(&compose_box).build();
+        omui::i18n::bind_tooltip(&compose_btn, "New message (c)");
         compose_btn.add_css_class("suggested-action");
         compose_btn.add_css_class("compose");
         sidebar.append(&compose_btn);
@@ -345,11 +558,9 @@ impl Ui {
         for (i, view) in nav_views.iter().enumerate() {
             let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row_box.append(&view.icon().widget());
-            let name = gtk::Label::builder()
-                .label(view.title())
-                .xalign(0.0)
-                .hexpand(true)
-                .build();
+            let name = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+            let view = *view;
+            omui::i18n::bind(&name, move |name| name.set_label(&view.title()));
             row_box.append(&name);
             wide_only.push(name.upcast());
             // The Screener's count asks for a decision; the others only say how much is unread.
@@ -373,22 +584,17 @@ impl Ui {
         spacer.set_vexpand(true);
         sidebar.append(&spacer);
         // Shown once the worker says you're its admin.
-        let people_btn = sidebar_button(
-            Icon::Om(name::USERS),
-            "People",
-            "Who else reads their mail on your worker; invite someone",
-            &mut wide_only,
-        );
+        let (people_btn, people_label) = sidebar_button(Icon::Om(name::USERS), &mut wide_only);
+        omui::i18n::bind_label(&people_label, "People");
+        omui::i18n::bind_tooltip(&people_btn, "Who else reads their mail on your worker; invite someone");
         people_btn.set_visible(false);
         sidebar.append(&people_btn);
-        let accounts_btn = sidebar_button(
-            Icon::Om(name::USER),
-            "Accounts",
-            "Linked accounts: HEY, Gmail, iCloud Mail",
-            &mut wide_only,
-        );
+        let (accounts_btn, accounts_label) = sidebar_button(Icon::Om(name::USER), &mut wide_only);
+        omui::i18n::bind_label(&accounts_label, "Accounts");
+        omui::i18n::bind_tooltip(&accounts_btn, "Linked accounts: HEY, Gmail, iCloud Mail");
         sidebar.append(&accounts_btn);
-        let hint = gtk::Label::builder().label("? all shortcuts").xalign(0.0).build();
+        let hint = gtk::Label::builder().xalign(0.0).build();
+        omui::i18n::bind_label(&hint, "? all shortcuts");
         hint.add_css_class("hint");
         hint.add_css_class("dim-label");
         hint.add_css_class("caption");
@@ -400,29 +606,36 @@ impl Ui {
         // Thread list column
         let middle = gtk::Box::new(gtk::Orientation::Vertical, 0);
         middle.set_width_request(260);
-        let search = gtk::SearchEntry::builder()
-            .placeholder_text("Search mail · ~ meaning")
-            .build();
+        let search = gtk::SearchEntry::new();
+        omui::i18n::bind(&search, |search| {
+            search.set_placeholder_text(Some(&tr("Search mail · ~ meaning")));
+        });
         search.add_css_class("mail-search");
         middle.append(&search);
         let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         title_row.add_css_class("column-title");
         let title_icon = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         title_row.append(&title_icon);
-        let title = gtk::Label::builder().xalign(0.0).build();
-        title_row.append(&title);
+        let title = Live::new(gtk::Label::builder().xalign(0.0).build());
+        title_row.append(&title.label);
         middle.append(&title_row);
-        let subtitle = gtk::Label::builder()
-            .xalign(0.0)
-            .ellipsize(pango::EllipsizeMode::End)
-            .build();
-        subtitle.add_css_class("column-sub");
-        middle.append(&subtitle);
+        let subtitle = Live::new(
+            gtk::Label::builder()
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build(),
+        );
+        subtitle.label.add_css_class("column-sub");
+        middle.append(&subtitle.label);
         // A linked account that failed: said once here, while the rest of the mail carries on.
         let warning = gtk::Label::builder().xalign(0.0).wrap(true).build();
         warning.add_css_class("account-warning");
         warning.set_visible(false);
         middle.append(&warning);
+        let trouble = gtk::Label::builder().xalign(0.0).wrap(true).build();
+        trouble.add_css_class("account-warning");
+        trouble.set_visible(false);
+        middle.append(&trouble);
         let sign_in = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         sign_in.add_css_class("account-sign-in");
         sign_in.set_visible(false);
@@ -430,13 +643,15 @@ impl Ui {
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.add_css_class("threadlist");
-        let empty = gtk::Label::builder()
-            .wrap(true)
-            .justify(gtk::Justification::Center)
-            .build();
-        empty.add_css_class("status-line");
-        empty.add_css_class("empty");
-        empty.set_valign(gtk::Align::Start);
+        let empty = Live::new(
+            gtk::Label::builder()
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .build(),
+        );
+        empty.label.add_css_class("status-line");
+        empty.label.add_css_class("empty");
+        empty.label.set_valign(gtk::Align::Start);
         let scroller = gtk::ScrolledWindow::builder()
             .child(&list)
             .vexpand(true)
@@ -447,7 +662,7 @@ impl Ui {
         let list_stack = gtk::Stack::new();
         list_stack.set_vexpand(true);
         list_stack.add_named(&scroller, Some("list"));
-        list_stack.add_named(&empty, Some("empty"));
+        list_stack.add_named(&empty.label, Some("empty"));
         middle.append(&list_stack);
 
         // Reader
@@ -455,16 +670,16 @@ impl Ui {
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         bar.add_css_class("toolbar");
         bar.add_css_class("reader-bar");
-        // An empty spacer that pushes the buttons right and carries the subject as its tooltip.
+        // An empty spacer that pushes the buttons to the end and carries the subject as its tooltip.
         let reader_subject = gtk::Label::builder().hexpand(true).build();
         bar.append(&reader_subject);
-        let reply_btn = Icon::Glyph("\u{f112}").button("Reply (r)");
-        let reply_all_btn = Icon::Glyph("\u{f122}").button("Reply all (a)");
-        let archive_btn = ARCHIVE.button("Archive (e)");
-        let inbox_btn = INBOX.button("Move to Inbox (i)");
-        let delete_btn = omui::icon_button(name::DELETE, "Delete (#)");
-        let unread_btn = omui::icon_button(name::MAIL, "Mark unread (u)");
-        let images_btn = omui::icon_button(name::IMAGE, "Load remote images (L)");
+        let reply_btn = tip_button(Icon::Glyph("\u{f112}"), "Reply (r)");
+        let reply_all_btn = tip_button(Icon::Glyph("\u{f122}"), "Reply all (a)");
+        let archive_btn = tip_button(ARCHIVE, "Archive (e)");
+        let inbox_btn = tip_button(INBOX, "Move to Inbox (i)");
+        let delete_btn = tip_button(Icon::Om(name::DELETE), "Delete (#)");
+        let unread_btn = tip_button(Icon::Om(name::MAIL), "Mark unread (u)");
+        let images_btn = tip_button(Icon::Om(name::IMAGE), "Load remote images (L)");
         for b in [
             &reply_btn,
             &reply_all_btn,
@@ -491,11 +706,16 @@ impl Ui {
             .build();
         reader.append(&webview);
 
-        let placeholder = omui::EmptyState::new(
-            Some(name::MAIL),
-            "Nothing selected",
-            Some("j / k to move · 1–4 to switch boxes\n? for all keys"),
-        );
+        let placeholder = Rc::new(omui::EmptyState::new(Some(name::MAIL), "", None));
+        let write_placeholder = {
+            let placeholder = placeholder.clone();
+            move || {
+                placeholder.set_title(&tr("Nothing selected"));
+                placeholder.set_description(&tr("j / k to move · 1–4 to switch boxes\n? for all keys"));
+            }
+        };
+        write_placeholder();
+        omui::i18n::on_change(&placeholder.widget, write_placeholder);
         let reader_stack = gtk::Stack::new();
         reader_stack.add_named(&placeholder.widget, Some("empty"));
         reader_stack.add_named(&reader, Some("thread"));
@@ -515,9 +735,12 @@ impl Ui {
         root.append(&sidebar);
         match &config {
             Ok(_) => root.append(&paned),
-            Err(msg) => root.append(&setup_page(msg)),
+            Err(e) => root.append(&setup_page(e)),
         }
         let shell = omui::Shell::new(&window, &root);
+        let keys = omui::Keys::new(&window);
+        // A QA script answers the portal's requests itself, with files or a failure (omui's `picker` command).
+        let picker: Rc<dyn omui::FilePicker> = Rc::new(omui::PortalFilePicker::new());
 
         let poll_seconds = config
             .as_ref()
@@ -534,6 +757,13 @@ impl Ui {
             account_cache: RefCell::new(HashMap::new()),
             account_counts: Cell::new((0, 0)),
             warning,
+            warnings: RefCell::new(Vec::new()),
+            troubles: RefCell::new(BTreeMap::new()),
+            trouble,
+            deleting: RefCell::new(Vec::new()),
+            poll_seconds,
+            poll_timer: RefCell::new(None),
+            last_poll: Cell::new(None),
             sign_in,
             signing_in: RefCell::new(HashSet::new()),
             signed_out_notified: RefCell::new(HashSet::new()),
@@ -557,6 +787,7 @@ impl Ui {
             seen: RefCell::new(None),
             nav,
             badges,
+            counts: RefCell::new(Default::default()),
             wide_only,
             sidebar,
             paned,
@@ -575,6 +806,8 @@ impl Ui {
             archive_btn,
             inbox_btn,
             webview,
+            keys,
+            picker,
         });
         ui.apply_webview_background();
         // GTK4 has no resize signal on windows; checking per frame is cheap and
@@ -739,6 +972,21 @@ impl Ui {
             move |_, key, _, mods| ui.on_key(key, mods)
         ));
         ui.window.add_controller(keys);
+        ui.add_keys();
+        shortcuts::install(&ui.window, false);
+        // Ctrl+Q closes every window and Ctrl+W this one, each through its close-request: a draft asks first.
+        omui::quit_keys(&ui.window);
+
+        // What was written from translated text is written again in the new language, with the dates and numbers
+        // in its forms; the message on show too, whose page holds the app's own words around the mail.
+        omui::i18n::on_change(
+            &ui.window,
+            clone!(
+                #[weak]
+                ui,
+                move || ui.relabel()
+            ),
+        );
 
         // The page in the web view is drawn from the theme's colours, which CSS does not reach.
         if let Some(theme) = omui::Theme::get() {
@@ -755,23 +1003,38 @@ impl Ui {
             );
         }
 
+        // A window that is closing takes its toasts with it: the deletes still waiting on one are sent now.
+        ui.window.connect_destroy(clone!(
+            #[weak]
+            ui,
+            move |_| {
+                ui.stop_polling();
+                let waiting: Vec<Rc<Deleting>> = ui.deleting.borrow().clone();
+                for delete in &waiting {
+                    ui.send_delete(delete);
+                }
+            }
+        ));
+
         if ui.mail.is_some() {
             ui.set_view(View::Inbox);
             ui.check_new();
             ui.load_identities();
-            glib::timeout_add_seconds_local(
-                poll_seconds,
-                clone!(
-                    #[weak]
-                    ui,
-                    #[upgrade_or]
-                    glib::ControlFlow::Break,
-                    move || {
-                        ui.poll();
-                        glib::ControlFlow::Continue
-                    }
-                ),
-            );
+            ui.last_poll.set(Some(Instant::now()));
+            // Mail is only checked for while the window is the active one: the timer stops when it is not (behind
+            // another window, on another workspace, minimised), and coming back checks at once.
+            ui.window.connect_is_active_notify(clone!(
+                #[weak]
+                ui,
+                move |_| ui.sync_polling()
+            ));
+            ui.sync_polling();
+            // Once the main window is up, so that the drafts' windows open over it.
+            glib::idle_add_local_once(clone!(
+                #[weak]
+                ui,
+                move || compose::restore(&ui)
+            ));
         } else {
             ui.select_nav(View::Inbox);
         }
@@ -780,8 +1043,99 @@ impl Ui {
         ui
     }
 
+    /// The single keys, which act unless a text field has the keyboard (where they are characters) or a dialog is
+    /// open. A bare letter is that key alone and `<Shift>` names its upper case, which here is a different action.
+    fn add_keys(self: &Rc<Self>) {
+        let on = |key: &str, action: fn(&Rc<Ui>)| {
+            let ui = Rc::downgrade(self);
+            self.keys.on(key, move || {
+                if let Some(ui) = ui.upgrade().filter(|ui| ui.mail.is_some()) {
+                    action(&ui);
+                }
+            });
+        };
+        on("j", |ui| ui.move_selection(1));
+        on("k", |ui| ui.move_selection(-1));
+        on("o", |ui| {
+            if ui.current.borrow().is_some() {
+                ui.webview.grab_focus();
+            }
+        });
+        on("e", |ui| ui.move_current("archive"));
+        on("#", |ui| ui.delete_current());
+        on("i", |ui| ui.move_current("inbox"));
+        on("u", |ui| ui.toggle_unread());
+        on("r", |ui| ui.reply(false));
+        on("a", |ui| ui.reply(true));
+        on("c", |ui| compose::open(ui, Draft::default()));
+        on("/", |ui| {
+            ui.search.grab_focus();
+        });
+        on("y", |ui| ui.decide_selected("approved"));
+        on("n", |ui| ui.decide_selected("blocked"));
+        on("<Shift>r", |ui| {
+            // Everything the trouble line can report on is asked again, so that a line saying the window could not
+            // check for mail goes as soon as it can, rather than at the next tick of the poll.
+            ui.load_list(false);
+            ui.last_poll.set(Some(Instant::now()));
+            ui.check_new();
+            ui.shell.toast(&tr("Refreshed"));
+        });
+        on("<Shift>l", |ui| ui.load_images());
+        for digit in 1..=9u8 {
+            let ui = Rc::downgrade(self);
+            self.keys.on(&digit.to_string(), move || {
+                if let Some(ui) = ui.upgrade().filter(|ui| ui.mail.is_some())
+                    && let Some(view) = ui.nav_views.get(usize::from(digit - 1))
+                {
+                    ui.set_view(*view);
+                }
+            });
+        }
+    }
+
+    /// Writes again, in the language now in use, whatever was built from translated text and kept.
+    fn relabel(self: &Rc<Self>) {
+        self.set_trouble_text();
+        let warnings = self.warnings.borrow().clone();
+        self.show_warnings(&warnings);
+        let counts = self.counts.borrow().clone();
+        self.show_counts(&counts);
+        // The rows carry dates and "(no subject)"; a load under way builds them itself.
+        if self.mail.is_some() && !self.list_loading.get() {
+            self.rebuild_rows();
+        }
+        self.render_current();
+    }
+
     pub fn present(&self) {
         self.window.present();
+    }
+
+    /// Whether the window is still there. Closed, it is gone for good, though the app may live a little longer for
+    /// work that is under way.
+    pub fn is_open(&self) -> bool {
+        self.window.application().is_some()
+    }
+
+    /// Says in the window that something done in the background failed, or with `None` that it works again.
+    fn set_trouble(&self, trouble: Trouble, error: Option<String>) {
+        {
+            let mut troubles = self.troubles.borrow_mut();
+            match error {
+                Some(error) => troubles.insert(trouble, error),
+                None => troubles.remove(&trouble),
+            };
+        }
+        self.set_trouble_text();
+    }
+
+    fn set_trouble_text(&self) {
+        let (text, details) = trouble_text(&self.troubles.borrow());
+        self.trouble.set_label(&text);
+        self.trouble
+            .set_tooltip_text(Some(&details).filter(|d| !d.is_empty()).map(String::as_str));
+        self.trouble.set_visible(!text.is_empty());
     }
 
     /// Tiled at half a laptop screen the three panes don't fit, so the sidebar
@@ -807,12 +1161,12 @@ impl Ui {
 
     // ---- views & lists ---------------------------------------------------
 
-    fn set_title(&self, icon: Option<Icon>, title: &str) {
+    fn set_title(&self, icon: Option<Icon>, title: impl Fn() -> String + 'static) {
         omui::clear(&self.title_icon);
         if let Some(icon) = icon {
             self.title_icon.append(&icon.widget());
         }
-        self.title.set_label(title);
+        self.title.set(title);
     }
 
     fn select_nav(&self, view: View) {
@@ -835,8 +1189,8 @@ impl Ui {
         if view != View::Search {
             self.search.set_text("");
         }
-        self.set_title(Some(view.icon()), view.title());
-        self.subtitle.set_label("");
+        self.set_title(Some(view.icon()), move || view.title());
+        self.subtitle.set_plain("");
         self.clear_reader();
         self.load_list(false);
     }
@@ -870,8 +1224,8 @@ impl Ui {
         self.clear_reader();
         self.exhausted.set(true);
         self.list_loading.set(false);
-        self.set_title(None, "Semantic search");
-        self.subtitle.set_label("Searching locally loaded conversations…");
+        self.set_title(None, || tr("Semantic search"));
+        self.subtitle.set(|| tr("Searching locally loaded conversations…"));
         let ui = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let worded = query.clone();
@@ -890,12 +1244,12 @@ impl Ui {
                         .filter_map(|id| candidates.iter().find(|thread| &thread.id == id).cloned())
                         .collect();
                     ui.rebuild_rows();
-                    ui.subtitle.set_label("Semantic matches in loaded mail · local Recall");
+                    ui.subtitle.set(|| tr("Semantic matches in loaded mail · local Recall"));
                 }
                 None => {
                     ui.start_search(query);
                     ui.shell
-                        .toast("Recall unavailable or warming up; using mail’s text search");
+                        .toast(&tr("Recall unavailable or warming up; using mail’s text search"));
                 }
             }
         });
@@ -928,7 +1282,7 @@ impl Ui {
         let view = self.view.get();
         self.list_loading.set(!soft);
         if !soft {
-            self.empty.set_label("Loading…");
+            self.empty.set(|| tr("Loading…"));
             self.list_stack.set_visible_child_name("empty");
             self.suppress.set(true);
             self.list.remove_all();
@@ -970,16 +1324,20 @@ impl Ui {
                                     ui.exhausted.set(threads.len() < PAGE as usize);
                                 }
                                 ui.parts.borrow_mut().worker = Some((threads, senders));
+                                ui.set_trouble(Trouble::List, None);
                                 ui.apply_parts();
                             }
                             Err(e) => {
                                 ui.list_loading.set(false);
                                 if soft {
-                                    eprintln!("refresh failed: {e}");
+                                    // The rows on show stay, with a line over them saying they may be stale.
+                                    ui.set_trouble(Trouble::List, Some(e));
                                 } else {
+                                    // The page that takes the list's place says it; once is enough.
+                                    ui.set_trouble(Trouble::List, None);
                                     ui.empty
-                                        .set_label(&format!("Couldn't load mail\n\n{e}\n\nPress R to retry"));
-                                    ui.empty.add_css_class("error");
+                                        .set(move || omui::tr!("Couldn't load mail\n\n{}\n\nPress R to retry", e));
+                                    ui.empty.label.add_css_class("error");
                                     ui.sync_empty();
                                 }
                             }
@@ -1082,7 +1440,11 @@ impl Ui {
                 .into_iter()
                 .filter(|t| oldest.is_none_or(|o| t.last_at >= o))
                 .collect();
-            *self.threads.borrow_mut() = merge(worker.0, extra, u32::MAX);
+            let mut threads = merge(worker.0, extra, u32::MAX);
+            // A refresh while a delete waits out its undo still has the conversation; it stays out of the list.
+            let deleting = self.deleting.borrow();
+            threads.retain(|t| !deleting.iter().any(|d| d.id == t.id));
+            *self.threads.borrow_mut() = threads;
         }
         self.rebuild_rows();
     }
@@ -1090,11 +1452,12 @@ impl Ui {
     /// Says which linked account failed and why, or hides the note when none did. An account
     /// whose sign-in expired gets a button that signs it in again.
     fn show_warnings(self: &Rc<Self>, warnings: &[AccountWarning]) {
+        *self.warnings.borrow_mut() = warnings.to_vec();
         let text = warnings
             .iter()
             .map(|w| {
                 if signed_out(w) {
-                    format!(
+                    omui::tr!(
                         "{}: signed out (the sign-in expired or was revoked)",
                         self.account_label(&w.account)
                     )
@@ -1117,16 +1480,16 @@ impl Ui {
         for w in &expired {
             let name = w.account.clone();
             let label = self.account_label(&name);
-            let button = gtk::Button::with_label(&format!("Sign in to {label}"));
+            let button = gtk::Button::with_label(&omui::tr!("Sign in to {}", label));
             if self.signing_in.borrow().contains(&name) {
-                button.set_label("Waiting for the sign-in…");
+                button.set_label(&tr("Waiting for the sign-in…"));
                 button.set_sensitive(false);
             }
             button.connect_clicked(clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |b| {
-                    b.set_label("Waiting for the sign-in…");
+                    b.set_label(&tr("Waiting for the sign-in…"));
                     b.set_sensitive(false);
                     ui.sign_in_account(&name);
                 }
@@ -1159,10 +1522,13 @@ impl Ui {
             return;
         }
         let label = account.label().to_string();
-        self.shell.toast(&format!(
-            "Finish signing in to {label} (in the browser or sign-in window)"
+        self.shell.toast(&omui::tr!(
+            "Finish signing in to {} (in the browser or sign-in window)",
+            label
         ));
         let name = name.to_string();
+        // Not held as a write is: a sign-in waits on the browser for as long as the user takes, and closing the app
+        // abandons it rather than leaving the app running out of sight until it gives up.
         util::run(
             move || account.sign_in(),
             clone!(
@@ -1173,7 +1539,7 @@ impl Ui {
                     match result {
                         Ok(()) => {
                             ui.signed_out_notified.borrow_mut().remove(&name);
-                            ui.shell.toast(&format!("Signed in to {label}"));
+                            ui.shell.toast(&omui::tr!("Signed in to {}", label));
                             ui.load_identities();
                         }
                         Err(e) => ui.shell.toast(&e),
@@ -1199,9 +1565,10 @@ impl Ui {
             if notified.insert(name.to_string()) {
                 let label = self.account_label(name);
                 util::notify(
-                    &format!("Sign in to {label} again"),
-                    &format!(
-                        "{label}'s sign-in expired or was revoked, so its mail isn't showing. Open Cloudmail and choose Sign in to {label}."
+                    &omui::tr!("Sign in to {} again", label),
+                    &omui::tr!(
+                        "{0}'s sign-in expired or was revoked, so its mail isn't showing. Open Cloudmail and choose Sign in to {0}.",
+                        label
                     ),
                 );
             }
@@ -1287,13 +1654,16 @@ impl Ui {
     }
 
     fn rebuild_rows(self: &Rc<Self>) {
+        if self.mail.is_none() {
+            return;
+        }
         let keep = self
             .opening
             .borrow()
             .clone()
             .or_else(|| self.current.borrow().as_ref().map(|d| d.thread.id.clone()));
         let had_focus = self.list.focus_child().is_some();
-        self.empty.remove_css_class("error");
+        self.empty.label.remove_css_class("error");
         self.suppress.set(true);
         self.list.remove_all();
         let mut select = None;
@@ -1323,7 +1693,7 @@ impl Ui {
                 }
             }
             self.empty
-                .set_label("The Screener is empty.\n\nNew senders show up here first.");
+                .set(|| tr("The Screener is empty.\n\nNew senders show up here first."));
         } else {
             let sent = self.view.get() == View::Sent;
             let default_email = self.default_email();
@@ -1333,12 +1703,13 @@ impl Ui {
                     select = Some(i);
                 }
             }
-            self.empty.set_label(match self.view.get() {
-                View::Inbox => "Inbox zero.\n\nNothing needs you right now.\nPress c or Compose to write.",
-                View::Search => "No matches.",
-                View::PaperTrail => "Nothing in Paper Trail.\n\nArchiving a HEY thread (e) puts it here.",
-                _ => "Nothing here.",
-            });
+            let text: fn() -> String = match self.view.get() {
+                View::Inbox => || tr("Inbox zero.\n\nNothing needs you right now.\nPress c or Compose to write."),
+                View::Search => || tr("No matches."),
+                View::PaperTrail => || tr("Nothing in Paper Trail.\n\nArchiving a HEY thread (e) puts it here."),
+                _ => || tr("Nothing here."),
+            };
+            self.empty.set(text);
         }
         if let Some(row) = select.and_then(|i| self.list.row_at_index(i as i32)) {
             self.list.select_row(Some(&row));
@@ -1360,36 +1731,16 @@ impl Ui {
     }
 
     fn update_subtitle(&self) {
-        let text = match self.view.get() {
-            View::Screener => {
-                let n = self.senders.borrow().len();
-                if n == 0 {
-                    String::new()
-                } else {
-                    format!("{n} new sender{} · y lets them in, n blocks", plural(n))
-                }
-            }
-            View::Search => {
-                let n = self.threads.borrow().len();
-                format!("“{}” · {n} result{}", self.query.borrow(), plural(n))
-            }
-            _ => {
-                let threads = self.threads.borrow();
-                let unread = threads.iter().filter(|t| t.unread).count();
-                let more = if self.exhausted.get() { "" } else { "+" };
-                let unread = if unread > 0 {
-                    format!(" · {unread} unread")
-                } else {
-                    String::new()
-                };
-                if threads.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}{more} conversation{}{unread}", threads.len(), plural(threads.len()))
-                }
-            }
+        let view = self.view.get();
+        let senders = self.senders.borrow().len();
+        let query = self.query.borrow().clone();
+        let (count, unread) = {
+            let threads = self.threads.borrow();
+            (threads.len(), threads.iter().filter(|t| t.unread).count())
         };
-        self.subtitle.set_label(&text);
+        let more = !self.exhausted.get();
+        self.subtitle
+            .set(move || subtitle_text(view, senders, &query, count, unread, more));
         self.sync_empty();
     }
 
@@ -1447,7 +1798,7 @@ impl Ui {
                                 ui.set_unread(&id, false);
                             }
                         }
-                        Err(e) => ui.shell.toast(&format!("Couldn't open conversation: {e}")),
+                        Err(e) => ui.shell.toast(&omui::tr!("Couldn't open conversation: {}", e)),
                     }
                 }
             ),
@@ -1459,7 +1810,7 @@ impl Ui {
         let Some(detail) = current.as_ref() else { return };
         let subject = util::subject_or_placeholder(&detail.thread.subject);
         // The full subject heads the message pane; the toolbar keeps only its buttons.
-        self.reader_subject.set_tooltip_text(Some(subject));
+        self.reader_subject.set_tooltip_text(Some(&subject));
         let folder = detail.thread.folder.as_str();
         self.archive_btn.set_visible(is_movable(folder) && !is_archived(folder));
         self.inbox_btn.set_visible(is_movable(folder) && folder != "inbox");
@@ -1478,7 +1829,8 @@ impl Ui {
             .borrow()
             .as_ref()
             .is_some_and(|(_, allowed)| detail.messages.iter().all(|m| allowed.contains(&m.id)));
-        let html = html::thread(detail, &tokens(), images);
+        let radius = omui::Theme::get().map_or(0, |theme| theme.radius());
+        let html = html::thread(detail, &tokens(), radius, images);
         self.webview.load_html(&html, Some("about:blank"));
         self.reader_stack.set_visible_child_name("thread");
     }
@@ -1542,25 +1894,24 @@ impl Ui {
             return;
         };
         let id = id.to_string();
-        self.shell.toast(&format!("Downloading {filename}…"));
-        util::run(
+        self.shell.toast(&omui::tr!("Downloading {}…", filename));
+        util::write(
             move || {
                 let bytes = mail.provider(&id)?.download_attachment(&id)?.bytes;
                 let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let path = unused_path(dir.join(attachment_file_name(&filename)));
-                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                Ok::<_, String>(path)
+                // Whole or not at all, and never over a file that is already there.
+                crate::files::save_new(&dir, &attachment_file_name(&filename), &bytes).map_err(|e| e.to_string())
             },
             clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |result: Result<std::path::PathBuf, String>| match result {
                     Ok(path) => {
-                        ui.shell.toast(&format!("Saved {}", path.display()));
+                        ui.shell.toast(&omui::tr!("Saved {}", path.display()));
                         util::open_uri(&gio::File::for_path(&path).uri());
                     }
-                    Err(e) => ui.shell.toast(&format!("Download failed: {e}")),
+                    Err(e) => ui.shell.toast(&omui::tr!("Download failed: {}", e)),
                 }
             ),
         );
@@ -1639,6 +1990,7 @@ impl Ui {
             return;
         }
         let ui = Rc::downgrade(self);
+        // In English: `confirm` translates it, now and after a switch of language while it is open.
         omui::confirm(
             &self.window,
             "Delete this conversation?",
@@ -1658,8 +2010,13 @@ impl Ui {
         let permanent = mail.provider(&id).is_ok_and(|p| p.deletes_permanently());
         let label = mail.provider(&id).map(|p| p.label().to_string()).unwrap_or_default();
         let idx = self.threads.borrow().iter().position(|t| t.id == id);
+        let taken = idx.map(|index| Taken {
+            thread: self.threads.borrow_mut().remove(index),
+            index,
+            view: self.view.get(),
+            left_view: true,
+        });
         if let Some(idx) = idx {
-            self.threads.borrow_mut().remove(idx);
             self.remove_row(idx);
         }
         // So a late answer from the other source can't put it back.
@@ -1673,25 +2030,123 @@ impl Ui {
             self.clear_reader();
         }
         self.forget_account_rows();
-        self.shell.toast(&if permanent {
-            "Deleted".to_string()
+        let text = if permanent {
+            tr("Deleted")
         } else {
-            format!("Moved to {label}'s Trash")
+            omui::tr!("Moved to {}'s Trash", label)
+        };
+        let delete = Rc::new(Deleting {
+            taken,
+            id,
+            settled: Cell::new(false),
         });
-        util::run(
+        self.deleting.borrow_mut().push(delete.clone());
+        // The toast's going, however it goes, is what sends the delete; Undo settles it first.
+        self.shell.add_toast(
+            omui::Toast::new(&text)
+                .seconds(UNDO_SECONDS)
+                .action(
+                    &tr("Undo"),
+                    clone!(
+                        #[weak(rename_to = ui)]
+                        self,
+                        #[strong]
+                        delete,
+                        move || ui.undo_delete(&delete)
+                    ),
+                )
+                .on_dismissed(clone!(
+                    #[weak(rename_to = ui)]
+                    self,
+                    #[strong]
+                    delete,
+                    move || ui.send_delete(&delete)
+                )),
+        );
+    }
+
+    /// Whether `delete` is still waiting, which it then no longer is: the first of Undo and the send wins.
+    fn settle_delete(&self, delete: &Rc<Deleting>) -> bool {
+        self.deleting.borrow_mut().retain(|d| !Rc::ptr_eq(d, delete));
+        !delete.settled.replace(true)
+    }
+
+    fn send_delete(self: &Rc<Self>, delete: &Rc<Deleting>) {
+        if !self.settle_delete(delete) {
+            return;
+        }
+        let Some(mail) = self.mail.clone() else { return };
+        let id = delete.id.clone();
+        util::write(
             move || mail.provider(&id)?.delete_thread(&id),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |result| {
                     if let Err(e) = result {
-                        ui.shell.toast(&format!("Couldn't delete conversation: {e}"));
+                        ui.shell.toast(&omui::tr!("Couldn't delete conversation: {}", e));
                         ui.load_list(true);
                     }
                     ui.refresh_counts();
                 }
             ),
         );
+    }
+
+    fn undo_delete(self: &Rc<Self>, delete: &Rc<Deleting>) {
+        if !self.settle_delete(delete) {
+            return;
+        }
+        // Nothing was sent, so the conversation is where it was: back in the list if that is still on show, and
+        // otherwise there when its box is next opened.
+        match &delete.taken {
+            Some(taken) if taken.view == self.view.get() => self.put_back(taken),
+            _ => self.load_list(true),
+        }
+        self.shell.toast(&tr("Undone"));
+    }
+
+    /// Puts a conversation that was taken out of the list on show, or changed box within it, back as it was, and
+    /// opens it again.
+    fn put_back(self: &Rc<Self>, taken: &Taken) {
+        let thread = &taken.thread;
+        if taken.left_view {
+            {
+                // In its source's part too, so that the other source answering does not drop it again.
+                let account = self.mail.as_ref().is_some_and(|m| m.account_for(&thread.id).is_some());
+                let mut parts = self.parts.borrow_mut();
+                let part = if account {
+                    &mut parts.accounts
+                } else {
+                    &mut parts.worker
+                };
+                if let Some((threads, _)) = part {
+                    insert_by_date(threads, thread);
+                }
+            }
+            {
+                let mut threads = self.threads.borrow_mut();
+                if !threads.iter().any(|t| t.id == thread.id) {
+                    let at = taken.index.min(threads.len());
+                    threads.insert(at, thread.clone());
+                }
+            }
+            self.rebuild_rows();
+            let index = self.threads.borrow().iter().position(|t| t.id == thread.id);
+            if let Some(row) = index.and_then(|i| self.list.row_at_index(i as i32)) {
+                self.list.select_row(Some(&row));
+                row.grab_focus();
+            }
+        } else {
+            for t in self.threads.borrow_mut().iter_mut().filter(|t| t.id == thread.id) {
+                t.folder = thread.folder.clone();
+            }
+            if let Some(d) = self.current.borrow_mut().as_mut().filter(|d| d.thread.id == thread.id) {
+                d.thread.folder = thread.folder.clone();
+            }
+            self.render_current();
+        }
+        self.forget_account_rows();
     }
 
     fn move_current(self: &Rc<Self>, folder: &'static str) {
@@ -1728,6 +2183,16 @@ impl Ui {
             folder.to_string()
         };
         let new_folder = new_folder.as_str();
+        let moved = Rc::new(Moved {
+            taken: Taken {
+                thread: self.threads.borrow()[idx].clone(),
+                index: idx,
+                view,
+                left_view: leaves_view,
+            },
+            answered: Cell::new(None),
+            undone: Cell::new(false),
+        });
         if leaves_view {
             self.threads.borrow_mut().remove(idx);
             // So a late answer from the other source can't put it back.
@@ -1747,19 +2212,80 @@ impl Ui {
             self.render_current();
         }
         self.forget_account_rows();
-        self.shell.toast(match (folder, new_folder) {
-            (_, "paper_trail") => "Moved to Paper Trail",
-            ("archive", _) => "Archived",
-            _ => "Moved to Inbox",
-        });
-        util::run(
+        let text = match (folder, new_folder) {
+            (_, "paper_trail") => tr("Moved to Paper Trail"),
+            ("archive", _) => tr("Archived"),
+            _ => tr("Moved to Inbox"),
+        };
+        self.shell.toast_action(
+            &text,
+            &tr("Undo"),
+            UNDO_SECONDS,
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                #[strong]
+                moved,
+                move || ui.undo_move(&moved)
+            ),
+        );
+        util::write(
             move || mail.provider(&id)?.move_thread(&id, folder),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |result| {
-                    if let Err(e) = result {
-                        ui.shell.toast(&format!("Couldn't move conversation: {e}"));
+                    moved.answered.set(Some(result.is_ok()));
+                    match result {
+                        Err(e) => {
+                            ui.shell.toast(&omui::tr!("Couldn't move conversation: {}", e));
+                            ui.load_list(true);
+                        }
+                        // Undo was pressed while this was on its way.
+                        Ok(()) if moved.undone.get() => ui.send_move_back(&moved),
+                        Ok(()) => {}
+                    }
+                    ui.refresh_counts();
+                }
+            ),
+        );
+    }
+
+    fn undo_move(self: &Rc<Self>, moved: &Rc<Moved>) {
+        if moved.undone.replace(true) {
+            return;
+        }
+        // A move that failed has already said so and reloaded the list; there is nothing to take back.
+        if moved.answered.get() == Some(false) {
+            return;
+        }
+        if moved.taken.view == self.view.get() {
+            self.put_back(&moved.taken);
+        }
+        self.shell.toast(&tr("Undone"));
+        if moved.answered.get() == Some(true) {
+            self.send_move_back(moved);
+        }
+    }
+
+    /// Moves an undone conversation back to the box it was in.
+    fn send_move_back(self: &Rc<Self>, moved: &Rc<Moved>) {
+        let Some(mail) = self.mail.clone() else { return };
+        let (id, folder) = (moved.taken.thread.id.clone(), moved.taken.thread.folder.clone());
+        let view = moved.taken.view;
+        util::write(
+            move || mail.provider(&id)?.move_thread(&id, &folder),
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                move |result| {
+                    if let Err(e) = &result {
+                        ui.shell.toast(&omui::tr!("Couldn't undo: {}", e));
+                    }
+                    // Another box is on show than the one it went back to, or it did not go back: either way the
+                    // list is asked for again rather than guessed at.
+                    if result.is_err() || ui.view.get() != view {
+                        ui.forget_account_rows();
                         ui.load_list(true);
                     }
                     ui.refresh_counts();
@@ -1803,14 +2329,14 @@ impl Ui {
             }
         }
         self.parts.borrow_mut().set_unread(&id, unread);
-        util::run(
+        util::write(
             move || mail.provider(&id)?.set_unread(&id, unread),
             clone!(
                 #[weak(rename_to = ui)]
                 self,
                 move |result| {
                     if let Err(e) = result {
-                        ui.shell.toast(&format!("Couldn't update: {e}"));
+                        ui.shell.toast(&omui::tr!("Couldn't update: {}", e));
                     }
                     ui.refresh_counts();
                 }
@@ -1834,7 +2360,8 @@ impl Ui {
         });
         if let Some((id, unread)) = target {
             self.set_unread(&id, !unread);
-            self.shell.toast(if unread { "Marked read" } else { "Marked unread" });
+            self.shell
+                .toast(&if unread { tr("Marked read") } else { tr("Marked unread") });
         }
     }
 
@@ -1863,13 +2390,13 @@ impl Ui {
         self.account_cache.borrow_mut().remove(&View::Screener);
         self.clear_reader();
         self.remove_row(idx);
-        self.shell.toast(&format!(
-            "{} {}",
-            if status == "approved" { "Let in" } else { "Blocked" },
-            sender.display()
-        ));
+        self.shell.toast(&if status == "approved" {
+            omui::tr!("Let in {}", sender.display())
+        } else {
+            omui::tr!("Blocked {}", sender.display())
+        });
         let key = key.to_string();
-        util::run(
+        util::write(
             move || mail.decide_sender(&key, status),
             clone!(
                 #[weak(rename_to = ui)]
@@ -1877,7 +2404,7 @@ impl Ui {
                 move |result: Result<(i64, Vec<AccountWarning>), String>| {
                     match result {
                         Err(e) => {
-                            ui.shell.toast(&format!("Couldn't screen sender: {e}"));
+                            ui.shell.toast(&omui::tr!("Couldn't screen sender: {}", e));
                             ui.load_list(true);
                         }
                         Ok((_, warnings)) if !warnings.is_empty() => ui.show_warnings(&warnings),
@@ -1992,6 +2519,7 @@ impl Ui {
                 body: util::quote(&text, &msg.from.display(), msg.date),
                 reply_to_message_id: Some(msg.id.clone()),
                 from,
+                id: None,
             }
         };
         compose::open(self, draft);
@@ -2018,13 +2546,15 @@ impl Ui {
                     self,
                     move |result| match result {
                         Ok(ids) => {
+                            ui.set_trouble(Trouble::Addresses, None);
                             *ui.identities.borrow_mut() = Some(ids);
                             // A load still in flight will build its rows with the identities in place.
                             if ui.view.get() != View::Screener && !ui.list_loading.get() {
                                 ui.rebuild_rows();
                             }
                         }
-                        Err(e) => eprintln!("identities: {e}"),
+                        // Without them a reply cannot pick the address it came to, and From is empty.
+                        Err(e) => ui.set_trouble(Trouble::Addresses, Some(e)),
                     }
                 ),
             );
@@ -2066,10 +2596,13 @@ impl Ui {
             clone!(
                 #[weak(rename_to = ui)]
                 self,
-                move |result: Result<crate::api::Counts, String>| {
-                    if let Ok(c) = result {
+                move |result: Result<crate::api::Counts, String>| match result {
+                    Ok(c) => {
+                        ui.set_trouble(Trouble::Counts, None);
                         ui.show_counts(&c);
                     }
+                    // The badges keep their last numbers, which may no longer be right.
+                    Err(e) => ui.set_trouble(Trouble::Counts, Some(e)),
                 }
             ),
         );
@@ -2077,8 +2610,9 @@ impl Ui {
 
     /// The badges and title: the worker's counts plus the linked accounts'.
     fn show_counts(&self, c: &crate::api::Counts) {
+        *self.counts.borrow_mut() = c.clone();
         let set = |i: usize, n: i64| {
-            self.badges[i].set_label(&n.to_string());
+            self.badges[i].set_label(&omui::i18n::format_int(n));
             self.badges[i].set_visible(n > 0);
         };
         let (account_screener, account_unread) = self.account_counts.get();
@@ -2086,14 +2620,50 @@ impl Ui {
         set(0, c.screener + account_screener);
         set(1, unread);
         let title = if unread > 0 {
-            format!("Cloudmail ({unread})")
+            format!("Cloudmail ({})", omui::i18n::format_int(unread))
         } else {
             "Cloudmail".into()
         };
         self.window.set_title(Some(&title));
     }
 
+    /// Starts the timer that checks for mail when the window becomes the active one, and stops it when it no
+    /// longer is. The window coming back checks at once ([`refresh_on_return`]) and then every `poll_seconds`.
+    fn sync_polling(self: &Rc<Self>) {
+        if !self.window.is_active() {
+            self.stop_polling();
+            return;
+        }
+        if self.poll_timer.borrow().is_some() {
+            return;
+        }
+        if refresh_on_return(self.last_poll.get().map(|at| at.elapsed())) {
+            self.poll();
+        }
+        let timer = glib::timeout_add_seconds_local(
+            self.poll_seconds,
+            clone!(
+                #[weak(rename_to = ui)]
+                self,
+                #[upgrade_or]
+                glib::ControlFlow::Break,
+                move || {
+                    ui.poll();
+                    glib::ControlFlow::Continue
+                }
+            ),
+        );
+        self.poll_timer.replace(Some(timer));
+    }
+
+    fn stop_polling(&self) {
+        if let Some(timer) = self.poll_timer.take() {
+            timer.remove();
+        }
+    }
+
     fn poll(self: &Rc<Self>) {
+        self.last_poll.set(Some(Instant::now()));
         let paginated = self.view.get() != View::Screener && self.threads.borrow().len() > PAGE as usize;
         if self.view.get() != View::Search && !paginated {
             self.load_list(true);
@@ -2139,9 +2709,14 @@ impl Ui {
                 #[weak(rename_to = ui)]
                 self,
                 move |result: Result<NewMail, String>| {
-                    let Ok((inbox, screener, counts, warnings)) = result else {
-                        return;
+                    let (inbox, screener, counts, warnings) = match result {
+                        Ok(new) => new,
+                        Err(e) => {
+                            ui.set_trouble(Trouble::NewMail, Some(e));
+                            return;
+                        }
                     };
+                    ui.set_trouble(Trouble::NewMail, None);
                     ui.notify_signed_out(&warnings);
                     if ui.account_counts.replace(counts) != counts {
                         ui.refresh_counts();
@@ -2161,7 +2736,7 @@ impl Ui {
                             .filter(|s| !old.screener.contains(&s.email.to_ascii_lowercase()))
                             .collect();
                         if new_mail.len() > 3 {
-                            util::notify(&format!("{} new emails", new_mail.len()), "");
+                            util::notify(&omui::trn!("{n} new emails", new_mail.len()), "");
                         } else {
                             for t in new_mail {
                                 let who = t.sender().unwrap_or_default();
@@ -2170,13 +2745,13 @@ impl Ui {
                         }
                         if new_senders.len() > 3 {
                             util::notify(
-                                "The Screener",
-                                &format!("{} new sender{} waiting", new_senders.len(), plural(new_senders.len())),
+                                &tr("The Screener"),
+                                &omui::trn!("{n} new senders waiting", new_senders.len()),
                             );
                         } else {
                             for s in new_senders {
                                 util::notify(
-                                    &format!("Screener: {}", s.display()),
+                                    &omui::tr!("Screener: {}", s.display()),
                                     s.last_subject.as_deref().unwrap_or(""),
                                 );
                             }
@@ -2190,15 +2765,16 @@ impl Ui {
 
     // ---- keyboard ---------------------------------------------------------
 
-    pub(super) fn on_key(self: &Rc<Self>, key: gdk::Key, mods: gdk::ModifierType) -> glib::Propagation {
+    /// The keys that are not single characters: Escape leaves a search (from its field too), and Enter takes the
+    /// keyboard into the open message. The letters are `add_keys`'s.
+    pub(super) fn on_key(self: &Rc<Self>, key: gdk::Key, _mods: gdk::ModifierType) -> glib::Propagation {
         use glib::Propagation::{Proceed, Stop};
-        // omui draws the delete question inside this window: every key is the dialog's while it is up, as it was when
-        // the question was a window of its own. omui holds back the window's shortcut controllers, not this one.
+        // omui draws its dialogs inside this window: every key is the dialog's while one is up. omui holds back the
+        // window's shortcut controllers, not this one.
         if self.shell.dialog_open() {
             return Proceed;
         }
-        let typing = gtk::prelude::GtkWindowExt::focus(&self.window)
-            .is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
+        let typing = omui::text_has_focus(&self.window);
         if key == gdk::Key::Escape {
             if typing || self.view.get() == View::Search {
                 self.exit_search();
@@ -2206,59 +2782,15 @@ impl Ui {
             }
             return Proceed;
         }
-        if mods.contains(gdk::ModifierType::CONTROL_MASK) {
-            if matches!(key, gdk::Key::q | gdk::Key::w) {
-                self.window.close();
-                return Stop;
-            }
-            return Proceed;
+        if !typing
+            && self.mail.is_some()
+            && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
+            && self.current.borrow().is_some()
+        {
+            self.webview.grab_focus();
+            return Stop;
         }
-        if typing || mods.contains(gdk::ModifierType::ALT_MASK) || self.mail.is_none() {
-            return Proceed;
-        }
-        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
-            if self.current.borrow().is_some() {
-                self.webview.grab_focus();
-                return Stop;
-            }
-            return Proceed;
-        }
-        let Some(ch) = key.to_unicode() else { return Proceed };
-        match ch {
-            'j' => self.move_selection(1),
-            'k' => self.move_selection(-1),
-            'o' => {
-                if self.current.borrow().is_some() {
-                    self.webview.grab_focus();
-                }
-            }
-            'e' => self.move_current("archive"),
-            '#' => self.delete_current(),
-            'i' => self.move_current("inbox"),
-            'u' => self.toggle_unread(),
-            'r' => self.reply(false),
-            'a' => self.reply(true),
-            'c' => compose::open(self, Draft::default()),
-            '/' => {
-                self.search.grab_focus();
-            }
-            '1'..='9' => {
-                if let Some(view) = self.nav_views.get((ch as u8 - b'1') as usize) {
-                    self.set_view(*view);
-                }
-            }
-            'R' => {
-                self.load_list(false);
-                self.refresh_counts();
-                self.shell.toast("Refreshed");
-            }
-            'L' => self.load_images(),
-            'y' => self.decide_selected("approved"),
-            'n' => self.decide_selected("blocked"),
-            '?' => shortcuts::show(self.window.upcast_ref()),
-            _ => return Proceed,
-        }
-        Stop
+        Proceed
     }
 }
 
@@ -2289,32 +2821,133 @@ fn tokens() -> omui::Tokens {
     omui::Theme::get().map_or_else(omui::Tokens::fallback, |theme| theme.tokens())
 }
 
-fn setup_page(msg: &str) -> gtk::Widget {
+fn setup_page(error: &crate::api::Error) -> gtk::Widget {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 12);
     b.set_valign(gtk::Align::Center);
     b.set_halign(gtk::Align::Center);
     b.set_hexpand(true);
     b.add_css_class("setup");
-    let t = omui::label("Almost there", "title-2");
+    let t = omui::label("", "title-2");
+    omui::i18n::bind_label(&t, "Almost there");
     t.add_css_class("accent");
     b.append(&t);
-    let l = gtk::Label::builder()
-        .label(msg)
-        .selectable(true)
-        .wrap(true)
-        .xalign(0.0)
-        .build();
-    b.append(&l);
+    let l = Live::new(gtk::Label::builder().selectable(true).wrap(true).xalign(0.0).build());
+    let error = error.clone();
+    l.set(move || crate::setup_hint(&error));
+    b.append(&l.label);
     b.upcast()
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
+/// The line under a list's title: how many conversations (with a `+` while more can be loaded) and how many unread,
+/// the senders waiting in the Screener, or a search's results.
+fn subtitle_text(view: View, senders: usize, query: &str, count: usize, unread: usize, more: bool) -> String {
+    match view {
+        View::Screener if senders == 0 => String::new(),
+        View::Screener => omui::trn!("{n} new senders · y lets them in, n blocks", senders),
+        View::Search => omui::trn!("“{}” · {n} results", count, query),
+        _ if count == 0 => String::new(),
+        _ => match (more, unread) {
+            (false, 0) => omui::trn!("{n} conversations", count),
+            (true, 0) => omui::trn!("{n}+ conversations", count),
+            (false, unread) => omui::trn!(
+                "{n} conversations · {} unread",
+                count,
+                omui::i18n::format_int(unread as i64)
+            ),
+            (true, unread) => omui::trn!(
+                "{n}+ conversations · {} unread",
+                count,
+                omui::i18n::format_int(unread as i64)
+            ),
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_coming_back_checks_for_mail_unless_it_just_did() {
+        assert!(refresh_on_return(None), "never checked");
+        assert!(refresh_on_return(Some(Duration::from_secs(60))));
+        assert!(refresh_on_return(Some(RETURN_REFRESH_AFTER)));
+        assert!(
+            !refresh_on_return(Some(Duration::from_secs(2))),
+            "a dialog closing is not a return"
+        );
+    }
+
+    #[test]
+    fn background_failures_are_said_once_per_cause() {
+        crate::test_catalogs();
+        let line = |troubles: &BTreeMap<Trouble, String>| trouble_text(troubles).0;
+        let mut troubles = BTreeMap::new();
+        assert_eq!(trouble_text(&troubles), (String::new(), String::new()));
+        troubles.insert(Trouble::Counts, "HTTP 503".to_string());
+        assert_eq!(line(&troubles), "Couldn't update the counts: HTTP 503");
+        troubles.insert(Trouble::List, "HTTP 503".to_string());
+        troubles.insert(Trouble::NewMail, "HTTP 503".to_string());
+        troubles.insert(Trouble::Addresses, "bad response: EOF".to_string());
+        assert_eq!(
+            line(&troubles),
+            "3 things the window does in the background failed: HTTP 503\n\
+             Couldn't load your addresses: bad response: EOF"
+        );
+        // The tooltip says each in full.
+        assert_eq!(
+            trouble_text(&troubles).1,
+            "Couldn't refresh the list: HTTP 503\nCouldn't check for new mail: HTTP 503\n\
+             Couldn't update the counts: HTTP 503\nCouldn't load your addresses: bad response: EOF"
+        );
+        troubles.remove(&Trouble::Addresses);
+        troubles.remove(&Trouble::NewMail);
+        assert_eq!(
+            line(&troubles),
+            "2 things the window does in the background failed: HTTP 503"
+        );
+    }
+
+    #[test]
+    fn the_subtitle_counts_in_whole_sentences() {
+        crate::test_catalogs();
+        assert_eq!(subtitle_text(View::Inbox, 0, "", 0, 0, false), "");
+        assert_eq!(subtitle_text(View::Inbox, 0, "", 1, 0, false), "1 conversation");
+        assert_eq!(
+            subtitle_text(View::Inbox, 0, "", 1200, 3, true),
+            "1,200+ conversations · 3 unread"
+        );
+        assert_eq!(
+            subtitle_text(View::Screener, 1, "", 0, 0, false),
+            "1 new sender · y lets them in, n blocks"
+        );
+        assert_eq!(
+            subtitle_text(View::Search, 0, "lake", 2, 0, false),
+            "“lake” · 2 results"
+        );
+    }
+
+    #[test]
+    fn an_undone_conversation_goes_back_where_its_date_puts_it() {
+        let thread = |id: &str, last_at: i64| ThreadSummary {
+            id: id.into(),
+            last_at,
+            ..Default::default()
+        };
+        let ids = |threads: &[ThreadSummary]| threads.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        let mut threads = vec![thread("new", 30), thread("old", 10)];
+        insert_by_date(&mut threads, &thread("mid", 20));
+        assert_eq!(ids(&threads), ["new", "mid", "old"]);
+        insert_by_date(&mut threads, &thread("mid", 20));
+        assert_eq!(
+            ids(&threads),
+            ["new", "mid", "old"],
+            "a refresh had already brought it back"
+        );
+        insert_by_date(&mut threads, &thread("oldest", 1));
+        insert_by_date(&mut threads, &thread("newest", 99));
+        assert_eq!(ids(&threads), ["newest", "new", "mid", "old", "oldest"]);
+    }
 
     #[test]
     fn marking_unread_reaches_the_worker_s_part_and_the_accounts() {
