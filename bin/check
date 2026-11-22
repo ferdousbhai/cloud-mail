@@ -42,6 +42,9 @@ if [[ " ${crates[*]} " == *" cloudmail-gtk "* ]]; then
 fi
 
 step "worker"
+# The cf CLI that typecheck runs needs Node.js: without a node on PATH, bun runs it itself, and it refuses to load
+# cloudflare.config.ts under Bun.
+command -v node >/dev/null || { echo "error: node (Node.js 22.18 or later) is needed for the worker's typecheck" >&2; exit 1; }
 (cd worker && { [[ -d node_modules ]] || bun install --frozen-lockfile; } && bun test && bun run typecheck)
 
 step "packaging"
