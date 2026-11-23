@@ -35,6 +35,9 @@ push too (`.github/workflows/check.yml`, in an Arch container). A missing GTK 4 
 rather than skipping the app; `CLOUDMAIL_CHECK_NO_GTK=1` leaves the app out on purpose. GitHub also builds release
 packages and CLI archives.
 
+Changes land on `main` directly: once `bin/check` passes, rebase onto `main` and push the commits there as a
+fast-forward. Don't open a pull request for the maintainer's own work; those are for outside contributors.
+
 ## Conventions
 
 - Rust edition 2024, MSRV 1.89 (CLI and library); rustfmt `max_width = 120`, dense long lines. Keep
