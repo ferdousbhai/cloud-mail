@@ -6,8 +6,14 @@ set -Eeuo pipefail
 # directories and no session bus. No window opens anywhere visible, nothing of the desktop this is run from is read,
 # and no real account is reached. Prints each command with its answer; fails when a command fails or GLib logs a
 # warning or a critical. Each script gets a fresh app and worker, so one script's moves are not the next one's mail.
+# A directory `<script>.state` beside `<script>.jsonl` is what the app finds in its state directory as it starts (a
+# draft kept from an earlier run), and a file `<script>.state-after` lists the files that must be there once it has
+# quit, one path a line, sorted, with N for each run of digits: a draft's name is the time it was made.
 #
 #   dev/qa.sh <app-binary> <script.jsonl>...
+# There is no desktop portal on the hidden display: a script answers the file chooser itself (omui's `picker`), with
+# a failure or with `attachment.txt`, a copy of dev/qa/attachment.txt put in the directory the app runs in.
+#
 #   CLOUDMAIL_QA_SHOTS=<dir>   where a script's `shot` paths are written (default: a scratch directory, removed)
 #   OMUI_QA_TIMEOUT=120        seconds before one script's run is stopped
 (( $# >= 2 )) || { echo "usage: dev/qa.sh <app-binary> <script.jsonl>..." >&2; exit 2; }
@@ -48,6 +54,8 @@ run() {
   root=$(mktemp -d /tmp/cloudmail-qa.XXXXXX)
   mkdir -p "$root"/{home,config,state,data,cache,runtime}
   chmod 700 "$root/runtime"
+  local seed=${script%.jsonl}.state after=${script%.jsonl}.state-after
+  [[ ! -d $seed ]] || cp -r -- "$seed/." "$root/state/"
 
   # A display number and input port from this script's PID and the script's place, so that neither two runs at once
   # nor two scripts one after the other share one. broadwayd listens on that port on 127.0.0.1 alone, where omui sends
@@ -77,6 +85,8 @@ run() {
   # Broadway has no OpenGL, and WebKit's DMA-BUF renderer warns that it fell back without it, which would fail the run;
   # WebKit's other renderer draws the same message without asking for OpenGL.
   local status=0
+  # What a script's `picker` names by its bare name is found where the app runs; removed again below.
+  cp -- "$here/qa/attachment.txt" "$shots/attachment.txt"
   (
     cd "$shots"
     exec env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u GTK_THEME -u CLOUDMAIL_SCRIPT \
@@ -91,6 +101,7 @@ run() {
   app_pid=$!
   wait "$app_pid" || status=$?
   app_pid=""
+  rm -f -- "$shots/attachment.txt"
   # The display going away ends the app with no answer; what it said is why.
   kill -0 "$broadway_pid" 2>/dev/null || { echo "qa: broadwayd exited:" >&2; cat "$root/broadwayd.log" >&2; }
 
@@ -99,6 +110,10 @@ run() {
   grep -Ev '^[[:space:]]*(#|$)' "$script" | awk -v answers="$root/answers" '
     { if ((getline answer < answers) > 0) { print "> " $0; print "< " answer } else { print "> " $0 " (not run)" } }
     END { while ((getline answer < answers) > 0) print "< " answer }'
+  if (( status == 0 )) && [[ -f $after ]]; then
+    diff <(cd "$root/state" && find . -type f | sed -E 's|^\./||; s/[0-9]+/N/g' | LC_ALL=C sort) "$after" \
+      || { echo "qa: the state directory's files (<) are not those $after lists (>)" >&2; status=1; }
+  fi
   return "$status"
 }
 

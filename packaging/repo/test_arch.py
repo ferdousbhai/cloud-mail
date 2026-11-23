@@ -100,6 +100,38 @@ class VerificationTests(unittest.TestCase):
             self.assertFalse(log.exists())
 
 
+class LauncherTests(unittest.TestCase):
+    """`cloudmail-gtk`, the app's command before 0.8, still on PATH: it runs `cloudmail open` with its arguments."""
+    LAUNCHER = ROOT / 'crates/cloudmail-gtk/data/cloudmail-gtk'
+
+    def test_it_runs_cloudmail_open_with_the_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory)
+            launcher = binary / 'cloudmail-gtk'
+            launcher.write_text(self.LAUNCHER.read_text())
+            launcher.chmod(0o755)
+            executable(binary / 'cloudmail', 'printf "%s\\n" "$@" > "$CALL_LOG"\n')
+            log = binary / 'args'
+            env = dict(os.environ, CALL_LOG=str(log))
+            env.pop('CLOUDMAIL_OLD_LAUNCHER', None)
+            link = 'mailto:a@example.com?subject=Two%20words&body=x y'
+            subprocess.run([str(launcher), link], env=env, check=True)
+            self.assertEqual(log.read_text(), f'open\n{link}\n')
+            # Found again by `cloudmail open` in place of the app, it stops rather than start itself for ever.
+            log.unlink()
+            result = subprocess.run([str(launcher)], env=dict(env, CLOUDMAIL_OLD_LAUNCHER='1'), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("isn't installed", result.stderr)
+            self.assertFalse(log.exists())
+
+    def test_the_package_and_the_checkout_install_it(self):
+        self.assertTrue(os.access(self.LAUNCHER, os.X_OK))
+        line = 'install -Dm755 crates/cloudmail-gtk/data/cloudmail-gtk "$pkgdir/usr/bin/cloudmail-gtk"'
+        self.assertIn(line, (ROOT / 'packaging/aur/cloudmail/PKGBUILD').read_text())
+        line = 'install -Dm755 crates/cloudmail-gtk/data/cloudmail-gtk "$BIN/cloudmail-gtk"'
+        self.assertIn(line, (ROOT / 'install.sh').read_text())
+
+
 class ReleaseTests(unittest.TestCase):
     def run_release(self, failure=''):
         with tempfile.TemporaryDirectory() as directory:

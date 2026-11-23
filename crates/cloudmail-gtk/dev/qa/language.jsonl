@@ -1,0 +1,34 @@
+# The window follows a switch of language while it runs, as it does when Omarchy's language is changed: omui's
+# Translator would switch it; here omui's `language` command does, to the few Danish strings of dev/qa/da.json (a QA
+# build's alone, registered as it starts). What is bound (labels, tooltips, placeholders) and what was built from text and kept (the counts under the
+# list's title) are written again, and the shortcuts overlay opens in the new language.
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true}
+{"do":"wait","role":"label","name":"5 conversations · 2 unread","visible":true}
+{"do":"wait","role":"label","name":"Nothing selected","visible":true}
+{"do":"language","code":"da"}
+{"do":"wait","role":"label","name":"Intet valgt","visible":true}
+{"do":"wait","role":"label","name":"5 samtaler · 2 ulæste","visible":true}
+{"do":"wait","role":"label","name":"Skriv","visible":true}
+{"do":"wait","role":"button","name":"Ny besked (c)","visible":true}
+{"do":"wait","role":"search-box","name":"Søg i post · ~ betydning","visible":true}
+{"do":"wait","role":"label","name":"Inbox","visible":false}
+{"do":"key","keys":"question"}
+{"do":"wait","dialog":"Keyboard shortcuts"}
+{"do":"wait","role":"label","name":"Næste / forrige","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+
+# A message opened in Danish (it is read now), and a switch while it is on show: the list's rows are built again
+# (their dates are in the language's forms) and the selection stays.
+{"do":"key","keys":"j"}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
+{"do":"wait","role":"label","name":"5 samtaler · 1 ulæste","visible":true}
+{"do":"language","code":"ar"}
+{"do":"wait","role":"label","name":"5 conversations · 1 unread","visible":true}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","selected":true}
+
+# Arabic reads right to left; with no catalog of its own the words are English. A shot shows the mirrored window.
+{"do":"shot","path":"rtl.png"}
+{"do":"language","code":"en"}
+{"do":"wait","role":"button","name":"New message (c)","visible":true}
+{"do":"quit"}

@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod attach;
 pub mod client;
 pub mod config;
+pub mod desktop;
 pub mod error;
 pub mod gmail;
 pub mod hey;

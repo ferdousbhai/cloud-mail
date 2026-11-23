@@ -201,7 +201,9 @@ fn cloudmail_env(m: &Mock, args: &[&str], stdin: Option<&str>, env: &[(&str, Opt
     // Never the real session bus (keyring, icloud-session): a test that needs one gives its own.
     cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
     cmd.args(args)
+        // Nor the user's data directory: the CLI renames the app's old .desktop file in a mimeapps.list there.
         .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
         .env("HOME", &home)
         .env("CLOUDMAIL_API_URL", &m.url)
         .env("CLOUDMAIL_API_TOKEN", "test-token")
@@ -224,14 +226,40 @@ fn cloudmail_env(m: &Mock, args: &[&str], stdin: Option<&str>, env: &[(&str, Opt
     child.wait_with_output().unwrap()
 }
 
+/// The JSON a command printed: its envelope on stdout when it worked, its error at the end of stderr when it failed,
+/// with nothing on stdout then, so that a caller reading stdout never takes a failure for a result.
 fn json_out(o: &Output) -> Value {
-    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| {
+    let printed = if o.status.success() {
+        &o.stdout
+    } else {
+        assert!(
+            o.stdout.is_empty(),
+            "a failure prints nothing on stdout: {}",
+            String::from_utf8_lossy(&o.stdout)
+        );
+        // What the command said as it went (an install, a sign-in) comes first; the error is the last thing it says.
+        let start = o.stderr.windows(2).rposition(|w| w == b"\n{").map_or(0, |i| i + 1);
+        &o.stderr[start..]
+    };
+    serde_json::from_slice(printed).unwrap_or_else(|e| {
         panic!(
             "not JSON ({e}): {}\n{}",
             String::from_utf8_lossy(&o.stdout),
             String::from_utf8_lossy(&o.stderr)
         )
     })
+}
+
+/// Asserts that a command failed as Omarchy's command lines do, with exit 1, and that its error on stderr gives the
+/// failure's class as `error.kind`: the old exit codes 2 to 5 are those kinds now.
+macro_rules! assert_fails {
+    ($o:expr, $kind:expr $(, $($msg:tt)+)?) => {{
+        let o: &Output = &$o;
+        assert_eq!(o.status.code(), Some(1) $(, $($msg)+)?);
+        let v = json_out(o);
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["error"]["kind"], $kind, "{v}");
+    }};
 }
 
 fn requests(m: &Mock) -> Vec<Req> {
@@ -308,12 +336,12 @@ fn screener_and_bulk_actions() {
 
     // A bad address anywhere in the list decides nobody.
     let o = cloudmail(&m, &["screener", "block", "other@y.com", "not-an-address"], None);
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert!(!requests(&m).iter().any(|r| r.path == "/api/senders/other%40y.com"));
 
     // A partial failure still archives what it can, but exits with the failure's code.
     let o = cloudmail(&m, &["thread", "archive", "t_1", "t_missing"], None);
-    assert_eq!(o.status.code(), Some(4));
+    assert_fails!(o, "not_found");
     let v = json_out(&o);
     assert_eq!(v["ok"], false);
     assert_eq!(v["error"]["code"], "not_found");
@@ -328,7 +356,7 @@ fn screener_and_bulk_actions() {
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
 
     let o = cloudmail(&m, &["thread", "delete", "t_1"], None);
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert_eq!(json_out(&o)["error"]["code"], "confirmation_required");
     assert!(!requests(&m).iter().any(|r| r.method == "DELETE"));
 }
@@ -628,14 +656,14 @@ fn attachment_save_uses_server_filename() {
 }
 
 #[test]
-fn errors_have_codes_and_exit_statuses() {
+fn errors_exit_one_on_stderr_with_their_kind() {
     let m = mock(default_handler);
     let o = cloudmail(&m, &["thread", "read", "t_nope"], None);
-    assert_eq!(o.status.code(), Some(4));
+    assert_fails!(o, "not_found");
     assert_eq!(json_out(&o)["error"]["message"], "no thread t_nope");
 
     let o = cloudmail_env(&m, &["inbox"], None, &[("CLOUDMAIL_API_TOKEN", Some("wrong"))]);
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     assert_eq!(json_out(&o)["error"]["code"], "unauthorized");
 
     let o = cloudmail_env(
@@ -644,7 +672,7 @@ fn errors_have_codes_and_exit_statuses() {
         None,
         &[("CLOUDMAIL_API_URL", None), ("CLOUDMAIL_API_TOKEN", None)],
     );
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     assert_eq!(json_out(&o)["error"]["code"], "not_configured");
 
     // A preview works unconfigured, and says nothing can be sent yet.
@@ -665,8 +693,19 @@ fn errors_have_codes_and_exit_statuses() {
     assert_eq!(v["meta"]["warnings"][0]["code"], "not_configured");
 
     let o = cloudmail(&m, &["inbox", "--nope"], None);
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert_eq!(json_out(&o)["error"]["code"], "usage");
+
+    // For a person (--styled) the same failures are a line of text on stderr, and still exit 1, never 2 or 4.
+    for args in [
+        &["thread", "read", "t_nope", "--styled"][..],
+        &["inbox", "--nope", "--styled"],
+    ] {
+        let o = cloudmail(&m, args, None);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(o.stdout.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&o.stdout));
+        assert!(String::from_utf8_lossy(&o.stderr).starts_with("error: "), "{args:?}");
+    }
 }
 
 #[test]
@@ -698,6 +737,98 @@ fn self_documentation() {
     assert_eq!(v["data"]["configured"], true);
 }
 
+/// `cloudmail open` starts the desktop app in its place with the links it was given (what `cloudmail.desktop` runs),
+/// and fails as any command does when there is no app to start.
+#[test]
+fn open_starts_the_desktop_app_with_its_links() {
+    let m = mock(default_handler);
+    let dir = temp_home("open");
+    let (app, said) = (dir.join("cloudmail-gtk"), dir.join("args"));
+    std::fs::write(
+        &app,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", said.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = "mailto:sam@example.com?subject=Lake%20photos";
+    let o = cloudmail_env(
+        &m,
+        &["open", link],
+        None,
+        &[("CLOUDMAIL_APP", Some(app.to_str().unwrap()))],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_to_string(&said).unwrap(), format!("{link}\n"));
+
+    let o = cloudmail_env(
+        &m,
+        &["open", "--json"],
+        None,
+        &[("CLOUDMAIL_APP", Some(dir.join("missing").to_str().unwrap()))],
+    );
+    assert_fails!(o, "other");
+    assert!(
+        json_out(&o)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("couldn't start "),
+        "{}",
+        json_out(&o)
+    );
+}
+
+/// A default mail app chosen before the app was renamed (0.8) names its old `.desktop` file: any run of the CLI points
+/// it at `cloudmail.desktop`, once, in both places a mimeapps.list may be, and leaves the rest of the file alone.
+#[test]
+fn a_mailto_default_follows_the_app_to_its_new_name() {
+    let m = mock(default_handler);
+    let home = temp_home("mimeapps");
+    let (config, data) = (home.join("config"), home.join("data"));
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(data.join("applications")).unwrap();
+    let before = "[Default Applications]\nx-scheme-handler/mailto=com.ferdousbhai.Cloudmail.desktop;\ntext/html=firefox.desktop\n";
+    std::fs::write(config.join("mimeapps.list"), before).unwrap();
+    std::fs::write(data.join("applications/mimeapps.list"), before).unwrap();
+    let env = [
+        ("XDG_CONFIG_HOME", Some(config.to_str().unwrap())),
+        ("XDG_DATA_HOME", Some(data.to_str().unwrap())),
+    ];
+    let o = cloudmail_env(&m, &["status", "--json"], None, &env);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let after = "[Default Applications]\nx-scheme-handler/mailto=cloudmail.desktop;\ntext/html=firefox.desktop\n";
+    assert_eq!(std::fs::read_to_string(config.join("mimeapps.list")).unwrap(), after);
+    assert_eq!(
+        std::fs::read_to_string(data.join("applications/mimeapps.list")).unwrap(),
+        after
+    );
+}
+
+/// The command line is GTK-free: it links nothing of GTK, and `--help` and `--version` need no display.
+#[test]
+fn the_command_line_needs_no_display_and_links_no_gtk() {
+    let exe = env!("CARGO_BIN_EXE_cloudmail");
+    let libraries = Command::new("ldd").arg(exe).output().expect("ldd runs");
+    let libraries = String::from_utf8_lossy(&libraries.stdout);
+    for gui in ["libgtk", "libgdk", "libwebkit", "libadwaita"] {
+        assert!(!libraries.contains(gui), "cloudmail links {gui}:\n{libraries}");
+    }
+    for flag in ["--help", "--version"] {
+        let o = Command::new(exe)
+            .arg(flag)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .env("DBUS_SESSION_BUS_ADDRESS", NO_BUS)
+            .env("HOME", temp_home("nodisplay"))
+            .env("XDG_CONFIG_HOME", temp_home("nodisplay").join("config"))
+            .env("XDG_DATA_HOME", temp_home("nodisplay").join("data"))
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{flag}");
+        assert!(String::from_utf8_lossy(&o.stdout).contains("cloudmail"), "{flag}");
+    }
+}
+
 // ---------- linked HEY account, through tests/fake-hey ----------
 
 /// A home whose config links HEY, served by the fake `hey` (which logs every call).
@@ -727,6 +858,7 @@ impl HeyHome {
         cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
         cmd.args(args)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("XDG_DATA_HOME", self.home.join("data"))
             .env("HOME", &self.home)
             .env("CLOUDMAIL_API_URL", &m.url)
             .env("CLOUDMAIL_API_TOKEN", "test-token")
@@ -799,7 +931,7 @@ fn inbox_without_accounts_is_unchanged() {
     assert_eq!(ids(&v), ["t_1", "t_2"]);
     assert!(v["meta"].get("warnings").is_none() && v["meta"].get("duplicates_hidden").is_none());
     let o = cloudmail(&m, &["threads", "list", "--folder", "feed"], None);
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert_eq!(
         json_out(&o)["error"]["hint"],
         "link one with `cloudmail account add hey`"
@@ -922,7 +1054,7 @@ fn hey_moves_marks_and_composes() {
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
     // A search hit outside any box has no box item to move.
     let o = h.run(&m, &["thread", "archive", "hey:9010"], &[]);
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     // Deleting a HEY thread moves it to HEY's Trash; no --yes, since it can be restored there.
     let o = h.run(&m, &["thread", "delete", "hey:9001:7001"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
@@ -1057,7 +1189,7 @@ fn a_failing_hey_never_breaks_your_own_mail() {
         &["thread", "read", "hey:9001:7001"],
         &[("FAKE_HEY_MODE", "logged_out")],
     );
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "account_unauthorized");
     assert!(
@@ -1067,7 +1199,7 @@ fn a_failing_hey_never_breaks_your_own_mail() {
             .contains("cloudmail account login hey")
     );
     let o = h.run(&m, &["thread", "read", "hey:1234"], &[]);
-    assert_eq!(o.status.code(), Some(4));
+    assert_fails!(o, "not_found");
 }
 
 #[test]
@@ -1150,7 +1282,7 @@ fn account_add_list_remove() {
     std::fs::write(&cfg, "poll_seconds = 30\n").unwrap();
 
     let o = h.run(&m, &["account", "add", "hey"], &[("FAKE_HEY_MODE", "logged_out")]);
-    assert_eq!(o.status.code(), Some(3), "no terminal: no browser login, just the hint");
+    assert_fails!(o, "auth", "no terminal: no browser login, just the hint");
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "not_logged_in");
     assert!(v["error"]["hint"].as_str().unwrap().contains("auth login"));
@@ -1161,7 +1293,7 @@ fn account_add_list_remove() {
         &["account", "add", "hey"],
         &[("CLOUDMAIL_HEY_COMMAND", "/nonexistent/hey")],
     );
-    assert_eq!(o.status.code(), Some(1));
+    assert_fails!(o, "other");
     assert_eq!(json_out(&o)["error"]["code"], "not_installed");
 
     // hey's error envelope on stderr comes through whole, not as its last line ("}").
@@ -1198,7 +1330,7 @@ fn account_add_list_remove() {
 
     assert!(h.run(&m, &["account", "remove", "hey"], &[]).status.success());
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
-    assert_eq!(h.run(&m, &["account", "remove", "hey"], &[]).status.code(), Some(4));
+    assert_fails!(h.run(&m, &["account", "remove", "hey"], &[]), "not_found");
 }
 
 // ---------- linked Gmail account, through tests/fake-gws ----------
@@ -1239,6 +1371,7 @@ impl GmailHome {
         cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS);
         cmd.args(args)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("XDG_DATA_HOME", self.home.join("data"))
             .env("HOME", &self.home)
             .env("CLOUDMAIL_API_URL", &m.url)
             .env("CLOUDMAIL_API_TOKEN", "test-token")
@@ -1669,7 +1802,7 @@ fn gmail_folders_map_to_labels() {
         "every sender is approved here, so nothing waits: {v}"
     );
     let o = h.run(&m, &["threads", "list", "--folder", "feed"], &[]);
-    assert_eq!(o.status.code(), Some(2), "HEY's boxes need HEY");
+    assert_fails!(o, "usage", "HEY's boxes need HEY");
 }
 
 #[test]
@@ -1831,10 +1964,7 @@ fn gmail_moves_marks_and_composes() {
     let o = h.run(&m, &["thread", "archive", "t_1", "gmail:t-a2"], &[]);
     assert!(o.status.success());
     assert!(requests(&m).iter().any(|r| r.path == "/api/threads/t_1/move"));
-    assert_eq!(
-        h.run(&m, &["thread", "archive", "gmail:nope"], &[]).status.code(),
-        Some(4)
-    );
+    assert_fails!(h.run(&m, &["thread", "archive", "gmail:nope"], &[]), "not_found");
     // A Gmail thread goes to Gmail's Trash, without asking; a worker thread with it is deleted
     // for good, which needs --yes off a terminal.
     let o = h.run(&m, &["thread", "delete", "gmail:t-a1"], &[]);
@@ -1957,7 +2087,7 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
     // Asking Gmail itself for something does fail, with Gmail's reason and exit code.
     let h = gmail_home("isolation2", GMAIL, true);
     let o = h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "expired")]);
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "account_unauthorized");
     assert!(
@@ -1966,12 +2096,10 @@ fn a_failing_gmail_never_breaks_your_own_mail() {
             .unwrap()
             .contains("cloudmail account login gmail")
     );
-    assert_eq!(h.run(&m, &["thread", "read", "gmail:nope"], &[]).status.code(), Some(4));
-    assert_eq!(
-        h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "offline")])
-            .status
-            .code(),
-        Some(5)
+    assert_fails!(h.run(&m, &["thread", "read", "gmail:nope"], &[]), "not_found");
+    assert_fails!(
+        h.run(&m, &["thread", "read", "gmail:t-a1"], &[("FAKE_GWS_MODE", "offline")]),
+        "unavailable"
     );
 }
 
@@ -2049,15 +2177,11 @@ fn gmail_account_add_list_remove() {
 
     // The build's own client needs nothing set: without a terminal it goes straight to the sign-in hint.
     let o = h.run(&m, &["account", "add", "gmail"], &[]);
-    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_fails!(o, "auth", "{}", String::from_utf8_lossy(&o.stdout));
     assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
 
     let o = h.run(&m, &["account", "add", "gmail"], &client);
-    assert_eq!(
-        o.status.code(),
-        Some(3),
-        "no terminal: no browser sign-in, just the hint"
-    );
+    assert_fails!(o, "auth", "no terminal: no browser sign-in, just the hint");
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "not_logged_in");
     assert!(v["error"]["hint"].as_str().unwrap().contains("at a terminal"));
@@ -2067,7 +2191,7 @@ fn gmail_account_add_list_remove() {
         &["account", "add", "gmail"],
         &[("CLOUDMAIL_GWS_COMMAND", "/nonexistent/gws")],
     );
-    assert_eq!(o.status.code(), Some(1));
+    assert_fails!(o, "other");
     assert_eq!(json_out(&o)["error"]["code"], "not_installed");
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("accounts"));
 
@@ -2076,7 +2200,7 @@ fn gmail_account_add_list_remove() {
         &["account", "add", "gmail", "--login"],
         &[client[0], client[1], ("FAKE_GWS_MODE", "deny")],
     );
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     assert!(
         json_out(&o)["error"]["message"]
             .as_str()
@@ -2163,7 +2287,7 @@ fn gmail_account_add_list_remove() {
         &["account", "add", "gmail"],
         &[client[0], client[1], ("FAKE_GWS_MODE", "expired")],
     );
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     assert!(
         json_out(&o)["error"]["message"]
             .as_str()
@@ -2252,7 +2376,7 @@ fn gmail_account_add_list_remove() {
         "cloudmail's own Gmail sign-in goes with the account"
     );
     assert!(!std::fs::read_to_string(&cfg).unwrap().contains("[accounts.gmail]"));
-    assert_eq!(h.run(&m, &["account", "remove", "gmail"], &[]).status.code(), Some(4));
+    assert_fails!(h.run(&m, &["account", "remove", "gmail"], &[]), "not_found");
     assert!(
         !h.calls().iter().any(|c| c.starts_with("auth logout")),
         "signing out is removing cloudmail's own directory"
@@ -2393,7 +2517,7 @@ fn bad_attachments_fail_before_anything_is_sent() {
         ],
         None,
     );
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert_eq!(
         json_out(&o)["error"]["message"],
         format!("can't attach {missing}: no such file")
@@ -2403,7 +2527,7 @@ fn bad_attachments_fail_before_anything_is_sent() {
         &["reply", "t_1", "-m", "x", "--attach", &files.display().to_string()],
         None,
     );
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert!(
         json_out(&o)["error"]["message"]
             .as_str()
@@ -2428,7 +2552,7 @@ fn bad_attachments_fail_before_anything_is_sent() {
         ];
         args.extend(extra);
         let o = cloudmail(&m, &args, None);
-        assert_eq!(o.status.code(), Some(2), "{extra:?}");
+        assert_fails!(o, "usage", "{extra:?}");
         let v = json_out(&o);
         assert_eq!(v["error"]["code"], "bad_request");
         assert_eq!(
@@ -2465,7 +2589,7 @@ fn bad_attachments_fail_before_anything_is_sent() {
         ],
         None,
     );
-    assert_eq!(o.status.code(), Some(2));
+    assert_fails!(o, "usage");
     assert_eq!(json_out(&o)["error"]["message"], "the attachments are too large");
 }
 
@@ -2793,6 +2917,7 @@ impl IcloudHome {
         cmd.args(args)
             .env("DBUS_SESSION_BUS_ADDRESS", &self.bus.address)
             .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("XDG_DATA_HOME", self.home.join("data"))
             .env("HOME", &self.home)
             .env("CLOUDMAIL_API_URL", &m.url)
             .env("CLOUDMAIL_API_TOKEN", "test-token")
@@ -2859,7 +2984,7 @@ fn icloud_links_through_icloud_session() {
         &["account", "add", "icloud"],
         &[("DBUS_SESSION_BUS_ADDRESS", Some(&lonely.address))],
     );
-    assert_eq!(o.status.code(), Some(1), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_fails!(o, "other", "{}", String::from_utf8_lossy(&o.stdout));
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "not_installed");
     assert!(
@@ -2868,7 +2993,7 @@ fn icloud_links_through_icloud_session() {
     );
 
     let o = h.run(&m, &["account", "add", "icloud"]);
-    assert_eq!(o.status.code(), Some(3), "signed out and no terminal: nothing opens");
+    assert_fails!(o, "auth", "signed out and no terminal: nothing opens");
     assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
     assert!(!h.calls().contains(&"SignIn".to_string()));
 
@@ -3269,7 +3394,7 @@ fn a_failing_icloud_never_breaks_your_own_mail() {
     );
     assert!(h.calls().contains(&"ReportSignInRequired".to_string()));
     let o = h.run(&m, &["thread", "read", &lunch]);
-    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_fails!(o, "auth", "{}", String::from_utf8_lossy(&o.stdout));
 }
 
 #[test]
@@ -3308,7 +3433,7 @@ fn secrets_live_in_the_keyring() {
             ("DBUS_SESSION_BUS_ADDRESS", Some(&lonely.address)),
         ],
     );
-    assert_eq!(o.status.code(), Some(3));
+    assert_fails!(o, "auth");
     let v = json_out(&o);
     assert_eq!(v["error"]["code"], "not_configured");
     assert!(

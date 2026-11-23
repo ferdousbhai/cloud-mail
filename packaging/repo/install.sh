@@ -149,8 +149,8 @@ warn_earlier_install() {
   local user="${SUDO_USER:-${USER:-$(id -un)}}" home path found=()
   home="$(getent passwd "$user" | cut -d: -f6)"
   [[ -n $home ]] || return 0
-  for path in .local/bin/cloudmail .local/bin/cloudmail-gtk .local/bin/cmail \
-    .local/share/applications/com.ferdousbhai.Cloudmail.desktop; do
+  for path in .local/bin/cloudmail .local/bin/cloudmail-gtk .local/bin/cmail .local/lib/cloudmail \
+    .local/share/applications/com.ferdousbhai.Cloudmail.desktop .local/share/applications/cloudmail.desktop; do
     [[ -e $home/$path || -L $home/$path ]] && found+=("$home/$path")
   done
   (( ${#found[@]} )) || return 0

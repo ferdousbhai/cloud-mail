@@ -3,7 +3,7 @@
 use clap::{ArgAction, Command};
 use serde_json::{Value, json};
 
-use crate::output::{CliError, CliResult, Response, crumb, exit};
+use crate::output::{CliError, CliResult, Kind, Response, crumb, exit};
 
 /// The agent skill, printed by `cloudmail skill` and installed by `cloudmail skill install`.
 pub const SKILL: &str = include_str!("../../../skills/cloudmail/SKILL.md");
@@ -198,6 +198,13 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
         "connect",
         &["cloudmail connect https://cloudmail.example.workers.dev/invite/inv_…"],
     ),
+    (
+        "open",
+        &[
+            "cloudmail open",
+            "cloudmail open 'mailto:sam@example.com?subject=Lake%20photos'",
+        ],
+    ),
     ("config", &["cloudmail config show"]),
     (
         "config show",
@@ -369,6 +376,7 @@ pub fn commands_json(root: &Command) -> Value {
         "global_flags": root.get_arguments().filter(|a| a.is_global_set()).map(arg_json).collect::<Vec<_>>(),
         "commands": commands,
         "exit_codes": exit::TABLE.iter().map(|(c, d)| json!({ "code": c, "meaning": d })).collect::<Vec<_>>(),
+        "error_kinds": Kind::ALL.iter().map(|k| json!({ "kind": k.as_str(), "meaning": k.meaning() })).collect::<Vec<_>>(),
     })
 }
 
@@ -394,6 +402,10 @@ pub fn commands_text(tree: &Value) -> String {
     for (code, meaning) in exit::TABLE {
         out.push_str(&format!("  {code}  {meaning}\n"));
     }
+    out.push_str("\nError kinds (error.kind):\n");
+    for kind in Kind::ALL {
+        out.push_str(&format!("  {:<12} {}\n", kind.as_str(), kind.meaning()));
+    }
     out.trim_end().to_string()
 }
 
@@ -417,11 +429,13 @@ When stdout is piped, every command prints one JSON envelope:
 - Two exceptions: `cloudmail watch` streams one JSON object per line (JSONL), and `cloudmail skill`
   prints its SKILL.md as plain markdown; neither has an envelope.
 
-Errors print `{"ok": false, "error": {"code": "...", "message": "...", "hint": "..."}}` and exit non-zero:
+A command exits 0 when it did what it was asked and 1 on any failure. The error goes to stderr, never stdout: as
+`{"ok": false, "error": {"code": "...", "kind": "...", "message": "...", "hint": "..."}}` when stderr is read by a
+program (JSON modes), as `error: ...` text on a terminal. `kind` is the broad class, for deciding what to do next:
 
-| exit | meaning |
+| kind | meaning |
 |------|---------|
-{EXIT_ROWS}
+{KIND_ROWS}
 
 Error codes: usage, not_configured, unauthorized, not_found, bad_request, api_error, network_error,
 bad_response, confirmation_required, cancelled, not_logged_in, not_installed, account_unauthorized,
@@ -573,8 +587,8 @@ If your worker forwards to a linked address (or Gmail forwards into your worker)
 each message is hidden (`meta.duplicates_hidden`): Gmail copies by Message-ID, HEY and iCloud copies by sender,
 subject and time. A linked account's failure never fails a command about your own mail: the rest is
 returned and `meta.warnings` lists `{account, code, message}`. A command about a linked account's ID
-fails with `account_unauthorized` (exit 3: `cloudmail account login <name>` signs it in again in the
-browser, or icloud-session's window for iCloud), `account_unavailable` (exit 5: its CLI
+fails with `account_unauthorized` (kind `auth`: `cloudmail account login <name>` signs it in again in the
+browser, or icloud-session's window for iCloud), `account_unavailable` (kind `unavailable`: its CLI
 missing or failing, or Google or iCloud unreachable), or `not_found`. Linked accounts can't delete threads from here, HEY gives out no raw .eml,
 and `watch` follows your worker only.
 
@@ -585,12 +599,12 @@ a short agent skill for Claude Code, Codex and others.
 "#;
 
 pub fn agent_guide() -> String {
-    let rows = exit::TABLE
+    let rows = Kind::ALL
         .iter()
-        .map(|(c, d)| format!("| {c} | {d} |"))
+        .map(|k| format!("| {} | {} |", k.as_str(), k.meaning()))
         .collect::<Vec<_>>()
         .join("\n");
-    AGENT_GUIDE.replace("{EXIT_ROWS}", &rows)
+    AGENT_GUIDE.replace("{KIND_ROWS}", &rows)
 }
 
 /// This CLI's embedded skill, installed with the shared `agent_skill` convention.
@@ -719,7 +733,15 @@ mod tests {
                 .any(|a| a["long"] == "--to" && a["required"] == true)
         );
         assert!(!compose["examples"].as_array().unwrap().is_empty());
-        assert_eq!(tree["exit_codes"].as_array().unwrap().len(), exit::TABLE.len());
+        let exits: Vec<i64> = tree["exit_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["code"].as_i64().unwrap())
+            .collect();
+        assert_eq!(exits, [0, 1], "success or failure, nothing else");
+        assert_eq!(tree["error_kinds"].as_array().unwrap().len(), Kind::ALL.len());
+        assert_eq!(tree["error_kinds"][1]["kind"], "auth");
         assert!(
             tree["global_flags"]
                 .as_array()
@@ -756,9 +778,10 @@ mod tests {
     }
 
     #[test]
-    fn guide_lists_exit_codes() {
+    fn guide_lists_error_kinds() {
         let g = agent_guide();
-        assert!(g.contains("| 3 | not configured"));
-        assert!(!g.contains("{EXIT_ROWS}"));
+        assert!(g.contains("| auth | not configured"));
+        assert!(g.contains("exits 0 when it did what it was asked and 1 on any failure"));
+        assert!(!g.contains("{KIND_ROWS}"));
     }
 }

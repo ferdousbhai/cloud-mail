@@ -54,20 +54,58 @@
 {"do":"key","keys":"R"}
 {"do":"wait","toasts":["Refreshed"]}
 
-# ? lists the keys in a window of its own, which Escape, ? and q close.
+# ? lists the keys in omui's overlay, a dialog over the window, which Escape and ? close.
 {"do":"key","keys":"question"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"wait","dialog":"Keyboard shortcuts"}
 {"do":"wait","role":"label","name":"Toggle unread","visible":true}
+{"do":"wait","role":"label","name":"Close this window (a draft asks first)","visible":true}
 {"do":"key","keys":"Escape"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
+{"do":"wait","dialog":null}
 {"do":"key","keys":"question"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
+{"do":"wait","dialog":"Keyboard shortcuts"}
+# While it is open the window's own keys do nothing: j does not move the list under it.
+{"do":"key","keys":"j"}
 {"do":"key","keys":"question"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
-{"do":"key","keys":"question"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":true}
-{"do":"key","keys":"q"}
-{"do":"wait","role":"window","name":"Keyboard shortcuts","visible":false}
+{"do":"wait","dialog":null}
+
+# F1 lists them too, and closes the list; it does so with the keyboard in the search field, where ? is a character
+# and so are the single keys.
+{"do":"key","keys":"F1"}
+{"do":"wait","dialog":"Keyboard shortcuts"}
+{"do":"wait","role":"label","name":"F1","visible":true}
+{"do":"key","keys":"F1"}
+{"do":"wait","dialog":null}
+{"do":"key","keys":"slash"}
+{"do":"wait","role":"search-box","name":"Search mail · ~ meaning","focused":true}
+{"do":"type","text":"?e"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"search-box","name":"Search mail · ~ meaning","text":"?e"}
+{"do":"key","keys":"F1"}
+{"do":"wait","dialog":"Keyboard shortcuts"}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+{"do":"key","keys":"<Control>a"}
+{"do":"key","keys":"BackSpace"}
+
+# A worker that stops answering (the stand-in goes down on a search for "worker down"): the list says why it could
+# not load, and what the window does on its own account, here checking for new mail and the counts in the sidebar,
+# says so in a line above the list for as long as it fails. Up again, R loads the list and the line goes.
+{"do":"type","text":"worker down"}
+{"do":"key","keys":"Return"}
+{"do":"wait","role":"label","name":"No matches.","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","role":"label","name":"Couldn't load mail\n\nthe stand-in worker is down\n\nPress R to retry","visible":true}
+{"do":"key","keys":"R"}
+{"do":"wait","role":"label","name":"2 things the window does in the background failed: the stand-in worker is down","visible":true}
+{"do":"shot","path":"trouble.png"}
+{"do":"key","keys":"slash"}
+{"do":"type","text":"worker up"}
+{"do":"key","keys":"Return"}
+{"do":"wait","role":"label","name":"No matches.","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","role":"list-item","name":"Trail map for Saturday","visible":true}
+{"do":"key","keys":"R"}
+{"do":"wait","role":"label","name":"2 things the window does in the background failed: the stand-in worker is down","visible":false}
 
 # A narrow window: the sidebar is its icons.
 {"do":"resize","width":800,"height":700}

@@ -1,6 +1,7 @@
 mod accounts;
 mod admin;
 mod agent_skill;
+mod app;
 mod cli;
 mod docs;
 mod init;
@@ -73,6 +74,8 @@ fn mode_from_raw_args() -> Mode {
 
 fn main() {
     config::migrate_legacy();
+    // The desktop app's choices of default application name its `.desktop` file, which was renamed in 0.8.
+    cloudmail_api::desktop::migrate_mimeapps();
     if let Some(home) = agent_skill::home() {
         agent_skill::refresh(&home, &docs::AGENT_SKILL);
     }
@@ -103,17 +106,17 @@ fn main() {
                 })
                 .hint("run `cloudmail commands --json` or `cloudmail <command> --help`")
                 .print(mode);
-                std::process::exit(exit::USAGE);
+                std::process::exit(exit::FAILURE);
             }
             let _ = e.print();
-            std::process::exit(exit::USAGE);
+            std::process::exit(exit::FAILURE);
         }
     };
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(c) => c,
         Err(e) => {
             let _ = e.print();
-            std::process::exit(exit::USAGE);
+            std::process::exit(exit::FAILURE);
         }
     };
     let ctx = Ctx {
@@ -127,7 +130,7 @@ fn main() {
         }
         Err(e) => {
             e.print(ctx.mode);
-            std::process::exit(e.exit);
+            std::process::exit(exit::FAILURE);
         }
     }
 }
@@ -157,6 +160,7 @@ fn dispatch(ctx: &Ctx, command: Option<Command>) -> CliResult {
         Command::Settings(s) => admin::settings(ctx, s),
         Command::User(u) => admin::user(ctx, u),
         Command::Connect(a) => admin::connect(&a),
+        Command::Open(a) => app::open(&a),
         Command::Config(c) => admin::config_cmd(c),
         Command::Account(a) => accounts::account(ctx, a),
         Command::Setup(a) => setup::run(&a, ctx.interactive()),

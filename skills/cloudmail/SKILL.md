@@ -14,8 +14,9 @@ description: |
 for their domains, plus optional linked HEY, Gmail and iCloud Mail accounts. One worker can serve
 several people: its **admin** deployed it (`setup`) and invites others, who **connect** with a link and
 see only their own mail. When piped, every command prints one JSON envelope
-`{ok, data, summary, breadcrumbs, meta}`, never prompts, and exits non-zero with
-`{ok:false, error:{code, message, hint}}` on failure. Follow `error.hint` and `breadcrumbs`.
+`{ok, data, summary, breadcrumbs, meta}` on stdout and never prompts. It exits 0 on success and 1 on
+any failure, with `{ok:false, error:{code, kind, message, hint}}` on stderr (`kind`: `usage`, `auth`,
+`not_found`, `unavailable` or `other`). Follow `error.hint` and `breadcrumbs`.
 
 Start with `cloudmail status --json`: `data.healthy` means it's ready, so skip to **Use**
 (`data.user.role` is `admin` or `user`; `data.api_url == null` means linked accounts only, no worker).
@@ -109,7 +110,7 @@ for some); at a terminal, plain `cloudmail init` asks about each.
 | iCloud | icloud-session (github.com/ferdousbhai/icloud-for-omarchy) | `cloudmail account add icloud --login` |
 
 Gmail warns "Google hasn't verified this app": tell the user to click Advanced, then Go to Cloudmail.
-Verify with `cloudmail account list --json`. Expired sign-in (`account_unauthorized`, exit 3):
+Verify with `cloudmail account list --json`. Expired sign-in (`account_unauthorized`, kind `auth`):
 `cloudmail account login <name>`. Linked mail then appears in every folder, tagged `"account"`.
 
 ## Use

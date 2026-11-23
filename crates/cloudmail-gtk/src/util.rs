@@ -1,7 +1,4 @@
-pub use cloudmail_api::text::{
-    format_addresses, html_to_text, human_size, long_time, quote, reply_subject, short_time, split_addresses,
-    unused_path,
-};
+pub use cloudmail_api::text::{format_addresses, html_to_text, quote, reply_subject, split_addresses, unused_path};
 use gtk::{gio, glib};
 
 /// Runs `work` on a worker thread and hands its result to `done` on the GTK main loop.
@@ -15,9 +12,26 @@ where
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || work().map_err(Into::into))
             .await
-            .unwrap_or_else(|_| Err("background task panicked".into()));
+            .unwrap_or_else(|_| Err(omui::tr("the background task crashed")));
         done(result);
     });
+}
+
+/// As [`run`], for work that sends or changes something (a message, a move, a file): through `omui::background`,
+/// which holds the application until `done` has run. Closing the last window ends the main loop under whatever is
+/// still running, and the hold keeps the app going, without a window, until the work is finished and its outcome
+/// dealt with. Reads go through [`run`] instead, so that a slow one is not a reason to stay running out of sight.
+pub fn write<T, E, W, D>(work: W, done: D)
+where
+    T: Send + 'static,
+    E: Into<String> + Send + 'static,
+    W: FnOnce() -> Result<T, E> + Send + 'static,
+    D: FnOnce(Result<T, String>) + 'static,
+{
+    omui::background(
+        move || work().map_err(Into::into),
+        move |result| done(result.and_then(|r| r)),
+    );
 }
 
 #[derive(Debug, Default, Clone)]
@@ -28,6 +42,8 @@ pub struct Draft {
     pub body: String,
     pub reply_to_message_id: Option<String>,
     pub from: Option<String>,
+    /// What `drafts::Store` keeps it under, for a draft opened from there; a new message has none yet.
+    pub id: Option<String>,
 }
 
 pub fn parse_mailto(uri: &str) -> Draft {
@@ -70,7 +86,7 @@ pub fn notify(title: &str, body: &str) {
     let body = escape_html(body);
     std::thread::spawn(move || {
         let _ = std::process::Command::new("notify-send")
-            .args(["-a", "Cloudmail", "-i", crate::APP_ID, "--", &title, &body])
+            .args(["-a", "Cloudmail", "-i", crate::NAME, "--", &title, &body])
             .status();
     });
 }
@@ -81,11 +97,11 @@ pub fn open_uri(uri: &str) {
     }
 }
 
-pub fn subject_or_placeholder(subject: &str) -> &str {
+pub fn subject_or_placeholder(subject: &str) -> String {
     if subject.trim().is_empty() {
-        "(no subject)"
+        omui::tr("(no subject)")
     } else {
-        subject
+        subject.to_owned()
     }
 }
 

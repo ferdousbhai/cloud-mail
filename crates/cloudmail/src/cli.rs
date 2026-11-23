@@ -89,6 +89,8 @@ pub enum Command {
     User(UserCommand),
     /// Connect to someone's worker with the invite link they sent you
     Connect(ConnectArgs),
+    /// Open the desktop app (what the app launcher runs), with any mailto: links to write to
+    Open(OpenArgs),
     /// View or change worker settings (forwarding)
     #[command(subcommand)]
     Settings(SettingsCommand),
@@ -521,6 +523,12 @@ pub enum UserCommand {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct OpenArgs {
+    /// mailto: links to open a message to, as a browser passes them
+    pub links: Vec<String>,
 }
 
 #[derive(Args, Debug)]

@@ -51,10 +51,15 @@ fn run(ui: std::rc::Weak<Ui>, steps: Vec<String>, i: usize) {
                 );
             }
             "people" => super::people::show(&ui_rc),
+            // A single key, by the name the window's keys were given: R and L are Shift with the letter there.
             s => {
-                if let Some(ch) = s.chars().next() {
-                    let key = unsafe { glib::translate::from_glib(gdk::unicode_to_keyval(ch as u32)) };
-                    ui_rc.on_key(key, gdk::ModifierType::empty());
+                let key = match s.chars().next() {
+                    Some(ch) if ch.is_ascii_uppercase() => format!("<Shift>{}", ch.to_ascii_lowercase()),
+                    Some(ch) => ch.to_string(),
+                    None => String::new(),
+                };
+                if !ui_rc.keys.activate(&key) {
+                    eprintln!("script: {key} did nothing");
                 }
             }
         }

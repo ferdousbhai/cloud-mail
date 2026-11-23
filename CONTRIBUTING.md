@@ -5,7 +5,7 @@ Thanks for taking a look. Issues and pull requests are welcome at
 
 ## Development
 
-You need Rust 1.89+ (1.95+ for `cloudmail-gtk`), Bun or Node.js, and for the desktop app GTK 4 and
+You need Rust 1.89+ (1.95+ for the desktop app, `cloudmail-gtk`), Bun or Node.js, and for the desktop app GTK 4 and
 WebKitGTK 6.0.
 
 ```sh
@@ -16,9 +16,11 @@ bun test && bun run typecheck
 bin/check                            # everything: rustfmt, clippy, Rust tests, worker tests and types, packaging
 ```
 
-Checks run here, not on GitHub: with `git config core.hooksPath .githooks`, every push of a branch
-runs `bin/check` first and stops if it fails (`NO_CHECK=1` skips it). GitHub only builds
-releases: the packages on a version tag, and the CLI archives once a release is published.
+With `git config core.hooksPath .githooks`, every push of a branch runs `bin/check` first and stops if it
+fails (`NO_CHECK=1` skips it). GitHub runs the same script on every push (`.github/workflows/check.yml`), in an
+Arch Linux container with GTK 4 and WebKitGTK 6.0. Without those two `bin/check` fails rather than skip the desktop
+app; `CLOUDMAIL_CHECK_NO_GTK=1 bin/check` checks the rest on a machine that cannot build it. GitHub also
+builds releases: the packages on a version tag, and the CLI archives once a release is published.
 
 ## The worker
 

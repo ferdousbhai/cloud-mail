@@ -1,9 +1,17 @@
+//! The page the web view shows for a conversation. The app's own words on it (the recipients' line, the sender
+//! warning, the note about remote images) are in the language of the moment, and the page reads the way the
+//! language does; the messages themselves are shown as they came, each in the direction of its own text.
+
+use omui::tr;
+
 use crate::api::{Address, Message, ThreadDetail};
-use crate::util::{escape_html, format_addresses, html_to_text, human_size, long_time, subject_or_placeholder};
+use crate::format::{long_time, size};
+use crate::util::{escape_html, format_addresses, html_to_text, subject_or_placeholder};
 
 pub const ATTACHMENT_SCHEME: &str = "cloudmail-attachment:";
 
-pub fn thread(detail: &ThreadDetail, t: &omui::Tokens, remote_images: bool) -> String {
+/// `radius` is the theme's rounding (`Theme::radius`), which the page's cards and tags take as the window's own do.
+pub fn thread(detail: &ThreadDetail, t: &omui::Tokens, radius: i32, remote_images: bool) -> String {
     let img_src = if remote_images { "data: https: http:" } else { "data:" };
     let last = detail.messages.len().saturating_sub(1);
     let mut body = String::new();
@@ -20,23 +28,34 @@ pub fn thread(detail: &ThreadDetail, t: &omui::Tokens, remote_images: bool) -> S
     {
         Some(label) => {
             format!(
-                r#" <span class="acct" title="In your linked {0} account">{0}</span>"#,
+                r#" <span class="acct" title="{}">{}</span>"#,
+                escape_html(&omui::tr!("In your linked {} account", label)),
                 escape_html(&label)
             )
         }
         None => String::new(),
     };
+    // The subject is the sender's text, isolated so that its direction is its own.
     let heading = format!(
-        r#"<h1 class="subject">{}{badge}</h1>"#,
-        escape_html(subject_or_placeholder(&detail.thread.subject))
+        r#"<h1 class="subject"><bdi>{}</bdi>{badge}</h1>"#,
+        escape_html(&subject_or_placeholder(&detail.thread.subject))
     );
     let note = if blocked_remote && !remote_images {
-        r#"<div class="note">Remote images are blocked to stop tracking. Press <b>L</b> to load them.</div>"#
+        // The key is put in after the sentence is escaped, so a translation places it where its language does.
+        let sentence = escape_html(&omui::tr!(
+            "Remote images are blocked to stop tracking. Press {} to load them.",
+            KEY_MARK
+        ));
+        format!(r#"<div class="note">{}</div>"#, sentence.replace(KEY_MARK, "<b>L</b>"))
     } else {
-        ""
+        String::new()
     };
+    let language = escape_html(&omui::i18n::language());
+    let direction = if omui::i18n::is_rtl() { "rtl" } else { "ltr" };
+    // The window's corners: a card takes the rounding, a tag at most 4 px of it.
+    let small = radius.min(4);
     format!(
-        r#"<!doctype html><html><head><meta charset="utf-8">
+        r#"<!doctype html><html lang="{language}" dir="{direction}"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {img_src}; style-src 'unsafe-inline'; font-src 'none'">
 <style>
 html, body {{ background: {bg}; color: {fg}; }}
@@ -44,7 +63,7 @@ body {{ margin: 0; padding: 18px 22px 60px; font: 10.5pt "JetBrainsMono Nerd Fon
 a {{ color: {accent}; }}
 .subject {{ color: {fg}; font-size: 13pt; font-weight: bold; margin: 0 0 16px; overflow-wrap: anywhere; }}
 .note {{ color: {dim}; font-size: 9pt; margin: 0 0 14px; }}
-.acct {{ color: {dim}; font-size: 8pt; font-weight: normal; border: 1px solid {border}; border-radius: 4px; padding: 0 5px; vertical-align: middle; }}
+.acct {{ color: {dim}; font-size: 8pt; font-weight: normal; border: 1px solid {border}; border-radius: {small}px; padding: 0 5px; vertical-align: middle; }}
 .msg {{ margin: 0 0 18px; border-bottom: 1px solid {rule}; padding-bottom: 14px; }}
 .msg:last-child {{ border-bottom: none; }}
 summary {{ list-style: none; cursor: pointer; }}
@@ -52,25 +71,26 @@ summary::-webkit-details-marker {{ display: none; }}
 .hdr {{ display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 12px; row-gap: 2px; margin-bottom: 10px; }}
 .hdr > div:first-child {{ flex: 1 1 220px; min-width: 0; overflow-wrap: break-word; }}
 .from {{ color: {fg}; font-weight: bold; }}
-.warn {{ color: {danger}; font-size: 9pt; border: 1px solid {danger}; border-radius: 4px; padding: 0 5px; margin-left: 4px; white-space: nowrap; }}
+.warn {{ color: {danger}; font-size: 9pt; border: 1px solid {danger}; border-radius: {small}px; padding: 0 5px; margin-inline-start: 4px; white-space: nowrap; }}
 .addr, .date, .rcpt, .preview {{ color: {dim}; }}
 .date {{ white-space: nowrap; font-size: 9pt; }}
 .rcpt {{ font-size: 9pt; margin-top: 2px; }}
 .preview {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }}
 details[open] .preview {{ display: none; }}
 .plain {{ white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: {fg}; }}
-.quoted summary {{ color: {dim}; display: inline-block; border: 1px solid {border}; border-radius: 4px; padding: 0 6px; line-height: 1.2; margin: 4px 0; }}
+.quoted summary {{ color: {dim}; display: inline-block; border: 1px solid {border}; border-radius: {small}px; padding: 0 6px; line-height: 1.2; margin: 4px 0; }}
 .quoted .plain {{ color: {dim}; }}
 /* The frame is outside the message's reach (it can style its own host, not this parent):
    paint containment makes it the containing block for fixed-position content and clips it,
    so a message can't draw over the headers or the sender warning. Its white background and
    border mark where the message starts even if the message makes its own card transparent. */
-.frame {{ position: relative; contain: paint; isolation: isolate; border-radius: 8px;
+.frame {{ position: relative; contain: paint; isolation: isolate; border-radius: {radius}px;
   background: #ffffff; border: 1px solid {border}; }}
-.paper {{ background: #ffffff; color: #1f2328; border-radius: 8px; padding: 18px 20px; overflow-x: auto;
+.paper {{ background: #ffffff; color: #1f2328; border-radius: {inner}px; padding: 18px 20px; overflow-x: auto;
   font: 11pt -apple-system, "Inter", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }}
 .atts {{ margin-top: 10px; }}
-.att {{ display: inline-block; border: 1px solid {border}; border-radius: 6px; padding: 4px 10px; margin: 6px 8px 0 0;
+.att {{ display: inline-block; border: 1px solid {border}; border-radius: {radius}px; padding: 4px 10px;
+  margin-block-start: 6px; margin-inline-end: 8px;
   color: {fg}; text-decoration: none; background: {raised}; }}
 .att:hover {{ border-color: {accent}; color: {fg}; }}
 .att small {{ color: {dim}; }}
@@ -84,8 +104,12 @@ details[open] .preview {{ display: none; }}
         border = t.border,
         accent = t.accent,
         danger = t.danger,
+        inner = (radius - 1).max(0),
     )
 }
+
+/// Stands for the key in the note about remote images while the sentence is escaped.
+const KEY_MARK: &str = "\u{1}";
 
 fn addr_list(list: &[Address]) -> String {
     list.iter()
@@ -97,14 +121,19 @@ fn addr_list(list: &[Address]) -> String {
 fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
     let mut rcpt = String::new();
     let mut rcpt_full = String::new();
+    // The words are the app's, escaped once translated; the addresses are escaped on their own.
+    let mut parts = Vec::new();
+    let mut full = Vec::new();
     if !m.to.is_empty() {
-        rcpt.push_str(&format!("to {}", addr_list(&m.to)));
-        rcpt_full.push_str(&format!("To: {}", format_addresses(&m.to)));
+        parts.push(escape_html(&omui::tr!("to {}", KEY_MARK)).replace(KEY_MARK, &addr_list(&m.to)));
+        full.push(omui::tr!("To: {}", format_addresses(&m.to)));
     }
     if !m.cc.is_empty() {
-        rcpt.push_str(&format!(" · cc {}", addr_list(&m.cc)));
-        rcpt_full.push_str(&format!("\nCc: {}", format_addresses(&m.cc)));
+        parts.push(escape_html(&omui::tr!("cc {}", KEY_MARK)).replace(KEY_MARK, &addr_list(&m.cc)));
+        full.push(omui::tr!("Cc: {}", format_addresses(&m.cc)));
     }
+    rcpt.push_str(&parts.join(" · "));
+    rcpt_full.push_str(&full.join("\n"));
     // HTML-only mail (most newsletters) previews its text rendering.
     let preview: String = m
         .plain_text()
@@ -115,13 +144,19 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         .take(160)
         .collect();
     let header = format!(
-        r#"<div class="hdr"><div><span class="from">{name}</span> <span class="addr">&lt;{email}&gt;</span>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview">{preview}</div></div><div class="date">{date}</div></div>"#,
+        r#"<div class="hdr"><div><bdi class="from">{name}</bdi> <bdi class="addr">&lt;{email}&gt;</bdi>{warn}<div class="rcpt" title="{rcpt_full}">{rcpt}</div><div class="preview" dir="auto">{preview}</div></div><div class="date">{date}</div></div>"#,
         name = escape_html(&m.from.display()),
         email = escape_html(&m.from.email),
         warn = if m.unverified() {
-            r#" <span class="warn" title="The sender's domain didn't authenticate this message (no DMARC pass, and no aligned DKIM or SPF): the From address may be forged.">⚠ sender not verified</span>"#
+            format!(
+                r#" <span class="warn" title="{}">⚠ {}</span>"#,
+                escape_html(&tr(
+                    "The sender's domain didn't authenticate this message (no DMARC pass, and no aligned DKIM or SPF): the From address may be forged."
+                )),
+                escape_html(&tr("sender not verified"))
+            )
         } else {
-            ""
+            String::new()
         },
         date = escape_html(&long_time(m.date)),
         preview = escape_html(&preview),
@@ -145,12 +180,15 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
                 *blocked_remote = true;
             }
             format!(
-                r#"<div class="frame"><div class="paper"><template shadowrootmode="open"><style>:host {{ display: block; }} img {{ max-width: 100%; height: auto; }} table {{ max-width: 100%; }}</style>{}</template></div></div>"#,
+                r#"<div class="frame"><div class="paper" dir="auto"><template shadowrootmode="open"><style>:host {{ display: block; }} img {{ max-width: 100%; height: auto; }} table {{ max-width: 100%; }}</style>{}</template></div></div>"#,
                 sanitize(html)
             )
         }
         (_, Some(text)) => plain(text),
-        _ => r#"<div class="plain addr">(empty message)</div>"#.to_string(),
+        _ => format!(
+            r#"<div class="plain addr">{}</div>"#,
+            escape_html(&tr("(empty message)"))
+        ),
     };
 
     let atts: Vec<String> = m
@@ -159,10 +197,10 @@ fn message(m: &Message, open: bool, blocked_remote: &mut bool) -> String {
         .filter(|a| !a.inline)
         .map(|a| {
             format!(
-                r#"<a class="att" href="{ATTACHMENT_SCHEME}{id}">&#xf0c6; {name} <small>{size}</small></a>"#,
+                r#"<a class="att" href="{ATTACHMENT_SCHEME}{id}">&#xf0c6; <bdi>{name}</bdi> <small>{size}</small></a>"#,
                 id = escape_html(&a.id),
                 name = escape_html(&a.filename),
-                size = human_size(a.size),
+                size = escape_html(&size(a.size)),
             )
         })
         .collect();
@@ -299,7 +337,7 @@ fn plain(text: &str) -> String {
 
 fn plain_block(lines: &[&str]) -> String {
     format!(
-        r#"<div class="plain">{}</div>"#,
+        r#"<div class="plain" dir="auto">{}</div>"#,
         linkify(&escape_html(&lines.join("\n")))
     )
 }
@@ -369,7 +407,7 @@ mod tests {
                 thread: Default::default(),
                 messages: Vec::new(),
             };
-            let page = thread(&detail, &t, false);
+            let page = thread(&detail, &t, 6, false);
             for rule in [
                 format!("html, body {{ background: {}; color: {}; }}", t.background, t.text),
                 format!("a {{ color: {}; }}", t.accent),
@@ -399,6 +437,37 @@ mod tests {
             ..Default::default()
         });
         assert!(message(&m, true, &mut blocked).contains("sender not verified"));
+    }
+
+    #[test]
+    fn the_page_reads_in_the_language_and_the_mail_in_its_own_direction() {
+        let m = Message {
+            text: Some("שלום, see you <then>".into()),
+            to: vec![Address {
+                name: Some("Ines".into()),
+                email: "ines@example.net".into(),
+            }],
+            ..Default::default()
+        };
+        let detail = ThreadDetail {
+            thread: Default::default(),
+            messages: vec![m],
+        };
+        let page = thread(&detail, &omui::Tokens::fallback(), 0, false);
+        // The app's words; the language and its direction are the page's.
+        assert!(page.contains(r#"lang="en" dir="ltr""#), "{page}");
+        assert!(page.contains("(no subject)"));
+        assert!(
+            page.contains(r#"<div class="rcpt" title="To: Ines &lt;ines@example.net&gt;">to Ines</div>"#),
+            "{page}"
+        );
+        // The mail's text as it came, escaped and in the direction of its own first strong letter.
+        assert!(
+            page.contains(r#"<div class="plain" dir="auto">שלום, see you &lt;then&gt;</div>"#),
+            "{page}"
+        );
+        // Square corners on a theme without rounding.
+        assert!(page.contains("border-radius: 0px;"));
     }
 
     /// What a sanitised body must never contain: anything that could close the template, card or
@@ -570,6 +639,6 @@ mod tests {
     fn collapses_quotes() {
         let html = plain("Thanks!\n\nOn Mon, Bob wrote:\n> hi\n> there");
         assert!(html.contains(r#"<details class="quoted">"#));
-        assert!(html.starts_with(r#"<div class="plain">Thanks!"#));
+        assert!(html.starts_with(r#"<div class="plain" dir="auto">Thanks!"#));
     }
 }

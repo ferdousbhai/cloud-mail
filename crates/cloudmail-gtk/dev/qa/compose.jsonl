@@ -37,7 +37,8 @@
 {"do":"wait","toasts":["Sent"]}
 
 # An edited draft asks before its window closes, by Escape or the title bar's close: Keep editing keeps it, Discard
-# closes it. The button opens a message as c does.
+# closes it, and Save draft closes it and keeps it for the next start (dev/qa/drafts.jsonl is that start). The button
+# opens a message as c does.
 {"do":"click","role":"button","name":"New message (c)"}
 {"do":"wait","role":"text-box","name":"To","focused":true}
 {"do":"type","text":"ines@example.net"}
@@ -50,6 +51,40 @@
 {"do":"wait","dialog":"Discard this draft?"}
 {"do":"click","role":"button","name":"Discard"}
 {"do":"wait","dialog":null}
+{"do":"wait","role":"window","name":"New message","visible":false}
+
+# Attach… asks the desktop's file chooser. When there is none, the window says so, in omui's words, and nothing is
+# attached.
+{"do":"key","keys":"c"}
+{"do":"wait","role":"text-box","name":"To","focused":true}
+{"do":"picker","fail":"unavailable"}
+{"do":"click","role":"button","name":"Attach…"}
+{"do":"wait","role":"label","name":"Couldn't open the file chooser: No file chooser is available on this desktop.","visible":true}
+
+# Answered with dev/qa/attachment.txt (dev/qa.sh puts a copy where the app runs), the file is a chip and the reason
+# above goes. Closing then asks about the attachment too.
+{"do":"picker","files":["attachment.txt"]}
+{"do":"click","role":"button","name":"Attach…"}
+{"do":"wait","role":"label","name":"attachment.txt","visible":true}
+{"do":"wait","role":"label","name":"Couldn't open the file chooser: No file chooser is available on this desktop.","visible":false}
+{"do":"wait","role":"button","name":"Remove attachment.txt","visible":true}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":"Discard this draft and its attachments?"}
+{"do":"click","role":"button","name":"Discard"}
+{"do":"wait","role":"window","name":"New message","visible":false}
+
+# Ctrl+W closes a compose window as its close button does: an edited one asks, and Escape on the question keeps it.
+{"do":"key","keys":"c"}
+{"do":"wait","role":"text-box","name":"To","focused":true}
+{"do":"type","text":"ines@example.net"}
+{"do":"key","keys":"<Control>w"}
+{"do":"wait","dialog":"Discard this draft?"}
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"window","name":"New message","visible":true}
+{"do":"key","keys":"<Control>w"}
+{"do":"wait","dialog":"Discard this draft?"}
+{"do":"click","role":"button","name":"Discard"}
 {"do":"wait","role":"window","name":"New message","visible":false}
 
 # r replies to the sender of the open conversation; untouched, Escape closes it without asking.

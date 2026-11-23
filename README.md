@@ -37,7 +37,7 @@ or [CloudMailin](https://www.cloudmailin.com). Different projects that happen to
 
 ```
 sender ─SMTP─▶ Email Routing ─▶ Worker email() ─▶ D1 (threads, messages, search) + R2 (raw mail, attachments)
-cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Service (outgoing mail)
+cloudmail / its app ─HTTPS + token─▶ Worker /api/* ─▶ Email Service (outgoing mail)
 ```
 
 - **Receive** with Cloudflare Email Routing, **send** with Cloudflare Email Service. No mail server,
@@ -61,7 +61,7 @@ cloudmail / cloudmail-gtk ─HTTPS + token─▶ Worker /api/* ─▶ Email Serv
 |---|---|
 | `worker/` | Cloudflare Worker (TypeScript): inbound handler, Screener, JSON API |
 | `crates/cloudmail` | `cloudmail` CLI |
-| `crates/cloudmail-gtk` | `cloudmail-gtk` desktop app (GTK4 + WebKitGTK), themed from Omarchy if present |
+| `crates/cloudmail-gtk` | the desktop app (GTK4 + WebKitGTK), started by `cloudmail open`; it follows Omarchy's theme and language if present |
 | `crates/cloudmail-api` | Rust API client shared by both, plus linked accounts (HEY through the `hey` CLI, Gmail through Google's `gws` CLI, iCloud Mail through icloud-session) |
 | `docs/API.md` | HTTP API reference |
 
@@ -150,7 +150,7 @@ them on Arch; Debian 13: `apt install libgtk-4-dev libwebkitgtk-6.0-dev`).
 
 ```sh
 git clone https://github.com/ferdousbhai/cloud-mail && cd cloud-mail
-./install.sh                    # installs cloudmail (alias: cmail) + cloudmail-gtk to ~/.local/bin
+./install.sh                    # installs cloudmail (alias: cmail) to ~/.local/bin, and the app for `cloudmail open`
 # CLOUDMAIL_NO_GTK=1 ./install.sh   # CLI only
 ```
 
@@ -232,7 +232,7 @@ ID on your Cloudflare dashboard's home page).
 ## Use it
 
 ```sh
-cloudmail-gtk                 # or "Cloudmail" in your app launcher
+cloudmail open                # the desktop app, or "Cloudmail" in your app launcher
 cloudmail                     # orientation and config status
 cloudmail screener            # who's waiting
 cloudmail screener approve alice@example.com
@@ -243,9 +243,48 @@ cloudmail compose --to a@example.com --subject Invoice -m "Attached." --attach i
 cloudmail watch --folder all  # stream new mail (JSON lines when piped)
 ```
 
-Desktop keys: `j`/`k` move, `Enter` focus the message, `e` archive, `#` delete, `r` reply, `a` reply all, `c` compose,
-`y`/`n` in the Screener, `/` search, `L` load remote images, `?` all keys. To open `mailto:` links
-in Cloudmail: `xdg-mime default com.ferdousbhai.Cloudmail.desktop x-scheme-handler/mailto`.
+Desktop keys (`?` or `F1` lists them in the app). The single keys do nothing while you type in the search field:
+
+| Key | Does |
+|---|---|
+| `j / k` | Next / previous |
+| `Enter / o` | Focus the message (scroll with arrows/space) |
+| `e` | Archive |
+| `i` | Move to Inbox |
+| `#` | Delete (a linked account's: to its Trash) |
+| `u` | Toggle unread |
+| `r` | Reply |
+| `a` | Reply all |
+| `c` | Compose |
+| `y / n` | Screener: let in / block |
+| `L` | Load remote images |
+| `R` | Refresh |
+| `1 2 3 4` | Screener · Inbox · Archive · Sent |
+| `5 6 7 8` | HEY: The Feed · Paper Trail · Set Aside · Reply Later |
+| `/` | Search |
+| `Esc` | Clear search |
+| `Ctrl+Enter` | Send (in compose) |
+| `Esc` | Close the draft (in compose; asks first when there is something to lose) |
+| `Ctrl+W` | Close this window (a draft asks first) |
+| `Ctrl+Q` | Quit (every draft asks first) |
+| `? / F1` | These shortcuts (while typing: F1, and Ctrl+? in compose) |
+
+An archive, a move to the Inbox or a delete shows an Undo button for a few seconds. A message being written is kept
+on this computer while its window is open, and comes back the next time Cloudmail starts if it was neither sent nor
+discarded (attached files are not kept with it). Mail is checked for while Cloudmail's window is the active one, and
+at once when you come back to it.
+
+To open `mailto:` links in Cloudmail: `xdg-mime default cloudmail.desktop x-scheme-handler/mailto`.
+
+The app speaks the language picked in Omarchy (Setup > Region > Language) and follows a change while it runs, reading
+right to left where the language does; the mail itself is shown as it came. Only English is translated so far.
+
+Upgrading from before 0.8: the app is now `cloudmail` to the desktop, as the command is (its `.desktop` file, icon and
+window class were `com.ferdousbhai.Cloudmail`), and `cloudmail open` starts it in place of `cloudmail-gtk`. A
+`mailto:` default that named the old `.desktop` file is moved to the new one the next time Cloudmail runs, and drafts,
+settings and keyring entries are where they were. `cloudmail-gtk` is still installed and runs `cloudmail open`, so
+a key binding that names it keeps working; a Hyprland window rule of your own that names `com.ferdousbhai.Cloudmail`
+needs `cloudmail` instead.
 
 ## Share it with someone
 
@@ -287,14 +326,15 @@ removes them. Routing an address still takes `cloudmail mailbox add … --route`
 ## For AI agents
 
 The CLI is its own documentation. When output is piped, every command prints a JSON envelope
-(`ok`, `data`, `summary`, `breadcrumbs` suggesting next commands) with meaningful exit codes, and
-nothing ever prompts.
+(`ok`, `data`, `summary`, `breadcrumbs` suggesting next commands), and nothing ever prompts. A command
+exits 0 on success and 1 on any failure, with the error on stderr: JSON with a stable `code` and `kind`
+(`usage`, `auth`, `not_found`, `unavailable`, `other`) when piped.
 
 ```sh
 cloudmail skill install       # install the agent skill (setup, linking accounts, daily use) for
                               # Claude Code, Codex and other agents reading ~/.agents/skills
 cloudmail skill remove        # remove it again
-cloudmail agent-guide         # concepts, output format, exit codes, workflows
+cloudmail agent-guide         # concepts, output format, errors, workflows
 cloudmail commands --json     # every command, flag and example
 ```
 

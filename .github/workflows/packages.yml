@@ -1,6 +1,6 @@
 name: Native packages
 # Builds the release packages on native runners for both architectures; bin/release signs and
-# publishes them. Everyday checks run locally with bin/check (and before every push), not here.
+# publishes them. Everyday checks are bin/check: before every push, and on every push in check.yml.
 on:
   push:
     tags: ['v*']

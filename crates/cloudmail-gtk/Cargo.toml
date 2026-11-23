@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version = "1.95"  # if-let guards (1.95); gtk4-rs 0.11 and its glib/cairo/gdk crates require 1.92
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 cloudmail-api.workspace = true
@@ -12,7 +13,7 @@ serde_json.workspace = true
 dirs.workspace = true
 urlencoding.workspace = true
 gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
-omui = { git = "https://github.com/ferdousbhai/omui", rev = "d5796183fdcc1dab218c7af5343bc0f29389db0e" } # v0.5.7
+omui = { git = "https://github.com/ferdousbhai/omui", rev = "40737b7a74567654fc3fa7ac8c1037b42255afd4" } # v0.6.0
 webkit6 = "0.6"
 ammonia = "4.2.0"
 
