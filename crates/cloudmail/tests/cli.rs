@@ -2264,9 +2264,17 @@ fn gmail_takes_over_another_cloud_apps_sign_in() {
     assert!(ids(&json_out(&h.run(&m, &["inbox"], &[]))).contains(&"gmail:t-a1".to_string()));
 
     // Signing in again to an account whose sign-in works is a browser sign-in: the way to another address.
-    let o = h.run(&m, &["account", "login", "gmail"], &[]);
+    let o = h.run(
+        &m,
+        &["account", "login", "gmail"],
+        &[("FAKE_GWS_USER", "sam@gmail.example")],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(logins(), 1);
+    assert_eq!(
+        std::fs::read_to_string(h.gws_dir().join("address")).unwrap(),
+        "sam@gmail.example"
+    );
 
     // One Google stopped taking is replaced by the other app's without the browser.
     std::fs::write(h.gws_dir().join("credentials.enc"), r#"{"token_valid": false}"#).unwrap();
@@ -2283,6 +2291,75 @@ fn gmail_takes_over_another_cloud_apps_sign_in() {
         "cloud-contacts/gws/work",
         &json!({"token_valid": true, "user": "work@gmail.example", "scopes": mail}),
     );
+    // `--address` says which one a new account is for; here, one that is linked already, then one no app has.
+    let o = h.run(
+        &m,
+        &[
+            "account",
+            "add",
+            "gmail",
+            "--name",
+            "x",
+            "--address",
+            "Sam@gmail.example",
+        ],
+        &[],
+    );
+    assert_fails!(o, "usage");
+    assert!(
+        json_out(&o)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("sam@gmail.example is already linked here as gmail"),
+        "{}",
+        json_out(&o)
+    );
+    let o = h.run(&m, &["account", "add", "hey", "--address", "a@b.c"], &[]);
+    assert_fails!(o, "usage");
+    let o = h.run(
+        &m,
+        &[
+            "account",
+            "add",
+            "gmail",
+            "--name",
+            "x",
+            "--address",
+            "new@gmail.example",
+            "--login",
+        ],
+        &[("FAKE_GWS_USER", "else@gmail.example")],
+    );
+    assert_fails!(o, "usage");
+    assert!(
+        json_out(&o)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("the browser signed in to else@gmail.example, not new@gmail.example"),
+        "{}",
+        json_out(&o)
+    );
+    assert!(!h.home.join("config/cloudmail/gws/x").exists());
+    assert_eq!(logins(), 2);
+    let o = h.run(
+        &m,
+        &[
+            "account",
+            "add",
+            "gmail",
+            "--name",
+            "picked",
+            "--address",
+            "Work@Gmail.example",
+        ],
+        &[],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        std::fs::read_to_string(h.home.join("config/cloudmail/gws/picked/address")).unwrap(),
+        "work@gmail.example"
+    );
+    assert!(h.run(&m, &["account", "remove", "picked"], &[]).status.success());
     let o = h.run(&m, &["account", "add", "gmail", "--name", "work"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(
@@ -2290,13 +2367,13 @@ fn gmail_takes_over_another_cloud_apps_sign_in() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
-    assert_eq!(logins(), 1);
+    assert_eq!(logins(), 2);
     // An account Google stopped taking is signed in again with its own address's sign-in, not the first there is.
     let dead = h.home.join("config/cloudmail/gws/work/credentials.enc");
     std::fs::write(&dead, r#"{"token_valid": false}"#).unwrap();
     let o = h.run(&m, &["account", "login", "work"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(logins(), 1);
+    assert_eq!(logins(), 2);
     assert!(std::fs::read_to_string(&dead).unwrap().contains("work@gmail.example"));
 
     // Unlinking removes the copy only.

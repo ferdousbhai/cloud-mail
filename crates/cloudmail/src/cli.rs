@@ -662,6 +662,9 @@ pub enum AccountCommand {
         /// HEY: only this one of its linked accounts (a `hey account list` ID; default: all)
         #[arg(long, value_name = "ID")]
         account: Option<String>,
+        /// Gmail: the address the account is for, when Cloud Calendar or Cloud Contacts is signed in to several
+        #[arg(long, value_name = "ADDRESS")]
+        address: Option<String>,
         /// Gmail: sign in with this Google OAuth client (a Desktop app client) instead of cloudmail's own
         #[arg(long, value_name = "ID", requires = "client_secret")]
         client_id: Option<String>,

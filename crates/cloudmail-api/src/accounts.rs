@@ -64,6 +64,8 @@ pub struct Link {
     /// Gmail: an OAuth client of your own.
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    /// Gmail: the Google address the account is for, when it matters which.
+    pub address: Option<String>,
     /// Whether a sign-in (browser, icloud-session's window) may start when needed.
     pub can_sign_in: bool,
 }
@@ -152,6 +154,9 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     if !gmail && req.client_id.is_some() {
         return Err(usage("--client-id and --client-secret are for Gmail", None));
     }
+    if !gmail && req.address.is_some() {
+        return Err(usage("--address is for Gmail", None));
+    }
     if icloud && req.command.is_some() {
         return Err(usage(
             "--command is for HEY and Gmail; iCloud Mail goes through icloud-session",
@@ -166,7 +171,12 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
         client_secret: req.client_secret.clone(),
     };
     let (label, version, addresses, gws_dir): (&'static str, Option<String>, Vec<String>, Option<PathBuf>) = if gmail {
-        let (version, addresses, dir) = link_gmail(&name, &cfg, req.can_sign_in, notice)?;
+        let want = req
+            .address
+            .as_deref()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty());
+        let (version, addresses, dir) = link_gmail(&name, &cfg, want.as_deref(), req.can_sign_in, notice)?;
         ("Gmail", Some(version), addresses, Some(dir))
     } else if icloud {
         (
@@ -267,6 +277,7 @@ fn link_hey(
 fn link_gmail(
     name: &str,
     cfg: &AccountConfig,
+    want: Option<&str>,
     can_sign_in: bool,
     notice: &dyn Fn(&str),
 ) -> std::result::Result<(String, Vec<String>, PathBuf), LinkError> {
@@ -283,11 +294,22 @@ fn link_gmail(
         message: e.message,
         hint: gmail::INSTALL_HINT.into(),
     })?;
+    if let Some(want) = want {
+        if let Some((_, other)) = g.others().into_iter().find(|(linked, _)| linked == want) {
+            return Err(usage(format!("{want} is already linked here as {other}"), None));
+        }
+        if let Some(address) = g.address().filter(|address| address != want) {
+            return Err(usage(
+                format!("{name} is signed in to {address}, not {want}"),
+                Some("link the other address under a name of its own with --name"),
+            ));
+        }
+    }
     let sign_in = |why: &str| -> std::result::Result<(), LinkError> {
         if !g.client_configured() {
             return Err(LinkError::NotConfigured(Gmail::no_client_error().message));
         }
-        if let Some((address, app)) = g.adopt() {
+        if let Some((address, app)) = g.adopt(want) {
             notice(&format!(
                 "Using the Google sign-in {app} has on this computer ({address}); no browser sign-in needed."
             ));
@@ -314,6 +336,15 @@ fn link_gmail(
             return Err(usage(
                 format!("{address} is already linked here as {other}"),
                 Some("choose another Google account in the browser"),
+            ));
+        }
+        if let Some(want) = want
+            && let Some(address) = g.address().filter(|address| address != want)
+        {
+            let _ = g.forget();
+            return Err(usage(
+                format!("the browser signed in to {address}, not {want}"),
+                Some(&format!("choose {want} there")),
             ));
         }
         Ok(())

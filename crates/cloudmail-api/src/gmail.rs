@@ -771,9 +771,9 @@ impl Gmail {
     /// there that works, covers Cloudmail's two scopes and is of the right address. For an account
     /// that was signed in, that is its own address; for a new one, any address no other account
     /// here is signed in to. (A sign-in from before addresses were kept is replaced only when one
-    /// address could be meant.) Returns the address and the app's name. Only with the built-in
-    /// client, which the three apps share.
-    pub fn adopt(&self) -> Option<(String, &'static str)> {
+    /// address could be meant.) `want` names the address a new account is for. Returns the address
+    /// and the app's name. Only with the built-in client, which the three apps share.
+    pub fn adopt(&self, want: Option<&str>) -> Option<(String, &'static str)> {
         if self.client.as_ref().map(|(id, _)| id.as_str()) != Some(GOOGLE_CLIENT_ID) {
             return None;
         }
@@ -803,6 +803,9 @@ impl Gmail {
             None => {
                 let here = self.others();
                 found.retain(|(address, ..)| !here.iter().any(|(linked, _)| linked == address));
+                if let Some(want) = want {
+                    found.retain(|(address, ..)| address == want);
+                }
                 if self.signed_in() && found.iter().any(|(address, ..)| *address != found[0].0) {
                     return None;
                 }
@@ -1413,10 +1416,13 @@ impl Provider for Gmail {
     /// the browser. An account whose own sign-in works always gets the browser: that is how to
     /// change to another Google account.
     fn sign_in(&self) -> Result<()> {
-        if !self.works() && self.adopt().is_some() {
+        if !self.works() && self.adopt(None).is_some() {
             return Ok(());
         }
-        self.login().map(|_| ())
+        self.login()?;
+        // Kept beside the sign-in, for the next time it has to be taken over.
+        let _ = self.address();
+        Ok(())
     }
 
     fn status(&self) -> AccountStatus {
