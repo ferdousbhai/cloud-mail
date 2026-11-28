@@ -37,7 +37,9 @@ cargo test --locked "${crates[@]}"
 # of the main window land in target/qa/.
 if [[ " ${crates[*]} " == *" cloudmail-gtk "* ]]; then
   step "app QA (crates/cloudmail-gtk/dev/qa)"
-  cargo build --locked -p cloudmail-gtk --features qa
+  # Built with the same crates as the tests, or Cargo, choosing features for the app alone, builds the library and
+  # half its dependencies a second time.
+  cargo build --locked "${crates[@]}" --features cloudmail-gtk/qa
   CLOUDMAIL_QA_SHOTS=target/qa crates/cloudmail-gtk/dev/qa.sh target/debug/cloudmail-gtk crates/cloudmail-gtk/dev/qa/*.jsonl
 fi
 

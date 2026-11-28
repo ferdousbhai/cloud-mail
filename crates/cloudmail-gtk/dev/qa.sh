@@ -18,6 +18,7 @@ set -Eeuo pipefail
 # a failure or with `attachment.txt`, a copy of dev/qa/attachment.txt put in the directory the app runs in.
 #
 #   CLOUDMAIL_QA_SHOTS=<dir>   where a script's `shot` paths are written (default: a scratch directory, removed)
+#   CLOUDMAIL_QA_JOBS=4        how many scripts run at once (default: half the processors)
 #   OMUI_QA_TIMEOUT=120        seconds before one script's run is stopped
 (( $# >= 2 )) || { echo "usage: dev/qa.sh <app-binary> <script.jsonl>..." >&2; exit 2; }
 app=$(realpath -- "$1")
@@ -26,10 +27,13 @@ here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 command -v gtk4-broadwayd >/dev/null || { echo "qa: gtk4-broadwayd is required" >&2; exit 1; }
 
 root=""
+shots=""
 shots_root=""
+out=""
 broadway_pid=""
 worker_pid=""
 app_pid=""
+runs=()
 stop() {
   # Only what this script started.
   local pid
@@ -41,7 +45,16 @@ stop() {
   [[ -z $root ]] || rm -rf -- "$root"
   root=""
 }
-trap 'status=$?; stop; [[ -z $shots_root ]] || rm -rf -- "$shots_root"; exit "$status"' EXIT
+# The scripts run side by side, each in a shell of its own that stops what it started; this one stops those shells.
+finish() {
+  local pid
+  for pid in "${runs[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done
+  wait
+  [[ -z $shots ]] || rm -f -- "$shots/attachment.txt"
+  [[ -z $out ]] || rm -rf -- "$out"
+  [[ -z $shots_root ]] || rm -rf -- "$shots_root"
+}
+trap 'status=$?; finish; exit "$status"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 if [[ -n ${CLOUDMAIL_QA_SHOTS:-} ]]; then
@@ -51,6 +64,9 @@ else
   shots_root=$(mktemp -d /tmp/cloudmail-qa-shots.XXXXXX)
   shots=$shots_root
 fi
+# What a script's `picker` names by its bare name is found where the app runs; removed again as this ends.
+cp -- "$here/qa/attachment.txt" "$shots/attachment.txt"
+out=$(mktemp -d /tmp/cloudmail-qa-out.XXXXXX)
 
 run() {
   local script=$1 index=$2
@@ -99,8 +115,6 @@ run() {
   # Broadway has no OpenGL, and WebKit's DMA-BUF renderer warns that it fell back without it, which would fail the run;
   # WebKit's other renderer draws the same message without asking for OpenGL.
   local status=0
-  # What a script's `picker` names by its bare name is found where the app runs; removed again below.
-  cp -- "$here/qa/attachment.txt" "$shots/attachment.txt"
   (
     cd "$shots"
     exec env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u GTK_THEME -u CLOUDMAIL_SCRIPT \
@@ -116,7 +130,6 @@ run() {
   app_pid=$!
   wait "$app_pid" || status=$?
   app_pid=""
-  rm -f -- "$shots/attachment.txt"
   # The display going away ends the app with no answer; what it said is why.
   kill -0 "$broadway_pid" 2>/dev/null || { echo "qa: broadwayd exited:" >&2; cat "$root/broadwayd.log" >&2; }
 
@@ -132,13 +145,32 @@ run() {
   return "$status"
 }
 
-failed=0
+# Side by side: each script has its own app, worker, display and directories. An app at work keeps most of a processor
+# busy and a toast is gone after five seconds whatever the load, so no more run at once than half the processors. Each
+# one's output is kept and printed whole, in the order given, so a run reads as it did one after another.
+at_once=${CLOUDMAIL_QA_JOBS:-$(( ($(nproc) + 1) / 2 ))}
 index=0
 for script in "$@"; do
-  status=0
-  run "$(realpath -- "$script")" "$index" || status=$?
+  while (( $(jobs -rp | wc -l) >= at_once )); do wait -n || true; done
+  (
+    trap 'status=$?; stop; exit "$status"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    status=0
+    run "$(realpath -- "$script")" "$index" || status=$?
+    stop
+    if (( status == 0 )); then echo "qa: passed"; else echo "qa: failed with status $status"; fi
+    echo "$status" > "$out/$index.status"
+  ) >"$out/$index" 2>&1 &
+  runs+=($!)
   index=$(( index + 1 ))
-  stop
-  if (( status == 0 )); then echo "qa: passed"; else echo "qa: failed with status $status"; failed=1; fi
 done
+# A script's shell that was stopped, or died, left no status: that is a failure too.
+failed=0
+for index in "${!runs[@]}"; do
+  wait "${runs[index]}" 2>/dev/null || true
+  cat -- "$out/$index"
+  [[ $(cat -- "$out/$index.status" 2>/dev/null) == 0 ]] || failed=1
+done
+runs=()
 exit "$failed"

@@ -35,6 +35,7 @@ jobs:
           pacman -Syu --needed --noconfirm base-devel rust git gtk4 webkitgtk-6.0 dbus python bun nodejs unzip ttf-dejavu
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
+        id: cache
         with:
           path: |
             /cargo/registry
@@ -47,9 +48,15 @@ jobs:
       # start in a container under Docker's seccomp profile, which refuses bubblewrap the user namespaces it is built
       # on, so here alone the web views run unsandboxed. They show only the stand-in worker's made-up mail, with
       # remote content blocked, and the container is thrown away after the run.
+      # A cache is saved when Cargo.lock is new, which it is at every release, for the version in it. This repository's
+      # own crates are built under new names then, and what the release before built of them would stay in the cache
+      # beside them, 180 MB more to fetch at each release: it is cleaned away first, which costs that run nothing.
       - name: Run every check
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
           useradd -m checker
           mkdir -p /cargo target
           chown -R checker: . /cargo
+          [[ $CACHE_HIT == true ]] || su checker -c 'CARGO_HOME=/cargo cargo clean --locked -p cloudmail-api -p cloudmail -p cloudmail-gtk'
           su checker -c 'git config --global --add safe.directory "$PWD" && WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 CARGO_HOME=/cargo bin/check'

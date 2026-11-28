@@ -26,6 +26,10 @@ docker run --rm --platform "$platform" -e BUILD_ARCH="$architecture" -e BUILD_VE
     sed -i "/^\[options\]$/a DisableSandbox" /etc/pacman.conf
     pacman-key --init
     if [[ $BUILD_ARCH == aarch64 ]]; then pacman-key --populate archlinuxarm; else pacman-key --populate archlinux; fi
+    # The Arch Linux ARM image is a whole system, months old: left in, its kernel and firmware are most of what is
+    # upgraded here, and nothing in a container uses them.
+    kernel=$(pacman -Qq | grep -E "^linux-(aarch64|firmware)" || true)
+    [[ -z $kernel ]] || pacman -Rdd --noconfirm $kernel
     pacman -Syu --needed --noconfirm base-devel cargo git gtk4 webkitgtk-6.0 gnome-keyring
     git config --global --add safe.directory /source
     git config --global --add safe.directory /source/.git
