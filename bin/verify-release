@@ -30,7 +30,7 @@ docker run --rm --platform "$platform" -e EXPECTED_VERSION="$version" -e EXPECTE
     ! grep -q "not found" /tmp/gtk-libraries
     grep -qx "Exec=cloudmail open %u" /usr/share/applications/cloudmail.desktop
     test -f /usr/share/icons/hicolor/scalable/apps/cloudmail.svg
-    for f in cloudflare.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
+    for f in cloudflare.config.ts vite.config.ts package.json tsconfig.json src/index.ts src/ingest.ts migrations/0001_init.sql; do
       test -f "/usr/share/cloudmail/worker/$f"
     done
   '

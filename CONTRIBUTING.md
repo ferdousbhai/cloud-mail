@@ -27,7 +27,8 @@ builds releases: the packages on a version tag, and the CLI archives once a rele
 The worker deploys with Cloudflare's `cf` CLI from `worker/cloudflare.config.ts`, which reads the
 install's names and IDs from `worker/install.json`. `cloudmail setup` writes that file and it is not
 committed (an install made before cf has a generated `wrangler.jsonc` instead; setup carries its
-names over). `cf` still builds the worker through wrangler, which is why both are dev dependencies.
+names over). `cf` builds the worker through Cloudflare's Vite plugin (`worker/vite.config.ts`); Wrangler
+is not used, as a command, a config file or a dependency.
 Mail that can't be parsed or stored is never bounced: the raw message is kept in R2 under `failed/`.
 
 Packages install the worker source under `/usr/share/cloudmail/worker`. `cloudmail setup` copies it
