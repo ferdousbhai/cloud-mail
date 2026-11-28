@@ -766,21 +766,20 @@ impl Gmail {
             .collect()
     }
 
-    /// Takes over the Google sign-in another Cloud app has on this computer, in place of a browser
-    /// sign-in: gws's two files are copied into this account's directory from the first sign-in
-    /// there that works, covers Cloudmail's two scopes and is of the right address. For an account
-    /// that was signed in, that is its own address; for a new one, any address no other account
-    /// here is signed in to. (A sign-in from before addresses were kept is replaced only when one
-    /// address could be meant.) `want` names the address a new account is for. Returns the address
-    /// and the app's name. Only with the built-in client, which the three apps share.
-    pub fn adopt(&self, want: Option<&str>) -> Option<(String, &'static str)> {
+    /// The sign-ins the other Cloud apps have on this computer that work and cover Cloudmail's two
+    /// scopes, in the order they are looked at: each one's address, directory and app. None with a
+    /// client other than the built-in one, which the three apps share.
+    fn takeable(&self) -> Vec<(String, PathBuf, &'static str)> {
+        let mut found = Vec::new();
         if self.client.as_ref().map(|(id, _)| id.as_str()) != Some(GOOGLE_CLIENT_ID) {
-            return None;
+            return found;
         }
         let own = gws_dir("");
-        let mut found: Vec<(String, PathBuf, &'static str)> = Vec::new();
+        let Some(config) = own.parent().and_then(Path::parent) else {
+            return found;
+        };
         for (folder, app) in SIBLINGS {
-            let mut dirs: Vec<PathBuf> = std::fs::read_dir(own.parent()?.parent()?.join(folder).join("gws"))
+            let mut dirs: Vec<PathBuf> = std::fs::read_dir(config.join(folder).join("gws"))
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -795,22 +794,56 @@ impl Gmail {
                 }
             }
         }
-        if found.is_empty() {
-            return None;
+        found
+    }
+
+    /// `takeable` without the addresses another account here is signed in to.
+    fn unlinked(&self) -> Vec<(String, PathBuf, &'static str)> {
+        let mut found = self.takeable();
+        if !found.is_empty() {
+            let here = self.others();
+            found.retain(|(address, ..)| !here.iter().any(|(linked, _)| linked == address));
         }
-        match Self::recorded(&self.dir) {
-            Some(own) => found.retain(|(address, ..)| *address == own),
+        found
+    }
+
+    /// The addresses a new account could take over the sign-in of, each once, with the app that has
+    /// it: what `adopt` chooses the first of, unless it is told which.
+    pub fn candidates(&self) -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = Vec::new();
+        for (address, _, app) in self.unlinked() {
+            if !out.iter().any(|(known, _)| *known == address) {
+                out.push((address, app));
+            }
+        }
+        out
+    }
+
+    /// Takes over the Google sign-in another Cloud app has on this computer, in place of a browser
+    /// sign-in: gws's two files are copied into this account's directory from the first sign-in
+    /// there that works, covers Cloudmail's two scopes and is of the right address. For an account
+    /// that was signed in, that is its own address; for a new one, any address no other account
+    /// here is signed in to. (A sign-in from before addresses were kept is replaced only when one
+    /// address could be meant.) `want` names the address a new account is for. Returns the address
+    /// and the app's name. Only with the built-in client, which the three apps share.
+    pub fn adopt(&self, want: Option<&str>) -> Option<(String, &'static str)> {
+        let found = match Self::recorded(&self.dir) {
+            Some(own) => {
+                let mut found = self.takeable();
+                found.retain(|(address, ..)| *address == own);
+                found
+            }
             None => {
-                let here = self.others();
-                found.retain(|(address, ..)| !here.iter().any(|(linked, _)| linked == address));
+                let mut found = self.unlinked();
                 if let Some(want) = want {
                     found.retain(|(address, ..)| address == want);
                 }
                 if self.signed_in() && found.iter().any(|(address, ..)| *address != found[0].0) {
                     return None;
                 }
+                found
             }
-        }
+        };
         let (address, from, app) = found.first()?.clone();
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);

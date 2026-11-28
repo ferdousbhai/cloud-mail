@@ -665,6 +665,9 @@ pub enum AccountCommand {
         /// Gmail: the address the account is for, when Cloud Calendar or Cloud Contacts is signed in to several
         #[arg(long, value_name = "ADDRESS")]
         address: Option<String>,
+        /// Gmail: sign in in the browser even when Cloud Calendar's or Cloud Contacts' sign-in could be used
+        #[arg(long)]
+        browser: bool,
         /// Gmail: sign in with this Google OAuth client (a Desktop app client) instead of cloudmail's own
         #[arg(long, value_name = "ID", requires = "client_secret")]
         client_id: Option<String>,

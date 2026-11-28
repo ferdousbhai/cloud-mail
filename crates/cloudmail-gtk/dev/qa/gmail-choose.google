@@ -1,0 +1,4 @@
+# The Google sign-ins the other Cloud apps have as gmail-choose.jsonl starts (dev/qa.sh writes them).
+cloud-calendar/google sam@gmail.example
+cloud-contacts/google work@gmail.example
+cloud-contacts/third third@gmail.example

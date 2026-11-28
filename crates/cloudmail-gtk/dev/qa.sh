@@ -9,6 +9,9 @@ set -Eeuo pipefail
 # A directory `<script>.state` beside `<script>.jsonl` is what the app finds in its state directory as it starts (a
 # draft kept from an earlier run), and a file `<script>.state-after` lists the files that must be there once it has
 # quit, one path a line, sorted, with N for each run of digits: a draft's name is the time it was made.
+# Google is the tests' stand-in `gws` (crates/cloudmail/tests/fake-gws), which signs in at once as me@gmail.example
+# and opens no browser. A file `<script>.google` lists the Google sign-ins the other Cloud apps have as the app starts,
+# one a line: `<app's config directory>/<account> <address>`, as in `cloud-calendar/google sam@gmail.example`.
 #
 #   dev/qa.sh <app-binary> <script.jsonl>...
 # There is no desktop portal on the hidden display: a script answers the file chooser itself (omui's `picker`), with
@@ -56,6 +59,17 @@ run() {
   chmod 700 "$root/runtime"
   local seed=${script%.jsonl}.state after=${script%.jsonl}.state-after
   [[ ! -d $seed ]] || cp -r -- "$seed/." "$root/state/"
+  # Each sign-in as the stand-in gws keeps one: what its `auth status` says of it, and a key beside it.
+  local google=${script%.jsonl}.google where address
+  if [[ -f $google ]]; then
+    while read -r where address; do
+      [[ -n $where && $where != '#'* ]] || continue
+      mkdir -p "$root/config/${where%/*}/gws/${where##*/}"
+      printf 'key' > "$root/config/${where%/*}/gws/${where##*/}/.encryption_key"
+      printf '{"token_valid": true, "user": "%s", "scopes": ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.settings.basic"]}\n' \
+        "$address" > "$root/config/${where%/*}/gws/${where##*/}/credentials.enc"
+    done < "$google"
+  fi
 
   # A display number and input port from this script's PID and the script's place, so that neither two runs at once
   # nor two scripts one after the other share one. broadwayd listens on that port on 127.0.0.1 alone, where omui sends
@@ -93,7 +107,8 @@ run() {
       HOME="$root/home" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
       XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
       CLOUDMAIL_API_URL="http://127.0.0.1:$(< "$root/port")" CLOUDMAIL_API_TOKEN=qa \
-      CLOUDMAIL_HEY_COMMAND=/usr/bin/false CLOUDMAIL_GWS_COMMAND=/usr/bin/false CLOUDMAIL_BROWSER=/usr/bin/true \
+      CLOUDMAIL_HEY_COMMAND=/usr/bin/false CLOUDMAIL_GWS_COMMAND="$here/../../cloudmail/tests/fake-gws" \
+      CLOUDMAIL_BROWSER=/usr/bin/true \
       WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=broadway BROADWAY_DISPLAY=":$display" \
       OMUI_QA=1 OMUI_QA_INPUT="127.0.0.1:$port" OMUI_QA_FD=3 \
       timeout "${OMUI_QA_TIMEOUT:-120}" "$app" <"$script" 3>"$root/answers"

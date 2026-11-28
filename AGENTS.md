@@ -61,6 +61,8 @@ fast-forward. Don't open a pull request for the maintainer's own work; those are
   never a shared directory. Several Gmail accounts are accounts of their own names (`--name`; the window's Gmail
   button uses `accounts::next_name`); each keeps its address in `gws/<name>/address`, a new one takes over an
   address not linked here yet, one signed in again only its own, and linking refuses an address another has.
+  With several addresses to take over, the window's Gmail button asks which (`accounts::gmail_candidates`,
+  `Gmail::candidates`; `Link.browser` is its "Another account…", which takes over nothing, and `--browser`).
 - The worker's committed lockfile is `bun.lock` (`package-lock.json` is ignored).
 - Every worker query that touches mail, senders, mailboxes or settings is scoped by `user_id`; a new
   endpoint or query must be too (`worker/test/users.test.ts` checks isolation). Only the admin runs
@@ -82,6 +84,8 @@ fast-forward. Don't open a pull request for the maintainer's own work; those are
 - Never run the app on your own desktop to look at a change: `crates/cloudmail-gtk/dev/preview.sh <png> [theme-dir]`
   runs a debug build in a nested Hyprland with a private home and session bus against `dev/fake-worker`'s made-up
   mail, and `CLOUDMAIL_SCRIPT` (`src/ui/devscript.rs`) puts it in a scene: for themes and the compositor's picture.
+- The app's QA has a stand-in Google (`crates/cloudmail/tests/fake-gws`), and a `<script>.google` beside a script
+  lists the Google sign-ins the other Cloud apps have as it starts (`dev/qa/gmail.jsonl`, `gmail-choose.jsonl`).
 - The app's flows are checked by omui's scripted QA: `dev/qa.sh <app built with --features qa> dev/qa/*.jsonl` runs
   them against the same made-up mail on a hidden broadway display (bin/check does), and any GLib warning fails it.
   Release builds and the PKGBUILD's `check()` leave the feature off (`check()` runs the app's unit tests only).

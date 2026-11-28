@@ -239,6 +239,7 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
             "cloudmail account add gmail",
             "cloudmail account add gmail --name work",
             "cloudmail account add gmail --name work --address you@work.example",
+            "cloudmail account add gmail --name other --browser",
             "cloudmail account add gmail --client-id 123-abc.apps.googleusercontent.com --client-secret GOCSPX-xyz",
             "cloudmail account add hey",
             "cloudmail account add hey --command ~/.local/bin/hey",

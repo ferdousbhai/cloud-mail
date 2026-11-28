@@ -1,0 +1,41 @@
+# The Gmail button when Cloud Calendar and Cloud Contacts are signed in to several Google accounts
+# (gmail-choose.google): it asks which, each address with the app that has it, or another account in the browser.
+{"do":"click","role":"button","name":"Linked accounts: HEY, Gmail, iCloud Mail"}
+{"do":"wait","role":"window","name":"Accounts","visible":true}
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","dialog":"Which Google account?"}
+{"do":"wait","role":"button","name":"sam@gmail.example (Cloud Calendar)","visible":true}
+{"do":"wait","role":"button","name":"work@gmail.example (Cloud Contacts)","visible":true}
+{"do":"wait","role":"button","name":"third@gmail.example (Cloud Contacts)","visible":true}
+{"do":"wait","role":"button","name":"Another account…","visible":true}
+# Putting the question away links nothing, and the button works again.
+{"do":"key","keys":"Escape"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"label","name":"None yet: link one below.","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+# An address of theirs is linked with that app's sign-in.
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","dialog":"Which Google account?"}
+{"do":"click","role":"button","name":"work@gmail.example (Cloud Contacts)"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"label","name":"Gmail (gmail, signed in)","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+# It is not offered again. Another account is a sign-in in the browser, which the stand-in does as me@gmail.example.
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","dialog":"Which Google account?"}
+{"do":"wait","role":"button","name":"work@gmail.example (Cloud Contacts)","visible":false}
+{"do":"click","role":"button","name":"Another account…"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"label","name":"Gmail (gmail-2, signed in)","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","dialog":"Which Google account?"}
+{"do":"click","role":"button","name":"sam@gmail.example (Cloud Calendar)"}
+{"do":"wait","dialog":null}
+{"do":"wait","role":"label","name":"Gmail (gmail-3, signed in)","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+# One address is left, which is taken over without asking.
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","role":"label","name":"Gmail (gmail-4, signed in)","visible":true}
+{"do":"wait","dialog":null}
+{"do":"quit"}

@@ -1,0 +1,11 @@
+# The Accounts window's Gmail button on the stand-in Google: it links a Gmail account, and pressing it again links
+# one more, which the same address is refused for. No other Cloud app is signed in here, so nothing is asked.
+{"do":"click","role":"button","name":"Linked accounts: HEY, Gmail, iCloud Mail"}
+{"do":"wait","role":"window","name":"Accounts","visible":true}
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","role":"label","name":"Gmail (gmail, signed in)","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+{"do":"click","role":"button","name":"Gmail"}
+{"do":"wait","role":"label","name":"me@gmail.example is already linked here as gmail","visible":true}
+{"do":"wait","role":"button","name":"Gmail","sensitive":true}
+{"do":"quit"}

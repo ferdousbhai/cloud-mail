@@ -2388,6 +2388,60 @@ fn gmail_takes_over_another_cloud_apps_sign_in() {
 }
 
 #[test]
+fn gmail_says_which_addresses_it_could_take_over_and_can_be_told_the_browser() {
+    let m = mock(default_handler);
+    let h = gmail_home("adopt-choices", "poll_seconds = 30\n", false);
+    let mail = [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
+    ];
+    for (dir, user) in [
+        ("cloud-calendar/gws/google", "sam@gmail.example"),
+        ("cloud-contacts/gws/google", "Sam@gmail.example"),
+        ("cloud-contacts/gws/work", "work@gmail.example"),
+    ] {
+        let dir = h.home.join("config").join(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".encryption_key"), "key").unwrap();
+        std::fs::write(
+            dir.join("credentials.enc"),
+            json!({"token_valid": true, "user": user, "scopes": mail}).to_string(),
+        )
+        .unwrap();
+    }
+    let logins = || h.calls().iter().filter(|c| c.starts_with("auth login")).count();
+    let address =
+        |name: &str| std::fs::read_to_string(h.home.join(format!("config/cloudmail/gws/{name}/address"))).unwrap();
+
+    // --browser: a sign-in in the browser, whatever the other apps have.
+    let o = h.run(&m, &["account", "add", "gmail", "--browser", "--login"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("Using the Google sign-in"));
+    assert_eq!((logins(), address("gmail")), (1, "me@gmail.example".to_string()));
+    let o = h.run(&m, &["account", "add", "hey", "--browser"], &[]);
+    assert_fails!(o, "usage");
+
+    // The first of two addresses is taken over, and the other is named (once, though two apps have the first).
+    let o = h.run(&m, &["account", "add", "gmail", "--name", "second"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let said = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(
+        said.contains("Cloud Calendar has on this computer (sam@gmail.example)")
+            && said.contains("It could also have been work@gmail.example: link that one with --name and --address."),
+        "{said}"
+    );
+    // The last one is the only one: nothing else to name.
+    let o = h.run(&m, &["account", "add", "gmail", "--name", "third"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        !String::from_utf8_lossy(&o.stderr).contains("could also"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!((logins(), address("third")), (1, "work@gmail.example".to_string()));
+}
+
+#[test]
 fn gmail_account_add_list_remove() {
     let m = mock(default_handler);
     let h = gmail_home("accounts", "poll_seconds = 30\n", false);

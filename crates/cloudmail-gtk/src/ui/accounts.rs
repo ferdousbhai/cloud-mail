@@ -249,9 +249,111 @@ fn row(a: &Rc<Accounts>, s: AccountStatus) -> gtk::Box {
     row
 }
 
-/// Links an account, signing in when needed (the browser, or icloud-session's window).
+/// Links an account, signing in when needed (the browser, or icloud-session's window). Gmail links one more account
+/// each time (gmail, then gmail-2, …), and first looks at the Google sign-ins Cloud Calendar and Cloud Contacts have
+/// here: one is taken over as it is, and with several it asks which.
 fn link(a: &Rc<Accounts>, provider: &'static str, button: &gtk::Button) {
     button.set_sensitive(false);
+    if provider != "gmail" {
+        return start(a, provider, button, None, None, false);
+    }
+    say(a, || tr("Looking for a Google sign-in on this computer…"));
+    let button = button.clone();
+    util::run(
+        move || -> Result<Found, String> {
+            let name = accounts::next_name("gmail").map_err(|e| e.to_string())?;
+            let candidates = accounts::gmail_candidates(&name);
+            Ok((name, candidates))
+        },
+        clone!(
+            #[weak]
+            a,
+            move |r: Result<Found, String>| match r {
+                Ok((name, candidates)) if candidates.len() < 2 => start(&a, "gmail", &button, Some(name), None, false),
+                Ok((name, candidates)) => choose(&a, &button, name, candidates),
+                Err(e) => {
+                    button.set_sensitive(true);
+                    a.status.set_plain(&e);
+                }
+            }
+        ),
+    );
+}
+
+/// The name a new Gmail account gets, and the addresses it could take over the sign-in of, each with its app.
+type Found = (String, Vec<(String, &'static str)>);
+
+/// Asks which Google account a new Gmail account is for, when other Cloud apps are signed in to several: one of
+/// theirs, whose sign-in is taken over, or another, in the browser. Putting the question away links nothing.
+fn choose(a: &Rc<Accounts>, button: &gtk::Button, name: String, candidates: Vec<(String, &'static str)>) {
+    let dialog = omui::Dialog::new(Some(""), Some(""));
+    dialog.add_response("cancel", "");
+    dialog.bind(|dialog| {
+        dialog.set_heading(&tr("Which Google account?"));
+        dialog.set_body(&tr(
+            "Cloudmail can use a sign-in another Cloud app has on this computer, or sign in to another account in the browser.",
+        ));
+        // omui's own word, from omui's catalog, as `confirm` has it.
+        dialog.set_response_label("cancel", &omui::i18n::translate("_Cancel"));
+    });
+    dialog.set_default_response("cancel");
+    dialog.set_close_response("cancel");
+    let choices = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let chosen = Rc::new(std::cell::Cell::new(false));
+    // (the address, or none for the browser)
+    let mut rows: Vec<(gtk::Button, Option<String>)> = candidates
+        .into_iter()
+        // An address and an app's name: the same in every language.
+        .map(|(address, app)| (gtk::Button::with_label(&format!("{address} ({app})")), Some(address)))
+        .collect();
+    let another = gtk::Button::new();
+    omui::i18n::bind_label(&another, "Another account…");
+    rows.push((another, None));
+    for (row, address) in rows {
+        choices.append(&row);
+        let name = name.clone();
+        row.connect_clicked(clone!(
+            #[weak]
+            a,
+            #[weak]
+            dialog,
+            #[strong]
+            button,
+            #[strong]
+            chosen,
+            move |_| {
+                chosen.set(true);
+                dialog.close();
+                let browser = address.is_none();
+                start(&a, "gmail", &button, Some(name.clone()), address.clone(), browser);
+            }
+        ));
+    }
+    dialog.set_extra_child(Some(choices.upcast_ref()));
+    dialog.connect_response(clone!(
+        #[weak]
+        a,
+        #[strong]
+        button,
+        move |_, _| {
+            if !chosen.get() {
+                button.set_sensitive(true);
+                a.status.set_plain("");
+            }
+        }
+    ));
+    dialog.present(&a.window);
+}
+
+/// Links the account, off the main loop, and says how it went. `name`, `address` and `browser` are `Link`'s.
+fn start(
+    a: &Rc<Accounts>,
+    provider: &'static str,
+    button: &gtk::Button,
+    name: Option<String>,
+    address: Option<String>,
+    browser: bool,
+) {
     say(a, || {
         tr("Linking… finish any sign-in in the browser or sign-in window.")
     });
@@ -260,14 +362,11 @@ fn link(a: &Rc<Accounts>, provider: &'static str, button: &gtk::Button) {
     // Like a sign-in, this waits on the browser, so closing the app abandons it rather than holding the app open.
     util::run(
         move || {
-            // Gmail: one more account each time (gmail, then gmail-2, …). The others have one sign-in each.
-            let name = match provider {
-                "gmail" => Some(accounts::next_name(provider).map_err(|e| e.to_string())?),
-                _ => None,
-            };
             let req = Link {
                 provider: provider.into(),
                 name,
+                address,
+                browser,
                 can_sign_in: true,
                 ..Default::default()
             };

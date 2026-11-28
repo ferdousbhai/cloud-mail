@@ -66,6 +66,8 @@ pub struct Link {
     pub client_secret: Option<String>,
     /// Gmail: the Google address the account is for, when it matters which.
     pub address: Option<String>,
+    /// Gmail: sign in in the browser, even when another Cloud app has a sign-in that could be taken over.
+    pub browser: bool,
     /// Whether a sign-in (browser, icloud-session's window) may start when needed.
     pub can_sign_in: bool,
 }
@@ -115,6 +117,12 @@ pub fn next_name(provider: &str) -> std::result::Result<String, Error> {
         .unwrap_or_default())
 }
 
+/// The Google addresses a new Gmail account named `name` could take over the sign-in of, each with the app
+/// that has it (`Gmail::candidates`): with two or more, the window asks which.
+pub fn gmail_candidates(name: &str) -> Vec<(String, &'static str)> {
+    Gmail::new(name, &AccountConfig::default()).candidates()
+}
+
 /// Links an account: checks its tool, signs in when needed and allowed, saves it, and (with your
 /// worker at hand) screens in the people it corresponds with. `notice` tells what's happening.
 pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::result::Result<Linked, LinkError> {
@@ -154,8 +162,8 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
     if !gmail && req.client_id.is_some() {
         return Err(usage("--client-id and --client-secret are for Gmail", None));
     }
-    if !gmail && req.address.is_some() {
-        return Err(usage("--address is for Gmail", None));
+    if !gmail && (req.address.is_some() || req.browser) {
+        return Err(usage("--address and --browser are for Gmail", None));
     }
     if icloud && req.command.is_some() {
         return Err(usage(
@@ -176,7 +184,8 @@ pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::resu
             .as_deref()
             .map(|a| a.trim().to_lowercase())
             .filter(|a| !a.is_empty());
-        let (version, addresses, dir) = link_gmail(&name, &cfg, want.as_deref(), req.can_sign_in, notice)?;
+        let (version, addresses, dir) =
+            link_gmail(&name, &cfg, want.as_deref(), !req.browser, req.can_sign_in, notice)?;
         ("Gmail", Some(version), addresses, Some(dir))
     } else if icloud {
         (
@@ -278,6 +287,7 @@ fn link_gmail(
     name: &str,
     cfg: &AccountConfig,
     want: Option<&str>,
+    takeover: bool,
     can_sign_in: bool,
     notice: &dyn Fn(&str),
 ) -> std::result::Result<(String, Vec<String>, PathBuf), LinkError> {
@@ -309,10 +319,23 @@ fn link_gmail(
         if !g.client_configured() {
             return Err(LinkError::NotConfigured(Gmail::no_client_error().message));
         }
-        if let Some((address, app)) = g.adopt(want) {
+        if takeover && let Some((address, app)) = g.adopt(want) {
             notice(&format!(
                 "Using the Google sign-in {app} has on this computer ({address}); no browser sign-in needed."
             ));
+            // It was the first of several: say so, and how to choose.
+            let others: Vec<String> = g
+                .candidates()
+                .into_iter()
+                .map(|(other, _)| other)
+                .filter(|other| *other != address)
+                .collect();
+            if want.is_none() && !others.is_empty() {
+                notice(&format!(
+                    "It could also have been {}: link that one with --name and --address.",
+                    others.join(" or ")
+                ));
+            }
             return Ok(());
         }
         if !can_sign_in {
