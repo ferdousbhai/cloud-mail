@@ -8,6 +8,7 @@
 #                         (from --json's raw or an --upload file; an upload's directory and file
 #                         permissions to <file>.upload)
 #   FAKE_GWS_MODE=ok (default) | expired | revoked | offline | crash | garbage | slow
+#   FAKE_GWS_USER=<address>  who `auth login` signs in (default me@gmail.example)
 #   FAKE_GWS_SCOPE=modify  a sign-in without gmail.settings.basic: filters answer 403
 #
 # Like gws, it keeps its sign-in in $GOOGLE_WORKSPACE_CLI_CONFIG_DIR/credentials.enc, which
@@ -42,8 +43,8 @@ if [[ "$1 $2" == "auth login" ]]; then
   echo "Using keyring backend: $GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" >&2
   printf 'Open this URL in your browser to authenticate:\n\n  https://accounts.google.com/o/oauth2/auth?scope=https%%3A%%2F%%2Fwww.googleapis.com%%2Fauth%%2Fgmail.modify&access_type=offline&redirect_uri=http%%3A%%2F%%2Flocalhost%%3A8080&response_type=code&client_id=%s\n\n' "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" >&2
   [[ "$mode" == "deny" ]] && err 2 401 authError "OAuth flow failed: access_denied"
-  mkdir -p "$dir" && printf 'fake-encrypted-credentials' > "$dir/credentials.enc" && printf 'fake-key' > "$dir/.encryption_key"
-  printf '{\n  "status": "success",\n  "message": "Authentication successful. Encrypted credentials saved.",\n  "account": "me@gmail.example",\n  "credentials_file": "%s/credentials.enc",\n  "scopes": ["https://www.googleapis.com/auth/gmail.modify", "openid"]\n}\n' "$dir"
+  mkdir -p "$dir" && printf 'fake-encrypted-credentials' > "$dir/credentials.enc" && printf 'fake-key' > "$dir/.encryption_key" && printf '%s' "${FAKE_GWS_USER:-me@gmail.example}" > "$dir/fake-user"
+  printf '{\n  "status": "success",\n  "message": "Authentication successful. Encrypted credentials saved.",\n  "account": "%s",\n  "credentials_file": "%s/credentials.enc",\n  "scopes": ["https://www.googleapis.com/auth/gmail.modify", "openid"]\n}\n' "${FAKE_GWS_USER:-me@gmail.example}" "$dir"
   exit 0
 fi
 
@@ -54,7 +55,7 @@ if [[ "$1 $2" == "auth status" ]]; then
   echo "Using keyring backend: $GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" >&2
   if [[ "$(head -c1 "$dir/credentials.enc" 2>/dev/null)" == "{" ]]; then cat "$dir/credentials.enc"
   elif [[ ! -f "$dir/credentials.enc" || "$mode" == expired || "$mode" == revoked ]]; then printf '{"token_valid": false}\n'
-  else printf '{"token_valid": true, "user": "me@gmail.example", "scopes": ["openid", "https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.settings.basic"]}\n'
+  else printf '{"token_valid": true, "user": "%s", "scopes": ["openid", "https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.settings.basic"]}\n' "$(cat "$dir/fake-user" 2>/dev/null || echo me@gmail.example)"
   fi
   exit 0
 fi

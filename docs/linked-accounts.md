@@ -67,6 +67,13 @@ two won't ask again. Cloudmail itself uses Gmail only: read, label, archive and 
 settings for the Screener's filters. To use another Google account than the one it took, run
 `cloudmail account login gmail`: an account that is signed in always gets the browser. A Gmail
 account linked before Cloudmail used filters asks you to sign in again once.
+
+Several Gmail accounts work side by side, each under a name of its own:
+`cloudmail account add gmail --name work` (its IDs start with `work:`), or the Gmail button in
+the app's Accounts window again, which names them `gmail`, `gmail-2`, … A new account takes over
+the sign-in of an address Cloud Calendar or Cloud Contacts has and Cloudmail doesn't yet, one
+address at a time; with none left, the browser opens for you to choose the account. The same
+address can't be linked twice.
 While Cloudmail's Google app awaits Google's verification, Google shows **"Google hasn't verified
 this app"**: choose **Advanced**, then **Go to Cloudmail**. The sign-in is kept in Cloudmail's own
 directory (`~/.config/cloudmail/gws/gmail`; one taken from another Cloud app is a copy there, so

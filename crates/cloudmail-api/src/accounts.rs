@@ -103,6 +103,16 @@ pub fn open(name: &str) -> std::result::Result<Arc<dyn Provider>, Error> {
     provider::open(name, &cfg)
 }
 
+/// The name another account of `provider` gets when none is asked for: the provider's while it is free,
+/// then `gmail-2`, `gmail-3`, … The window's Gmail button links one more Gmail account each time.
+pub fn next_name(provider: &str) -> std::result::Result<String, Error> {
+    let file = config::read_file(&config::path())?.unwrap_or_default();
+    Ok(std::iter::once(provider.to_string())
+        .chain((2..).map(|n| format!("{provider}-{n}")))
+        .find(|name| !file.accounts.contains_key(name))
+        .unwrap_or_default())
+}
+
 /// Links an account: checks its tool, signs in when needed and allowed, saves it, and (with your
 /// worker at hand) screens in the people it corresponds with. `notice` tells what's happening.
 pub fn link(req: &Link, mail: Option<&Mail>, notice: &dyn Fn(&str)) -> std::result::Result<Linked, LinkError> {
@@ -296,6 +306,16 @@ fn link_gmail(
             "While Cloudmail's Google app is unverified, Google says so: choose Advanced, then \"Go to Cloudmail\".",
         );
         g.login()?;
+        // Not an address another account here has: its mail would show twice.
+        if let Some(address) = g.address()
+            && let Some((_, other)) = g.others().into_iter().find(|(linked, _)| *linked == address)
+        {
+            let _ = g.forget();
+            return Err(usage(
+                format!("{address} is already linked here as {other}"),
+                Some("choose another Google account in the browser"),
+            ));
+        }
         Ok(())
     };
     if !g.signed_in() {

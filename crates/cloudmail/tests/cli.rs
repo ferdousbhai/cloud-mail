@@ -2278,6 +2278,27 @@ fn gmail_takes_over_another_cloud_apps_sign_in() {
         sam.to_string()
     );
 
+    // Another address in another app: the next account takes it over, under its own name.
+    sibling(
+        "cloud-contacts/gws/work",
+        &json!({"token_valid": true, "user": "work@gmail.example", "scopes": mail}),
+    );
+    let o = h.run(&m, &["account", "add", "gmail", "--name", "work"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("Cloud Contacts has on this computer (work@gmail.example)"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(logins(), 1);
+    // An account Google stopped taking is signed in again with its own address's sign-in, not the first there is.
+    let dead = h.home.join("config/cloudmail/gws/work/credentials.enc");
+    std::fs::write(&dead, r#"{"token_valid": false}"#).unwrap();
+    let o = h.run(&m, &["account", "login", "work"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(logins(), 1);
+    assert!(std::fs::read_to_string(&dead).unwrap().contains("work@gmail.example"));
+
     // Unlinking removes the copy only.
     let o = h.run(&m, &["account", "remove", "gmail"], &[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -2449,23 +2470,35 @@ fn gmail_account_add_list_remove() {
     let mut bus = support::Bus::start(&h.home.join("bus"));
     let keyring = support::keyring(&mut bus, &[]);
     let on_bus = [("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str())];
-    let o = h.run(
-        &m,
-        &[
-            "account",
-            "add",
-            "gmail",
-            "--name",
-            "work",
-            "--client-id",
-            "own-id",
-            "--client-secret",
-            "own-secret",
-            "--login",
-        ],
-        &on_bus,
+    let work = [
+        "account",
+        "add",
+        "gmail",
+        "--name",
+        "work",
+        "--client-id",
+        "own-id",
+        "--client-secret",
+        "own-secret",
+        "--login",
+    ];
+    // Not of the address the first one has: its mail would show twice.
+    let o = h.run(&m, &work, &on_bus);
+    assert_fails!(o, "usage");
+    assert!(
+        json_out(&o)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("me@gmail.example is already linked here as gmail")
     );
+    assert!(!h.home.join("config/cloudmail/gws/work").exists());
+    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("work"));
+    let o = h.run(&m, &work, &[on_bus[0], ("FAKE_GWS_USER", "work@gmail.example")]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(
+        std::fs::read_to_string(h.home.join("config/cloudmail/gws/work/address")).unwrap(),
+        "work@gmail.example"
+    );
     let text = std::fs::read_to_string(&cfg).unwrap();
     assert!(
         text.contains("[accounts.work]")

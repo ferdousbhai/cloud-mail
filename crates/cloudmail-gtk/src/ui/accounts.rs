@@ -260,8 +260,14 @@ fn link(a: &Rc<Accounts>, provider: &'static str, button: &gtk::Button) {
     // Like a sign-in, this waits on the browser, so closing the app abandons it rather than holding the app open.
     util::run(
         move || {
+            // Gmail: one more account each time (gmail, then gmail-2, …). The others have one sign-in each.
+            let name = match provider {
+                "gmail" => Some(accounts::next_name(provider).map_err(|e| e.to_string())?),
+                _ => None,
+            };
             let req = Link {
                 provider: provider.into(),
+                name,
                 can_sign_in: true,
                 ..Default::default()
             };
