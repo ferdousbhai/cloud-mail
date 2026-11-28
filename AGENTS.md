@@ -55,6 +55,10 @@ fast-forward. Don't open a pull request for the maintainer's own work; those are
   marked by hidden labels, iCloud rules named `Cloudmail Screener: …`), read with
   `Provider::screen_lists` and changed with `update_screen_lists` (one read, at most one write);
   never touch filters or rules that aren't Cloudmail's. `unified.rs` records a decision in every screened account and the worker.
+- One Google sign-in serves Cloudmail, Cloud Calendar and Cloud Contacts: same OAuth client, the browser sign-in
+  asks for all three apps' scopes (`gmail::SIGN_IN_SCOPES`, the same list in each app), and an account that isn't
+  signed in first copies a working sign-in from the other two apps' gws directories (`Gmail::adopt`). A copy,
+  never a shared directory.
 - The worker's committed lockfile is `bun.lock` (`package-lock.json` is ignored).
 - Every worker query that touches mail, senders, mailboxes or settings is scoped by `user_id`; a new
   endpoint or query must be too (`worker/test/users.test.ts` checks isolation). Only the admin runs

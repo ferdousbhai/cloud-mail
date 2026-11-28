@@ -2204,6 +2204,92 @@ fn gmail_account_add_installs_gws_when_missing() {
 }
 
 #[test]
+fn gmail_takes_over_another_cloud_apps_sign_in() {
+    let m = mock(default_handler);
+    let h = gmail_home("adopt", "poll_seconds = 30\n", false);
+    // A Google sign-in as fake-gws keeps one, in another Cloud app's directory.
+    let sibling = |app_account: &str, status: &Value| {
+        let dir = h.home.join("config").join(app_account);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".encryption_key"), "key").unwrap();
+        std::fs::write(dir.join("credentials.enc"), status.to_string()).unwrap();
+    };
+    let mail = [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
+    ];
+    let sam = json!({"token_valid": true, "user": "Sam@Gmail.example", "scopes": mail});
+    let logins = || h.calls().iter().filter(|c| c.starts_with("auth login")).count();
+    let client = [
+        ("CLOUDMAIL_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com"),
+        ("CLOUDMAIL_GOOGLE_CLIENT_SECRET", "test-secret"),
+    ];
+    // One Google no longer takes, and one without the filters permission: neither counts.
+    sibling("cloud-contacts/gws/google", &json!({"token_valid": false}));
+    sibling(
+        "cloud-contacts/gws/work",
+        &json!({"token_valid": true, "user": "other@gmail.example", "scopes": [mail[0]]}),
+    );
+    let o = h.run(&m, &["account", "add", "gmail"], &[]);
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
+
+    sibling("cloud-calendar/gws/google", &sam);
+    // A client of your own never takes over a sign-in made with the built-in one.
+    let o = h.run(&m, &["account", "add", "gmail"], &client);
+    assert_eq!(json_out(&o)["error"]["code"], "not_logged_in");
+
+    // With the built-in client it does, and needs no terminal: there is no browser sign-in.
+    let o = h.run(&m, &["account", "add", "gmail"], &[]);
+    assert!(
+        o.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&o.stderr)
+            .contains("Using the Google sign-in Cloud Calendar has on this computer (sam@gmail.example)"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(logins(), 0);
+    assert_eq!(
+        std::fs::read_to_string(h.gws_dir().join("credentials.enc")).unwrap(),
+        sam.to_string()
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.gws_dir().join(".encryption_key")).unwrap(),
+        "key"
+    );
+    assert!(ids(&json_out(&h.run(&m, &["inbox"], &[]))).contains(&"gmail:t-a1".to_string()));
+
+    // Signing in again to an account whose sign-in works is a browser sign-in: the way to another address.
+    let o = h.run(&m, &["account", "login", "gmail"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(logins(), 1);
+
+    // One Google stopped taking is replaced by the other app's without the browser.
+    std::fs::write(h.gws_dir().join("credentials.enc"), r#"{"token_valid": false}"#).unwrap();
+    let o = h.run(&m, &["account", "login", "gmail"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(logins(), 1);
+    assert_eq!(
+        std::fs::read_to_string(h.gws_dir().join("credentials.enc")).unwrap(),
+        sam.to_string()
+    );
+
+    // Unlinking removes the copy only.
+    let o = h.run(&m, &["account", "remove", "gmail"], &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!h.gws_dir().exists());
+    assert!(
+        h.home
+            .join("config/cloud-calendar/gws/google/credentials.enc")
+            .is_file()
+    );
+}
+
+#[test]
 fn gmail_account_add_list_remove() {
     let m = mock(default_handler);
     let h = gmail_home("accounts", "poll_seconds = 30\n", false);
@@ -2291,7 +2377,7 @@ fn gmail_account_add_list_remove() {
     assert!(
         calls
             .iter()
-            .any(|c| c == "auth login --scopes https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.settings.basic"),
+            .any(|c| *c == format!("auth login --scopes {}", cloudmail_api::gmail::SIGN_IN_SCOPES)),
         "{calls:?}"
     );
     assert!(

@@ -277,13 +277,21 @@ fn link_gmail(
         if !g.client_configured() {
             return Err(LinkError::NotConfigured(Gmail::no_client_error().message));
         }
+        if let Some((address, app)) = g.adopt() {
+            notice(&format!(
+                "Using the Google sign-in {app} has on this computer ({address}); no browser sign-in needed."
+            ));
+            return Ok(());
+        }
         if !can_sign_in {
             return Err(LinkError::NotSignedIn {
                 message: format!("Gmail {why}"),
                 hint: format!("run `cloudmail account add {name}` at a terminal: one Google sign-in in your browser"),
             });
         }
-        notice("Signing in to Google in your browser, for Gmail only (read, label, archive and send).");
+        notice(
+            "Signing in to Google in your browser. It asks for what Cloudmail, Cloud Calendar and Cloud Contacts use, so the three share one sign-in; Cloudmail itself reads, labels, archives and sends mail.",
+        );
         notice(
             "While Cloudmail's Google app is unverified, Google says so: choose Advanced, then \"Go to Cloudmail\".",
         );

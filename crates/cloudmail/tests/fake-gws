@@ -35,7 +35,7 @@ case "$1" in
 esac
 
 if [[ "$1 $2" == "auth login" ]]; then
-  [[ " $* " == *" --scopes https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.settings.basic "* ]] || err 3 400 validationError "fake-gws: expected --scopes gmail.modify,gmail.settings.basic"
+  [[ " $* " == *" --scopes https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/gmail.settings.basic,https://www.googleapis.com/auth/calendar.events,https://www.googleapis.com/auth/calendar.calendarlist.readonly,https://www.googleapis.com/auth/contacts "* ]] || err 3 400 validationError "fake-gws: expected --scopes with what Cloudmail, Cloud Calendar and Cloud Contacts use"
   if [[ -z "$GOOGLE_WORKSPACE_CLI_CLIENT_ID" || -z "$GOOGLE_WORKSPACE_CLI_CLIENT_SECRET" ]]; then
     err 2 401 authError "No OAuth client configured."
   fi
@@ -44,6 +44,18 @@ if [[ "$1 $2" == "auth login" ]]; then
   [[ "$mode" == "deny" ]] && err 2 401 authError "OAuth flow failed: access_denied"
   mkdir -p "$dir" && printf 'fake-encrypted-credentials' > "$dir/credentials.enc" && printf 'fake-key' > "$dir/.encryption_key"
   printf '{\n  "status": "success",\n  "message": "Authentication successful. Encrypted credentials saved.",\n  "account": "me@gmail.example",\n  "credentials_file": "%s/credentials.enc",\n  "scopes": ["https://www.googleapis.com/auth/gmail.modify", "openid"]\n}\n' "$dir"
+  exit 0
+fi
+
+# `auth status`: what Google says of the sign-in in the directory. A credentials.enc that is JSON is
+# that answer itself (tests write one into another Cloud app's directory); `auth login`'s is the
+# address and Cloudmail's two permissions.
+if [[ "$1 $2" == "auth status" ]]; then
+  echo "Using keyring backend: $GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND" >&2
+  if [[ "$(head -c1 "$dir/credentials.enc" 2>/dev/null)" == "{" ]]; then cat "$dir/credentials.enc"
+  elif [[ ! -f "$dir/credentials.enc" || "$mode" == expired || "$mode" == revoked ]]; then printf '{"token_valid": false}\n'
+  else printf '{"token_valid": true, "user": "me@gmail.example", "scopes": ["openid", "https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.settings.basic"]}\n'
+  fi
   exit 0
 fi
 

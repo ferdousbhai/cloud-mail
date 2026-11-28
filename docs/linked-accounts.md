@@ -58,12 +58,19 @@ cloudmail account list
 cloudmail account remove gmail        # unlink and sign Cloudmail out of Gmail on this computer
 ```
 
-The sign-in asks for Gmail only (read, label, archive and send, and its basic settings for the
-Screener's filters; nothing else in your Google account). A Gmail account linked before Cloudmail
-used filters asks you to sign in again once.
+One Google sign-in serves Cloudmail, [Cloud Calendar](https://github.com/ferdousbhai/cloud-calendar)
+and [Cloud Contacts](https://github.com/ferdousbhai/cloud-contacts). When one of the other two is
+already signed in to Google on this computer, `account add gmail` uses that sign-in and opens no
+browser, and says which address it took. Otherwise the browser sign-in asks for what the three apps
+use (your mail and its basic settings, your events and calendar list, your contacts), so the other
+two won't ask again. Cloudmail itself uses Gmail only: read, label, archive and send, and its basic
+settings for the Screener's filters. To use another Google account than the one it took, run
+`cloudmail account login gmail`: an account that is signed in always gets the browser. A Gmail
+account linked before Cloudmail used filters asks you to sign in again once.
 While Cloudmail's Google app awaits Google's verification, Google shows **"Google hasn't verified
 this app"**: choose **Advanced**, then **Go to Cloudmail**. The sign-in is kept in Cloudmail's own
-directory (`~/.config/cloudmail/gws/gmail`), apart from any `gws` you use yourself, which it never
+directory (`~/.config/cloudmail/gws/gmail`; one taken from another Cloud app is a copy there, so
+removing the account in one app leaves the others signed in), apart from any `gws` you use yourself, which it never
 reads or changes. A second Gmail account links with `cloudmail account add gmail --name work`.
 
 | In Cloudmail | Your worker | Gmail |

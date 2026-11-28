@@ -71,6 +71,13 @@ scopes (the second for the Screener's filters), and an OAuth client of type "Des
 restricted scopes: until Google verifies the app, users see the unverified-app screen and at most 100
 people can sign in. Adding a scope means everyone signs in again once.
 
+Cloud Calendar and Cloud Contacts sign in with this same client. The browser sign-in asks for
+`SIGN_IN_SCOPES`, all three apps' scopes, and the same list is in
+`cloud-calendar/crates/cloud-calendar-api/src/google.rs` and
+`cloud-contacts/crates/cloud-contacts/src/google.rs`: a scope added to one app is added to all three.
+An account that isn't signed in first copies a working sign-in from the other two apps' gws
+directories (`Gmail::adopt`); it is a copy, never a shared directory.
+
 ## Releasing
 
 Bump `version` in `Cargo.toml` and `pkgver` in the PKGBUILD, commit, then push an annotated tag

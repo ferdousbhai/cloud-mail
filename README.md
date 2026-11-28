@@ -438,7 +438,9 @@ What it doesn't do (yet), so you know before you move a domain:
 - Cloudmail writes to your Gmail and iCloud Mail only what the Screener needs: Gmail filters (each
   marked by a hidden `Cloudmail/Blocked` or `Cloudmail/Screened in` label) and iCloud Mail rules named
   `Cloudmail Screener: …`, which hold the senders you approved or blocked. Your own filters and rules
-  are never changed. Gmail's sign-in asks for `gmail.modify` and `gmail.settings.basic` (filters).
+  are never changed. Of what Gmail's sign-in asks for, Cloudmail uses `gmail.modify` and `gmail.settings.basic`
+  (filters); the calendar and contacts permissions beside them are for Cloud Calendar and Cloud
+  Contacts, which share the sign-in ([linked accounts](docs/linked-accounts.md)).
 - Message HTML is untrusted. The desktop app renders it with JavaScript disabled, remote loads
   blocked and links opened in your browser.
 - Screening trusts the `From` address only when its domain authenticated the message: DMARC, or,
